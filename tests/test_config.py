@@ -180,3 +180,54 @@ def test_core_dataclasses():
     )
     assert status.activity == EngineActivity.INDEXING
     assert status.total == 15
+
+
+def test_result_row_formatting_and_reasons():
+    """Verify ResultRow formatting for page, audio, single line, and match reasons."""
+    # Test PAGE segment
+    hit_page = SearchHit(
+        path="/tmp/doc.pdf",
+        kind=FileKind.PDF,
+        score=0.5,
+        segment=SegmentKind.PAGE,
+        loc=3.0,
+    )
+    row_page = ResultRow.from_hit(hit_page)
+    assert row_page.place == "p. 3"
+    assert row_page.reason == "Matches name"
+
+    # Test AUDIO segment and keyword match
+    hit_audio = SearchHit(
+        path="/tmp/audio.mp3",
+        kind=FileKind.AUDIO,
+        score=0.8,
+        keyword_rank=2,
+        segment=SegmentKind.AUDIO,
+        loc=65.0,
+    )
+    row_audio = ResultRow.from_hit(hit_audio)
+    assert row_audio.place == "1:05"
+    assert row_audio.reason == "Matches words"
+
+    # Test single line code segment
+    hit_code = SearchHit(
+        path="/tmp/script.py",
+        kind=FileKind.CODE,
+        score=0.9,
+        segment=SegmentKind.LINES,
+        loc=15.0,
+        loc_end=15.0,
+    )
+    row_code = ResultRow.from_hit(hit_code)
+    assert row_code.place == "L15"
+    assert row_code.code_line == 15
+
+
+def test_config_manager_filters_unknown_fields(tmp_path: Path):
+    """Verify ConfigManager ignores extraneous fields in config file."""
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text('{"extra_key": "ignore_me", "model": "test-embed"}', encoding="utf-8")
+    mgr = ConfigManager(config_path=cfg_file)
+    assert mgr.config.model == "test-embed"
+    assert not hasattr(mgr.config, "extra_key")
+
