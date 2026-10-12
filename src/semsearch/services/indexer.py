@@ -352,8 +352,8 @@ class IndexService:
         # Stage 2: Database Persistence
         bytes_added = 0
         for s, vec in zip(segments, vectors):
-            name = ""
-            body = s.excerpt
+            name = Path(file_record.path).name
+            body = s.payload if isinstance(s.payload, str) and s.payload else s.excerpt
             orig = s.payload if isinstance(s.payload, str) else ""
             target_db.insert_segment(
                 file_id=file_record.id,
