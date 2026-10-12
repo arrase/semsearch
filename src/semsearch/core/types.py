@@ -107,6 +107,19 @@ class SegmentRecord:
 
 
 @dataclass
+class ExtractedSegment:
+    """Searchable segment piece extracted from a file."""
+
+    kind: SegmentKind
+    modality: Modality
+    loc: float = 0.0
+    loc_end: float = 0.0
+    excerpt: str = ""
+    payload: str | dict[str, str] = ""
+    focus: float = 0.0
+
+
+@dataclass
 class SearchHit:
     """Scored search result hit from engine."""
 
