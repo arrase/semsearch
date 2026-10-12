@@ -28,7 +28,7 @@ class Database:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
-        self._conn = sqlite3.connect(self.path)
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -235,6 +235,19 @@ class Database:
             FROM files WHERE path = ?
             """,
             (path,),
+        )
+        row = cursor.fetchone()
+        return self._row_to_file_record(row) if row else None
+
+    def find_by_id(self, file_id: int) -> FileRecord | None:
+        """Find a file record by file ID."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, path, kind, size, mtime, inode, device, state, detail, info, indexed_at
+            FROM files WHERE id = ?
+            """,
+            (file_id,),
         )
         row = cursor.fetchone()
         return self._row_to_file_record(row) if row else None

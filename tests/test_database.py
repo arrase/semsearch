@@ -72,6 +72,11 @@ def test_insert_and_find_file(db: Database):
     assert record_by_inode is not None
     assert record_by_inode.id == file_id
 
+    record_by_id = db.find_by_id(file_id)
+    assert record_by_id is not None
+    assert record_by_id.id == file_id
+    assert db.find_by_id(999999) is None
+
     # Check that name segment was created
     cursor = db._conn.cursor()
     cursor.execute("SELECT kind, modality FROM segments WHERE file = ?", (file_id,))
