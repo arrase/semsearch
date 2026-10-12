@@ -153,6 +153,9 @@ class ResultRow:
     matched_meaning: bool = False
     matched_words: bool = False
     code_line: int | None = None
+    path: str = ""
+    kind: FileKind | None = None
+    score: float = 0.0
 
     @classmethod
     def from_hit(cls, hit: SearchHit, terms: list[str] | None = None) -> "ResultRow":
@@ -199,6 +202,9 @@ class ResultRow:
             matched_meaning=matched_meaning,
             matched_words=matched_words,
             code_line=code_line,
+            path=hit.path,
+            kind=hit.kind,
+            score=hit.score,
         )
 
 

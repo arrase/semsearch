@@ -31,6 +31,11 @@ class Database:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._init_db()
 
+    @property
+    def db_path(self) -> str:
+        """Database file path."""
+        return self.path
+
     def _init_db(self) -> None:
         cursor = self._conn.cursor()
         cursor.execute("PRAGMA journal_mode = WAL;")
@@ -251,6 +256,8 @@ class Database:
         )
         row = cursor.fetchone()
         return self._row_to_file_record(row) if row else None
+
+    find_file = find_by_id
 
     def find_by_inode(self, device: int, inode: int) -> FileRecord | None:
         """Find a file record by device and inode."""
