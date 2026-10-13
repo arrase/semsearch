@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +20,7 @@ from semsearch.core.search_text import extract_terms, make_fts_patterns
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import PreviewPane, format_tilde_path
 from semsearch.gui.theme import ThemeColors, ThemeLayout, apply_theme, get_ui_font
+from semsearch.gui.widgets import ElidedLabel
 from semsearch.gui.worker import SearchWorker
 from semsearch.i18n import tr
 from semsearch.services.actions import (
@@ -79,10 +79,8 @@ class ResultItemWidget(QWidget):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(6)
 
-        file_name = Path(hit.path).name
-        self.title_label = QLabel(file_name)
+        self.title_label = ElidedLabel(Path(hit.path).name)
         self.title_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
-        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.title_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; background: transparent; border: none;")
         top_row.addWidget(self.title_label, stretch=1)
 
@@ -96,10 +94,8 @@ class ResultItemWidget(QWidget):
             )
             top_row.addWidget(self.place_badge)
 
-        parent_str = format_tilde_path(str(Path(hit.path).parent))
-        self.path_label = QLabel(parent_str)
+        self.path_label = ElidedLabel(format_tilde_path(str(Path(hit.path).parent)))
         self.path_label.setFont(get_ui_font(10))
-        self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
 
         text_layout.addLayout(top_row)

@@ -286,6 +286,7 @@ class StorageModelTab(QWidget):
         db_layout = QVBoxLayout(self.db_group)
         self.stats_label = QLabel(tr("Loading database metrics..."))
         self.stats_label.setFont(get_ui_font(12))
+        self.stats_label.setWordWrap(True)
 
         db_btn_row = QHBoxLayout()
         self.vacuum_btn = QPushButton(tr("Optimize / Vacuum Database"))
@@ -492,7 +493,7 @@ class SettingsDialog(QDialog):
         self.code_db = code_db
 
         self.setWindowTitle(tr("SemSearch Settings"))
-        self.resize(640, 520)
+        self.resize(720, 620)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)

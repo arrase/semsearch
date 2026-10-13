@@ -1,7 +1,13 @@
 """Visual design system, color tokens, and QSS stylesheets for SemSearch GUI."""
 
+from pathlib import Path
+
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget
+
+ICONS_DIR = Path(__file__).parent / "icons"
+CHEVRON_ICON = ICONS_DIR / "chevron-down.svg"
+CHECK_ICON = ICONS_DIR / "check.svg"
 
 
 class ThemeColors:
@@ -57,7 +63,8 @@ def get_ui_font(size: int = 13, weight: QFont.Weight = QFont.Weight.Normal) -> Q
 def get_mono_font(size: int = 12, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     """Create monospace typography font for code snippet rendering."""
     font = QFont()
-    font.setFamilies(["JetBrains Mono", "Fira Code", "monospace"])
+    font.setFamilies(["JetBrains Mono", "Fira Code"])
+    font.setStyleHint(QFont.StyleHint.Monospace)
     font.setPointSize(size)
     font.setWeight(weight)
     return font
@@ -163,6 +170,11 @@ def build_qss() -> str:
         padding: 0px;
         border: none;
         background: transparent;
+    }}
+
+    QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+        width: 0px;
+        border: none;
     }}
 
     QPlainTextEdit, QTextEdit {{
@@ -342,6 +354,17 @@ def build_qss() -> str:
         padding: 6px 12px;
     }}
 
+    QComboBox::drop-down {{
+        border: none;
+        width: 24px;
+    }}
+
+    QComboBox::down-arrow {{
+        image: url("{CHEVRON_ICON}");
+        width: 12px;
+        height: 12px;
+    }}
+
     QComboBox QAbstractItemView {{
         background-color: #20232B;
         color: {ThemeColors.TEXT_PRIMARY};
@@ -365,6 +388,7 @@ def build_qss() -> str:
     QCheckBox::indicator:checked {{
         background: {ThemeColors.BRAND_START};
         border-color: {ThemeColors.BRAND_START};
+        image: url("{CHECK_ICON}");
     }}
     """
 
