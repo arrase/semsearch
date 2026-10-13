@@ -1,6 +1,5 @@
 """Background indexing service, multi-tier priority scheduling, and pipelined execution."""
 
-from dataclasses import dataclass, field
 from enum import Enum
 import os
 from pathlib import Path
@@ -11,8 +10,9 @@ import numpy as np
 from semsearch.config import AppConfig
 from semsearch.core.crawler import crawl_folder, sync_candidates
 from semsearch.core.database import Database
-from semsearch.core.ollama import OllamaClient
-from semsearch.core.rules import classify_file
+from semsearch.core.ollama import OllamaClient, format_doc_prompt
+from semsearch.core.rules import classify_file, is_code_project_root, is_path_excluded
+from semsearch.core.search_text import has_words
 from semsearch.core.types import (
     Candidate,
     EngineActivity,
@@ -24,10 +24,10 @@ from semsearch.core.types import (
     Modality,
 )
 from semsearch.core.vectors import float16_to_bytes, l2_normalize
-from semsearch.extractors.code import extract_code_segments, extract_notebook_segments
-from semsearch.extractors.docs import extract_doc_segments
-from semsearch.extractors.images import extract_image_segment
-from semsearch.extractors.media import extract_audio_segments, extract_video_segments
+from semsearch.extractors.code import extract_code, extract_notebook
+from semsearch.extractors.docs import extract_doc
+from semsearch.extractors.images import extract_image
+from semsearch.extractors.media import extract_audio, extract_video
 from semsearch.extractors.pdfs import extract_pdf
 
 
@@ -40,58 +40,37 @@ class IndexQueueTier(str, Enum):
     LONG_FILES = "long_files"
 
 
-@dataclass
-class MeasuredCosts:
-    """Tracks running throughput metrics, remaining time, and database storage growth."""
+def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str | None, str]:
+    """Determine repo and title path for code files matching project root markers first."""
+    path_obj = Path(path).resolve()
+    home = Path.home().resolve()
+    folder = path_obj.parent
+    repo: Path | None = None
 
-    ms_per_chunk: float = 40.0
-    ms_per_image: float = 120.0
-    ms_per_audio: float = 150.0
-    bytes_per_segment: int = 1600
+    curr = folder
+    while curr != curr.parent and curr != home:
+        if (curr / ".git").exists() or is_code_project_root(str(curr)):
+            repo = curr
+            break
+        curr = curr.parent
 
-    _counts: dict[str, int] = field(default_factory=lambda: {"text": 0, "image": 0, "audio": 0})
-    _total_ms: dict[str, float] = field(default_factory=lambda: {"text": 0.0, "image": 0.0, "audio": 0.0})
+    if repo is None and code_folders:
+        for cf in code_folders:
+            cf_path = Path(cf).resolve()
+            if path_obj.is_relative_to(cf_path):
+                repo = cf_path
+                break
 
-    def update(self, modality: Modality, elapsed_ms: float, count: int = 1, bytes_added: int = 0) -> None:
-        """Update moving average processing time and segment byte size."""
-        if count <= 0:
-            return
-        key = "text"
-        if modality == Modality.IMAGE:
-            key = "image"
-        elif modality == Modality.AUDIO:
-            key = "audio"
+    if repo is not None:
+        try:
+            return str(repo), str(path_obj.relative_to(repo))
+        except ValueError:
+            return str(repo), path_obj.name
 
-        self._counts[key] += count
-        self._total_ms[key] += elapsed_ms
+    parts = path_obj.parts
+    title = "/".join(parts[-2:]) if len(parts) >= 2 else path_obj.name
+    return None, title
 
-        if key == "text":
-            self.ms_per_chunk = self._total_ms["text"] / self._counts["text"]
-        elif key == "image":
-            self.ms_per_image = self._total_ms["image"] / self._counts["image"]
-        elif key == "audio":
-            self.ms_per_audio = self._total_ms["audio"] / self._counts["audio"]
-
-        if bytes_added > 0:
-            self.bytes_per_segment = max(int(bytes_added / count), 100)
-
-    def estimate_time(self, pending_counts: dict[str, int]) -> float:
-        """Estimate remaining duration in seconds based on pending items per kind."""
-        total_ms = 0.0
-        for kind_name, count in pending_counts.items():
-            if kind_name in ("image", "screenshot"):
-                total_ms += count * self.ms_per_image
-            elif kind_name in ("audio", "video"):
-                total_ms += count * self.ms_per_audio * 5.0
-            elif kind_name == "pdf":
-                total_ms += count * (10.0 * self.ms_per_chunk + 2.0 * self.ms_per_image)
-            else:
-                total_ms += count * (3.0 * self.ms_per_chunk)
-        return total_ms / 1000.0
-
-    def estimate_disk_growth(self, pending_count: int) -> int:
-        """Estimate required database disk space in bytes for pending items."""
-        return pending_count * 3 * self.bytes_per_segment
 
 
 class IndexService:
@@ -109,10 +88,9 @@ class IndexService:
         self.ollama = ollama
         self.config = config or AppConfig()
 
-        self.costs = MeasuredCosts()
         self.status = EngineStatus(activity=EngineActivity.STARTING)
 
-        self._new_files_queue: list[int] = []
+        self._new_files_queue: list[tuple[int, bool]] = []
         self._lock = threading.Lock()
         self._pause_event = threading.Event()
         self._pause_event.set()
@@ -155,116 +133,123 @@ class IndexService:
 
     def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
         """Enqueue newly modified or created file for immediate or backfill indexing."""
-        resolved = str(Path(path).resolve())
+        resolved_path = Path(path).resolve()
+        resolved = str(resolved_path)
+        if not os.path.exists(resolved):
+            return
+        if is_path_excluded(resolved, self.config.excluded_folders):
+            return
+
         is_code = False
         if self.config.code_enabled and self.code_db is not None:
-            is_code = any(resolved.startswith(str(Path(cf).resolve())) for cf in self.config.code_folders)
+            is_code = any(resolved_path.is_relative_to(Path(cf).resolve()) for cf in self.config.code_folders)
 
-        target_db = self.code_db if (is_code and self.code_db) else self.db
+        ext = resolved_path.suffix.lstrip(".").lower()
+        if not is_code and self.config.excluded_types:
+            norm_excl = {t.lstrip(".").strip().lower() for t in self.config.excluded_types if t.strip()}
+            if ext in norm_excl:
+                return
+
+        target_db = self.code_db if is_code and self.code_db is not None else self.db
         rec = target_db.find_by_path(resolved)
 
+        try:
+            st = os.stat(resolved)
+        except OSError:
+            return
+
+        kind = classify_file(resolved, is_code_mode=is_code) or (rec.kind if rec else None)
+        if kind is None:
+            return
+
+        cand = Candidate(
+            path=resolved,
+            kind=kind,
+            size=st.st_size,
+            mtime=st.st_mtime,
+            inode=st.st_ino,
+            device=st.st_dev,
+        )
+
         if rec is None:
-            if not os.path.exists(resolved):
-                return
-            kind = classify_file(resolved)
-            if kind is None:
-                return
-            try:
-                st = os.stat(resolved)
-                cand = Candidate(
-                    path=resolved,
-                    kind=kind,
-                    size=st.st_size,
-                    mtime=st.st_mtime,
-                    inode=st.st_ino,
-                    device=st.st_dev,
-                )
-                fid = target_db.insert_file(cand)
-            except OSError:
-                return
+            fid = target_db.insert_file(cand)
         else:
             fid = rec.id
-            if not os.path.exists(resolved):
-                return
-            try:
-                st = os.stat(resolved)
-                if rec.state != FileState.PENDING or st.st_mtime != rec.mtime or st.st_size != rec.size:
-                    kind = classify_file(resolved) or rec.kind
-                    cand = Candidate(
-                        path=resolved,
-                        kind=kind,
-                        size=st.st_size,
-                        mtime=st.st_mtime,
-                        inode=st.st_ino,
-                        device=st.st_dev,
-                    )
-                    target_db.requeue_file(rec.id, cand)
-            except OSError:
-                return
+            if rec.state != FileState.PENDING or st.st_mtime != rec.mtime or st.st_size != rec.size:
+                target_db.requeue_file(rec.id, cand)
 
         with self._lock:
             if tier == IndexQueueTier.NEW_FILES and len(self._new_files_queue) < 50:
-                if fid not in self._new_files_queue:
-                    self._new_files_queue.append(fid)
+                item = (fid, is_code)
+                if item not in self._new_files_queue:
+                    self._new_files_queue.append(item)
 
     def crawl_and_sync(self, roots: list[str] | None = None, is_code: bool = False) -> None:
         """Crawl folders and synchronize database records."""
-        with self._lock:
-            self.status.activity = EngineActivity.SYNCING
+        if self._stop_event.is_set():
+            return
+        if is_code and not self.code_db:
+            return
 
-        target_db = self.code_db if (is_code and self.code_db) else self.db
+        with self._lock:
+            if not self.status.paused and self.status.activity in (EngineActivity.STARTING, EngineActivity.IDLE):
+                self.status.activity = EngineActivity.SYNCING
+
+        target_db = self.code_db if is_code and self.code_db is not None else self.db
         scan_roots = roots or (self.config.code_folders if is_code else self.config.folders)
+        excl_types = None if is_code else self.config.excluded_types
 
         for root in scan_roots:
-            candidates = crawl_folder(root, is_code=is_code)
-            sync_candidates(target_db, candidates, roots=root)
+            if self._stop_event.is_set():
+                break
+            if self.config.excluded_folders or (excl_types and excl_types != ["heic"]):
+                candidates = crawl_folder(
+                    root,
+                    is_code=is_code,
+                    excluded_folders=self.config.excluded_folders,
+                    excluded_types=excl_types,
+                )
+            else:
+                candidates = crawl_folder(root, is_code=is_code)
+            sync_candidates(target_db, candidates, roots=[root])
+
+        self._update_status_counts()
+        with self._lock:
+            if self.status.paused:
+                self.status.activity = EngineActivity.PAUSED
+            elif self.status.activity == EngineActivity.SYNCING:
+                self.status.activity = EngineActivity.IDLE
+
 
     def _get_next_file(self) -> tuple[FileRecord | None, Database | None, IndexQueueTier | None]:
         with self._lock:
-            # Tier 1: Immediate New Files (<= 50)
             while self._new_files_queue:
-                fid = self._new_files_queue.pop(0)
-                rec = self.db.find_by_id(fid)
+                fid, is_code = self._new_files_queue.pop(0)
+                target_db = self.code_db if is_code else self.db
+                if target_db is None:
+                    continue
+                rec = target_db.find_by_id(fid)
                 if rec and rec.state == FileState.PENDING:
-                    return rec, self.db, IndexQueueTier.NEW_FILES
-                if self.code_db:
-                    rec = self.code_db.find_by_id(fid)
-                    if rec and rec.state == FileState.PENDING:
-                        return rec, self.code_db, IndexQueueTier.NEW_FILES
+                    return rec, target_db, IndexQueueTier.NEW_FILES
 
-        # Tier 2: General backfill
         pending_general = self.db.list_pending(limit=1)
         if pending_general:
             return pending_general[0], self.db, IndexQueueTier.BACKFILL
 
-        # Tier 3: Code backfill
         if self.config.code_enabled and self.code_db is not None:
             pending_code = self.code_db.list_pending(limit=1)
             if pending_code:
                 return pending_code[0], self.code_db, IndexQueueTier.CODE
 
-        # Tier 4: Long files completion
-        partial_gen = self._find_partial_file(self.db)
+        partial_gen = self.db.find_partial()
         if partial_gen:
             return partial_gen, self.db, IndexQueueTier.LONG_FILES
         if self.config.code_enabled and self.code_db is not None:
-            partial_code = self._find_partial_file(self.code_db)
+            partial_code = self.code_db.find_partial()
             if partial_code:
                 return partial_code, self.code_db, IndexQueueTier.LONG_FILES
 
         return None, None, None
-
-    def _find_partial_file(self, db: Database) -> FileRecord | None:
-        cursor = db._conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, path, kind, size, mtime, inode, device, state, detail, info, indexed_at
-            FROM files WHERE state = 'partial'
-            ORDER BY mtime DESC LIMIT 1
-            """
-        )
-        row = cursor.fetchone()
-        return db._row_to_file_record(row) if row else None
 
     def _extract_segments(
         self,
@@ -273,35 +258,32 @@ class IndexService:
     ) -> tuple[list[ExtractedSegment], bool, dict]:
         path = file_record.path
         kind = file_record.kind
-        is_complete = True
         info = dict(file_record.info)
 
         if kind == FileKind.IMAGE:
-            return [extract_image_segment(path, is_screenshot=False)], True, info
+            return [extract_image(path, is_screenshot=False)], True, info
         if kind == FileKind.SCREENSHOT:
-            return [extract_image_segment(path, is_screenshot=True)], True, info
+            return [extract_image(path, is_screenshot=True)], True, info
         if kind == FileKind.PDF:
             segments, complete = extract_pdf(path, start_page=start_offset, max_pages=30)
-            last_page = start_offset + len(segments)
-            info["last_page"] = last_page
+            info["last_page"] = start_offset + len(segments)
             return segments, complete, info
         if kind == FileKind.DOC:
-            all_segments = extract_doc_segments(path)
+            all_segments = extract_doc(path)
             if len(all_segments) > 40:
                 end_chunk = min(start_offset + 40, len(all_segments))
                 batch = all_segments[start_offset:end_chunk]
-                complete = end_chunk >= len(all_segments)
                 info["last_chunk"] = end_chunk
-                return batch, complete, info
+                return batch, end_chunk >= len(all_segments), info
             return all_segments, True, info
         if kind == FileKind.AUDIO:
-            return extract_audio_segments(path), True, info
+            return extract_audio(path), True, info
         if kind == FileKind.VIDEO:
-            return extract_video_segments(path), True, info
+            return extract_video(path), True, info
         if kind == FileKind.CODE:
             if path.endswith(".ipynb"):
-                return extract_notebook_segments(path), True, info
-            return extract_code_segments(path), True, info
+                return extract_notebook(path), True, info
+            return extract_code(path), True, info
 
         return [], True, info
 
@@ -311,7 +293,6 @@ class IndexService:
             target_db.delete_file(file_record.id)
             return False
 
-        t0 = time.time()
         start_offset = 0
         if file_record.state == FileState.PARTIAL:
             if file_record.kind == FileKind.PDF:
@@ -319,7 +300,6 @@ class IndexService:
             elif file_record.kind == FileKind.DOC:
                 start_offset = file_record.info.get("last_chunk", 0)
 
-        # Stage 1: Preparation & Model Inference
         try:
             segments, is_complete, info = self._extract_segments(file_record, start_offset=start_offset)
         except Exception as exc:
@@ -329,18 +309,32 @@ class IndexService:
         vectors: list[bytes | None] = []
         if self.ollama is not None and segments:
             embed_inputs: list[str | dict[str, str]] = []
+            file_p = Path(file_record.path)
+            if file_record.kind == FileKind.CODE:
+                repo, title = _code_place(file_record.path, self.config.code_folders)
+                if repo:
+                    info["repo"] = repo
+            else:
+                title = file_p.stem
+
             for s in segments:
-                if s.modality != Modality.NONE and s.payload:
+                if s.modality == Modality.TEXT and isinstance(s.payload, str) and s.payload:
+                    if not has_words(s.payload):
+                        embed_inputs.append("")
+                        continue
+                    embed_inputs.append(format_doc_prompt(title, s.payload[:4000]))
+                elif s.modality != Modality.NONE and s.payload:
                     embed_inputs.append(s.payload)
                 else:
                     embed_inputs.append("")
 
             try:
                 embeddings = self.ollama.embed(self.config.model, embed_inputs)
-            except Exception:
-                embeddings = []
+            except Exception as exc:
+                target_db.update_file_state(file_record.id, FileState.FAILED, detail=str(exc))
+                return False
 
-            for idx, s in enumerate(segments):
+            for idx in range(len(segments)):
                 if idx < len(embeddings) and embeddings[idx]:
                     vec_arr = l2_normalize(np.array(embeddings[idx], dtype=np.float32))
                     vectors.append(float16_to_bytes(vec_arr))
@@ -349,10 +343,7 @@ class IndexService:
         else:
             vectors = [None] * len(segments)
 
-        # Stage 2: Database Persistence
-        bytes_added = 0
         for s, vec in zip(segments, vectors):
-            name = Path(file_record.path).name
             body = s.payload if isinstance(s.payload, str) and s.payload else s.excerpt
             orig = s.payload if isinstance(s.payload, str) else ""
             target_db.insert_segment(
@@ -363,19 +354,13 @@ class IndexService:
                 loc_end=s.loc_end,
                 excerpt=s.excerpt,
                 vec=vec,
-                name=name,
+                name="",
                 body=body,
                 original=orig,
             )
-            bytes_added += len(vec) if vec else 0
 
         new_state = FileState.DONE if is_complete else FileState.PARTIAL
         target_db.update_file_state(file_record.id, new_state, info=info)
-
-        elapsed_ms = (time.time() - t0) * 1000.0
-        if segments:
-            self.costs.update(segments[0].modality, elapsed_ms, count=len(segments), bytes_added=bytes_added)
-
         return True
 
     def _worker_loop(self) -> None:
@@ -399,8 +384,8 @@ class IndexService:
 
             try:
                 self.process_file(file_rec, target_db)
-            except Exception:
-                pass
+            except Exception as exc:
+                target_db.update_file_state(file_rec.id, FileState.FAILED, detail=str(exc))
             self._update_status_counts()
 
     def _update_status_counts(self) -> None:

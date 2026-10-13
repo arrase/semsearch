@@ -3,6 +3,8 @@
 from datetime import datetime
 import math
 from pathlib import Path
+import subprocess
+
 import pymupdf
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStackedWidget,
     QTextEdit,
@@ -30,14 +33,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from semsearch.core.types import FileKind, ResultRow, SearchHit
+from semsearch.core.search_text import extract_terms
+from semsearch.core.types import FileKind, SearchHit
+from semsearch.extractors.docs import read_doc_text
 from semsearch.gui.theme import (
     ThemeColors,
     ThemeLayout,
     get_mono_font,
     get_ui_font,
 )
-from semsearch.services.actions import open_media_timestamp
+from semsearch.i18n import tr
+from semsearch.services.actions import open_file, open_media_at, reveal_in_file_manager
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -59,48 +65,118 @@ def format_tilde_path(path_str: str) -> str:
     return path_str
 
 
+def _extract_video_frame(path: str, timestamp: float) -> QPixmap:
+    """Extract a single video frame at timestamp via ffmpeg when available."""
+    if not path or not Path(path).is_file():
+        return QPixmap()
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-ss",
+                f"{max(0.0, timestamp):.2f}",
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=640:-1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "-",
+            ],
+            capture_output=True,
+            timeout=2.5,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            pix = QPixmap()
+            if pix.loadFromData(proc.stdout, "PNG") and not pix.isNull():
+                return pix
+    except (OSError, subprocess.SubprocessError):
+        return QPixmap()
+    return QPixmap()
+
+
 class MetadataCard(QFrame):
-    """Compact metadata display showing file details, timestamp, and match reason."""
+    """Compact metadata display showing file details, timestamp, match reason, and file actions."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._path: str = ""
+        self.setObjectName("metadataCard")
         self.setStyleSheet(
-            f"background-color: {ThemeColors.BG_CARD};"
-            f"border: 1px solid {ThemeColors.BORDER};"
-            "border-radius: 8px; padding: 6px 10px;"
+            f"QFrame#metadataCard {{ background-color: {ThemeColors.BG_CARD}; "
+            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 8px; }}"
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
 
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+
         self.name_label = QLabel()
-        self.name_label.setFont(get_ui_font(13, QFont.Weight.DemiBold))
+        self.name_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
+        self.name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.name_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; border: none; background: transparent;")
 
-        self.path_label = QLabel()
-        self.path_label.setFont(get_ui_font(11))
-        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; border: none; background: transparent;")
-
-        info_row = QHBoxLayout()
-        info_row.setContentsMargins(0, 0, 0, 0)
-        self.meta_label = QLabel()
-        self.meta_label.setFont(get_ui_font(11))
-        self.meta_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
-
         self.reason_badge = QLabel()
-        self.reason_badge.setFont(get_ui_font(11, QFont.Weight.Medium))
+        self.reason_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
         self.reason_badge.setStyleSheet(
             f"background-color: rgba(99, 102, 241, 0.2); color: {ThemeColors.BRAND_START};"
             "border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 4px; padding: 2px 6px;"
         )
 
+        top_row.addWidget(self.name_label, stretch=1)
+        top_row.addWidget(self.reason_badge)
+
+        self.path_label = QLabel()
+        self.path_label.setFont(get_ui_font(11))
+        self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; border: none; background: transparent;")
+
+        info_row = QHBoxLayout()
+        info_row.setContentsMargins(0, 2, 0, 0)
+        info_row.setSpacing(6)
+
+        self.meta_label = QLabel()
+        self.meta_label.setFont(get_ui_font(11))
+        self.meta_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
+
+        btn_style = (
+            f"QPushButton {{ background-color: rgba(255, 255, 255, 0.06); color: {ThemeColors.TEXT_SECONDARY}; "
+            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 5px; padding: 2px 8px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background-color: rgba(99, 102, 241, 0.2); color: {ThemeColors.TEXT_PRIMARY}; "
+            f"border-color: {ThemeColors.BRAND_START}; }}"
+        )
+        self.open_btn = QPushButton(tr("Open"))
+        self.open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_btn.setStyleSheet(btn_style)
+        self.open_btn.clicked.connect(self._on_open_clicked)
+
+        self.reveal_btn = QPushButton(tr("Show in Files"))
+        self.reveal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reveal_btn.setStyleSheet(btn_style)
+        self.reveal_btn.clicked.connect(self._on_reveal_clicked)
+
         info_row.addWidget(self.meta_label)
         info_row.addStretch()
-        info_row.addWidget(self.reason_badge)
+        info_row.addWidget(self.open_btn)
+        info_row.addWidget(self.reveal_btn)
 
-        layout.addWidget(self.name_label)
+        layout.addLayout(top_row)
         layout.addWidget(self.path_label)
         layout.addLayout(info_row)
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated button labels."""
+        self.open_btn.setText(tr("Open"))
+        self.reveal_btn.setText(tr("Show in Files"))
 
     def update_metadata(
         self,
@@ -111,8 +187,17 @@ class MetadataCard(QFrame):
         reason: str = "",
     ) -> None:
         """Update displayed metadata fields."""
+        self._path = path
         self.name_label.setText(name)
-        self.path_label.setText(format_tilde_path(path))
+        self.name_label.setToolTip(name)
+        tilde_path = format_tilde_path(path)
+        self.path_label.setText(tilde_path)
+        self.path_label.setToolTip(path)
+
+        if size_bytes <= 0 and mtime <= 0 and path and Path(path).exists():
+            stat = Path(path).stat()
+            size_bytes = stat.st_size
+            mtime = stat.st_mtime
 
         meta_parts: list[str] = []
         if size_bytes > 0:
@@ -120,10 +205,18 @@ class MetadataCard(QFrame):
         if mtime > 0:
             dt = datetime.fromtimestamp(mtime)
             meta_parts.append(dt.strftime("%Y-%m-%d %H:%M"))
-        self.meta_label.setText(" • ".join(meta_parts) if meta_parts else "Local file")
+        self.meta_label.setText(" • ".join(meta_parts) if meta_parts else tr("Local file"))
 
-        display_reason = reason if reason else "Matches query"
+        display_reason = reason if reason else tr("Matches query")
         self.reason_badge.setText(display_reason)
+
+    def _on_open_clicked(self) -> None:
+        if self._path:
+            open_file(self._path)
+
+    def _on_reveal_clicked(self) -> None:
+        if self._path:
+            reveal_in_file_manager(self._path)
 
 
 class EmptyPreviewWidget(QWidget):
@@ -138,13 +231,17 @@ class EmptyPreviewWidget(QWidget):
         self.icon_label.setFont(get_ui_font(32))
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.text_label = QLabel("Select an item to preview")
+        self.text_label = QLabel(tr("Select an item to preview"))
         self.text_label.setFont(get_ui_font(13))
         self.text_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout.addWidget(self.icon_label)
         layout.addWidget(self.text_label)
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated placeholder label."""
+        self.text_label.setText(tr("Select an item to preview"))
 
 
 class ImagePreviewWidget(QWidget):
@@ -158,6 +255,8 @@ class ImagePreviewWidget(QWidget):
 
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(200, 160)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.image_label.setStyleSheet("border-radius: 8px; background-color: rgba(0, 0, 0, 0.2);")
 
         self.dimensions_label = QLabel()
@@ -173,22 +272,40 @@ class ImagePreviewWidget(QWidget):
 
         self._pixmap = QPixmap()
 
+    def retranslate_ui(self) -> None:
+        """Refresh translated labels."""
+        self.meta_card.retranslate_ui()
+        if self._pixmap.isNull() and self.image_label.text():
+            self.image_label.setText(tr("Unable to load image"))
+
     def load_image(self, path: str, name: str, size: int = 0, mtime: float = 0.0, reason: str = "") -> None:
         """Load and display image preserving aspect ratio."""
         self._pixmap = QPixmap(path)
         if not self._pixmap.isNull():
             self.dimensions_label.setText(f"{self._pixmap.width()} × {self._pixmap.height()} px")
-            scaled = self._pixmap.scaled(
-                QSize(390, 260),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.image_label.setPixmap(scaled)
+            self._rescale_pixmap()
         else:
-            self.image_label.setText("Unable to load image")
+            self.image_label.clear()
+            self.image_label.setText(tr("Unable to load image"))
             self.dimensions_label.setText("")
 
         self.meta_card.update_metadata(name, path, size, mtime, reason)
+
+    def _rescale_pixmap(self) -> None:
+        if self._pixmap.isNull():
+            return
+        avail = self.image_label.size()
+        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 260))
+        scaled = self._pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._rescale_pixmap()
 
 
 class PdfPreviewWidget(QWidget):
@@ -202,16 +319,18 @@ class PdfPreviewWidget(QWidget):
 
         self.page_label = QLabel()
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setMinimumSize(200, 160)
+        self.page_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.page_label.setStyleSheet("border-radius: 8px; background-color: rgba(255, 255, 255, 0.04);")
 
         nav_row = QHBoxLayout()
-        self.prev_btn = QPushButton("◀ Prev")
+        self.prev_btn = QPushButton(tr("◀ Prev"))
         self.prev_btn.clicked.connect(self._prev_page)
-        self.page_info = QLabel("Page 1 of 1")
+        self.page_info = QLabel(tr("Page {current} of {total}", current=1, total=1))
         self.page_info.setFont(get_ui_font(11))
         self.page_info.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
         self.page_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.next_btn = QPushButton("Next ▶")
+        self.next_btn = QPushButton(tr("Next ▶"))
         self.next_btn.clicked.connect(self._next_page)
 
         nav_row.addWidget(self.prev_btn)
@@ -228,6 +347,17 @@ class PdfPreviewWidget(QWidget):
         self._current_page: int = 0
         self._total_pages: int = 0
         self._query_terms: list[str] = []
+        self._rendered_pixmap = QPixmap()
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated navigation buttons and page info."""
+        self.prev_btn.setText(tr("◀ Prev"))
+        self.next_btn.setText(tr("Next ▶"))
+        if self._total_pages > 0:
+            self.page_info.setText(tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages))
+        else:
+            self.page_info.setText(tr("Page {current} of {total}", current=1, total=1))
+        self.meta_card.retranslate_ui()
 
     def load_pdf(
         self,
@@ -241,14 +371,21 @@ class PdfPreviewWidget(QWidget):
     ) -> None:
         """Load target PDF page and highlight query keywords in yellow."""
         self.meta_card.update_metadata(name, path, size, mtime, reason)
+        if self._doc is not None:
+            self._doc.close()
+            self._doc = None
+
         if not Path(path).is_file():
-            self.page_label.setText(f"File not found: {name}")
-            self.page_info.setText("Page 0 of 0")
+            self._rendered_pixmap = QPixmap()
+            self.page_label.clear()
+            self.page_label.setText(tr("File not found: {name}", name=name))
+            self.page_info.setText(tr("Page {current} of {total}", current=0, total=0))
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
             return
 
-        self._query_terms = [t for t in query.lower().split() if len(t) > 2]
+        terms = extract_terms(query)
+        self._query_terms = terms if terms else [t for t in query.lower().split() if len(t) > 1]
         self._doc = pymupdf.open(path)
         self._total_pages = len(self._doc)
         self._current_page = max(0, min(page_number - 1, self._total_pages - 1))
@@ -259,9 +396,9 @@ class PdfPreviewWidget(QWidget):
             return
 
         page = self._doc[self._current_page]
-        zoom = 1.5
+        zoom = 1.6
         mat = pymupdf.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
 
         image = QImage(
             pix.samples,
@@ -270,9 +407,8 @@ class PdfPreviewWidget(QWidget):
             pix.stride,
             QImage.Format.Format_RGB888,
         )
-        qpix = QPixmap.fromImage(image)
+        qpix = QPixmap.fromImage(image.copy())
 
-        # Highlight search terms in yellow (rgba(250, 204, 21, 0.4))
         painter = QPainter(qpix)
         highlight_brush = QBrush(QColor(250, 204, 21, 102))
         highlight_pen = QPen(QColor(250, 204, 21, 204), 1.5)
@@ -287,15 +423,27 @@ class PdfPreviewWidget(QWidget):
 
         painter.end()
 
-        scaled = qpix.scaled(
-            QSize(390, 240),
+        self._rendered_pixmap = qpix
+        self._rescale_page()
+        self.page_info.setText(tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages))
+        self.prev_btn.setEnabled(self._current_page > 0)
+        self.next_btn.setEnabled(self._current_page < self._total_pages - 1)
+
+    def _rescale_page(self) -> None:
+        if self._rendered_pixmap.isNull():
+            return
+        avail = self.page_label.size()
+        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 240))
+        scaled = self._rendered_pixmap.scaled(
+            target,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self.page_label.setPixmap(scaled)
-        self.page_info.setText(f"Page {self._current_page + 1} of {self._total_pages}")
-        self.prev_btn.setEnabled(self._current_page > 0)
-        self.next_btn.setEnabled(self._current_page < self._total_pages - 1)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._rescale_page()
 
     def _prev_page(self) -> None:
         if self._current_page > 0:
@@ -371,8 +519,8 @@ class AudioPreviewWidget(QWidget):
         self.waveform = WaveformWidget()
 
         controls = QHBoxLayout()
-        self.play_btn = QPushButton("▶")
-        self.play_btn.setFixedWidth(38)
+        self.play_btn = QPushButton(tr("▶ Play"))
+        self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_btn.clicked.connect(self._toggle_playback)
 
         self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
@@ -396,7 +544,11 @@ class AudioPreviewWidget(QWidget):
         self._path: str = ""
         self._duration: float = 180.0
         self._current_pos: float = 0.0
-        self._is_playing: bool = False
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated button label."""
+        self.play_btn.setText(tr("▶ Play"))
+        self.meta_card.retranslate_ui()
 
     def load_audio(
         self,
@@ -421,10 +573,8 @@ class AudioPreviewWidget(QWidget):
         self.meta_card.update_metadata(name, path, size, mtime, reason)
 
     def _toggle_playback(self) -> None:
-        self._is_playing = not self._is_playing
-        self.play_btn.setText("⏸" if self._is_playing else "▶")
-        if self._is_playing:
-            open_media_timestamp(self._path, self._current_pos)
+        if self._path:
+            open_media_at(self._path, self._current_pos)
 
     def _on_scrub(self, val: int) -> None:
         ratio = val / 1000.0
@@ -439,7 +589,7 @@ class AudioPreviewWidget(QWidget):
 
 
 class VideoPreviewWidget(QWidget):
-    """Video preview with frame thumbnail, scrub bar, and timestamp jumping."""
+    """Video preview with real ffmpeg frame thumbnail, scrub bar, and timestamp jumping."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -449,6 +599,8 @@ class VideoPreviewWidget(QWidget):
 
         self.poster_label = QLabel()
         self.poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.poster_label.setMinimumSize(200, 160)
+        self.poster_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.poster_label.setStyleSheet("border-radius: 8px; background-color: rgba(0, 0, 0, 0.4);")
 
         controls = QHBoxLayout()
@@ -456,7 +608,8 @@ class VideoPreviewWidget(QWidget):
         self.scrub_slider.setRange(0, 1000)
         self.scrub_slider.valueChanged.connect(self._on_scrub)
 
-        self.jump_btn = QPushButton("Open at Moment")
+        self.jump_btn = QPushButton(tr("▶ Open at Moment"))
+        self.jump_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.jump_btn.clicked.connect(self._jump_to_timestamp)
 
         self.time_label = QLabel("0:00 / 0:00")
@@ -476,6 +629,12 @@ class VideoPreviewWidget(QWidget):
         self._path: str = ""
         self._current_pos: float = 0.0
         self._duration: float = 300.0
+        self._poster_pixmap = QPixmap()
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated button label."""
+        self.jump_btn.setText(tr("▶ Open at Moment"))
+        self.meta_card.retranslate_ui()
 
     def load_video(
         self,
@@ -486,14 +645,22 @@ class VideoPreviewWidget(QWidget):
         mtime: float = 0.0,
         reason: str = "",
     ) -> None:
-        """Load video metadata and seek to match position."""
+        """Load video metadata, extract frame at loc, and seek to match position."""
         self._path = path
         self._current_pos = loc
         self._duration = max(loc * 1.5, 300.0)
 
-        # Draw a synthetic video frame thumbnail with play emblem
-        pixmap = QPixmap(390, 220)
-        pixmap.fill(QColor("#1A1D24"))
+        frame_pix = _extract_video_frame(path, loc)
+        if not frame_pix.isNull():
+            pixmap = frame_pix.scaled(
+                QSize(480, 270),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        else:
+            pixmap = QPixmap(390, 220)
+            pixmap.fill(QColor("#1A1D24"))
+
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -501,19 +668,22 @@ class VideoPreviewWidget(QWidget):
         center_y = pixmap.height() / 2.0
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(ThemeColors.BRAND_START)))
-        painter.drawEllipse(QRectF(center_x - 30, center_y - 30, 60, 60))
+        badge_color = QColor(ThemeColors.BRAND_START)
+        badge_color.setAlpha(215)
+        painter.setBrush(QBrush(badge_color))
+        painter.drawEllipse(QRectF(center_x - 28, center_y - 28, 56, 56))
 
         painter.setBrush(QBrush(QColor("#FFFFFF")))
         triangle = [
-            QPoint(int(center_x - 8), int(center_y - 14)),
-            QPoint(int(center_x + 14), int(center_y)),
-            QPoint(int(center_x - 8), int(center_y + 14)),
+            QPoint(int(center_x - 7), int(center_y - 13)),
+            QPoint(int(center_x + 13), int(center_y)),
+            QPoint(int(center_x - 7), int(center_y + 13)),
         ]
         painter.drawPolygon(triangle)
         painter.end()
 
-        self.poster_label.setPixmap(pixmap)
+        self._poster_pixmap = pixmap
+        self._rescale_poster()
 
         pos_ratio = self._current_pos / self._duration if self._duration > 0 else 0.0
         self.scrub_slider.setValue(int(pos_ratio * 1000))
@@ -521,13 +691,30 @@ class VideoPreviewWidget(QWidget):
 
         self.meta_card.update_metadata(name, path, size, mtime, reason)
 
+    def _rescale_poster(self) -> None:
+        if self._poster_pixmap.isNull():
+            return
+        avail = self.poster_label.size()
+        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 220))
+        scaled = self._poster_pixmap.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.poster_label.setPixmap(scaled)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._rescale_poster()
+
     def _on_scrub(self, val: int) -> None:
         ratio = val / 1000.0
         self._current_pos = ratio * self._duration
         self._update_time_label()
 
     def _jump_to_timestamp(self) -> None:
-        open_media_timestamp(self._path, self._current_pos)
+        if self._path:
+            open_media_at(self._path, self._current_pos)
 
     def _update_time_label(self) -> None:
         cur_min, cur_sec = divmod(int(self._current_pos), 60)
@@ -555,6 +742,7 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFont(get_mono_font(12))
         self.gutter = LineNumberGutter(self)
 
@@ -614,7 +802,7 @@ class CodeEditor(QPlainTextEdit):
 
 
 class CodePreviewWidget(QWidget):
-    """Source code snippet preview with gutter and definition line highlight."""
+    """Source code and document text preview with gutter and match highlighting."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -628,6 +816,10 @@ class CodePreviewWidget(QWidget):
         layout.addWidget(self.editor, stretch=1)
         layout.addWidget(self.meta_card)
 
+    def retranslate_ui(self) -> None:
+        """Refresh translated metadata card labels."""
+        self.meta_card.retranslate_ui()
+
     def load_code(
         self,
         path: str,
@@ -636,39 +828,65 @@ class CodePreviewWidget(QWidget):
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
+        query: str = "",
+        excerpt: str = "",
+        wrap_lines: bool = False,
     ) -> None:
-        """Load code file content and highlight definition line in yellow."""
+        """Load code or document content and highlight target line and query matches."""
         target_path = Path(path)
-        content = target_path.read_text(encoding="utf-8", errors="replace") if target_path.is_file() else ""
+        is_doc_file = target_path.suffix.lower() in (".docx", ".odt", ".rtf", ".html", ".htm", ".txt")
+        self.editor.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+            if (wrap_lines or is_doc_file)
+            else QPlainTextEdit.LineWrapMode.NoWrap
+        )
+        if not target_path.is_file():
+            content = excerpt if excerpt else ""
+        elif target_path.suffix.lower() in (".docx", ".odt", ".rtf", ".html", ".htm"):
+            content = read_doc_text(path)
+        else:
+            content = target_path.read_text(encoding="utf-8", errors="replace")
         self.editor.setPlainText(content)
 
         target_line = max(1, line)
-        cursor = self.editor.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.Start)
-        cursor.movePosition(
-            QTextCursor.MoveOperation.Down,
-            QTextCursor.MoveMode.MoveAnchor,
-            target_line - 1,
-        )
+        doc = self.editor.document()
+        block = doc.findBlockByNumber(target_line - 1)
+        cursor = QTextCursor(block) if block.isValid() else self.editor.textCursor()
 
-        selection = QTextEditExtraSelectionHelper.create_line_selection(cursor)
-        self.editor.setExtraSelections([selection])
+        selections: list[QTextEdit.ExtraSelection] = []
+        line_selection = QTextEdit.ExtraSelection()
+        line_selection.format.setBackground(QColor(250, 204, 21, 90))
+        line_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+        line_selection.cursor = cursor
+        selections.append(line_selection)
+
+        if query:
+            terms = extract_terms(query)
+            if not terms:
+                terms = [t for t in query.lower().split() if len(t) > 1]
+            first_match_cursor: QTextCursor | None = None
+            for term in terms:
+                match_cursor = QTextCursor(doc)
+                while True:
+                    match_cursor = doc.find(term, match_cursor)
+                    if match_cursor.isNull():
+                        break
+                    if first_match_cursor is None:
+                        first_match_cursor = QTextCursor(match_cursor)
+                    term_sel = QTextEdit.ExtraSelection()
+                    term_sel.format.setBackground(QColor(250, 204, 21, 140))
+                    term_sel.format.setForeground(QColor("#0F1115"))
+                    term_sel.cursor = match_cursor
+                    selections.append(term_sel)
+
+            if line <= 1 and first_match_cursor is not None:
+                cursor = first_match_cursor
+
+        self.editor.setExtraSelections(selections)
         self.editor.setTextCursor(cursor)
         self.editor.centerCursor()
 
         self.meta_card.update_metadata(name, path, size, mtime, reason)
-
-
-class QTextEditExtraSelectionHelper:
-    """Helper to construct extra selections for QPlainTextEdit."""
-
-    @staticmethod
-    def create_line_selection(cursor: QTextCursor):
-        selection = QTextEdit.ExtraSelection()
-        selection.format.setBackground(QColor(250, 204, 21, 90))
-        selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-        selection.cursor = cursor
-        return selection
 
 
 class PreviewPane(QStackedWidget):
@@ -676,7 +894,8 @@ class PreviewPane(QStackedWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(ThemeLayout.PREVIEW_WIDTH)
+        self.setMinimumWidth(360)
+        self.resize(ThemeLayout.PREVIEW_WIDTH, 420)
 
         self.empty_view = EmptyPreviewWidget()
         self.image_view = ImagePreviewWidget()
@@ -694,26 +913,20 @@ class PreviewPane(QStackedWidget):
 
         self.setCurrentIndex(0)
 
-    def load_result(self, item: ResultRow | SearchHit, query: str = "") -> None:
+    def load_result(self, item: SearchHit, query: str = "") -> None:
         """Route item to appropriate multimodal preview renderer."""
-        if isinstance(item, SearchHit):
-            path = item.path
-            name = Path(item.path).name
-            kind = item.kind
-            loc = item.loc
-            focus = int(item.focus) if item.focus > 0 else int(item.loc)
-            size = item.size
-            mtime = item.modified
-            reason = "Matches meaning" if item.z >= 2.0 else "Matches words"
-        else:
-            path = item.path if item.path else str(Path(item.folder) / item.title)
-            name = item.title
-            kind = item.kind
-            loc = float(item.code_line or 0.0)
-            focus = item.code_line or 1
-            size = 0
-            mtime = 0.0
-            reason = item.reason
+        path = item.path
+        name = Path(item.path).name
+        kind = item.kind
+        loc = item.loc
+        focus = int(item.focus) if item.focus > 0 else int(item.loc)
+        size = item.size
+        mtime = item.modified
+        reason = item.reason
+
+        clean_query = query.strip()
+        if clean_query.lower().startswith("code:"):
+            clean_query = clean_query[5:].strip()
 
         suffix = Path(path).suffix.lower()
 
@@ -722,7 +935,7 @@ class PreviewPane(QStackedWidget):
             self.setCurrentIndex(1)
         elif kind == FileKind.PDF or suffix == ".pdf":
             page = int(loc) if loc > 0 else 1
-            self.pdf_view.load_pdf(path, name, page, query, size, mtime, reason)
+            self.pdf_view.load_pdf(path, name, page, clean_query, size, mtime, reason)
             self.setCurrentIndex(2)
         elif kind == FileKind.AUDIO or suffix in (".mp3", ".wav", ".ogg", ".flac", ".m4a"):
             self.audio_view.load_audio(path, name, loc, size, mtime, reason)
@@ -733,13 +946,25 @@ class PreviewPane(QStackedWidget):
         elif kind == FileKind.CODE or suffix in (
             ".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh"
         ):
-            self.code_view.load_code(path, name, focus, size, mtime, reason)
+            self.code_view.load_code(
+                path, name, focus, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=False
+            )
             self.setCurrentIndex(5)
         else:
-            # Fallback to code/text preview if text file or empty
-            self.code_view.load_code(path, name, 1, size, mtime, reason)
+            self.code_view.load_code(
+                path, name, 1, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=True
+            )
             self.setCurrentIndex(5)
 
     def clear(self) -> None:
         """Reset preview pane to empty placeholder view."""
         self.setCurrentIndex(0)
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated strings across all child preview views."""
+        self.empty_view.retranslate_ui()
+        self.image_view.retranslate_ui()
+        self.pdf_view.retranslate_ui()
+        self.audio_view.retranslate_ui()
+        self.video_view.retranslate_ui()
+        self.code_view.retranslate_ui()

@@ -1,42 +1,13 @@
 """Document and text extractor supporting txt, md, html, docx, odt, and rtf."""
 
-from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 import zipfile
 from docx import Document
+from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
-
-
-@dataclass
-class DocumentChunk:
-    """Text chunk extracted from document."""
-
-    text: str
-    loc: int
-    start_char: int = 0
-    end_char: int = 0
-
-    def to_segment(self) -> ExtractedSegment:
-        """Convert chunk into an ExtractedSegment."""
-        return ExtractedSegment(
-            kind=SegmentKind.CHUNK,
-            modality=Modality.TEXT,
-            loc=float(self.loc),
-            excerpt=self.text[:200],
-            payload=self.text,
-        )
-
-
-def has_words(text: str, min_letter_ratio: float = 0.20) -> bool:
-    """Check if at least min_letter_ratio of non-whitespace characters are letters."""
-    non_ws = [c for c in text if not c.isspace()]
-    if not non_ws:
-        return False
-    letter_count = sum(1 for c in non_ws if c.isalpha())
-    return (letter_count / len(non_ws)) >= min_letter_ratio
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -124,7 +95,17 @@ def read_doc_text(path: str) -> str:
     return p.read_text(encoding="utf-8", errors="replace")
 
 
-def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[DocumentChunk]:
+def _make_chunk_segment(text: str, loc: int) -> ExtractedSegment:
+    return ExtractedSegment(
+        kind=SegmentKind.CHUNK,
+        modality=Modality.TEXT,
+        loc=float(loc),
+        excerpt=text[:200],
+        payload=text,
+    )
+
+
+def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[ExtractedSegment]:
     """Slice document text into chunks snapping to word boundaries and filtering non-text."""
     clean_text = text.strip()
     n = len(clean_text)
@@ -132,11 +113,9 @@ def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> lis
         return []
 
     if n <= chunk_size:
-        if has_words(clean_text):
-            return [DocumentChunk(text=clean_text, loc=0, start_char=0, end_char=n)]
-        return []
+        return [_make_chunk_segment(clean_text, 0)] if has_words(clean_text) else []
 
-    chunks: list[DocumentChunk] = []
+    chunks: list[ExtractedSegment] = []
     start = 0
     chunk_idx = 0
 
@@ -154,14 +133,7 @@ def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> lis
 
         chunk_str = clean_text[start:end].strip()
         if chunk_str and has_words(chunk_str):
-            chunks.append(
-                DocumentChunk(
-                    text=chunk_str,
-                    loc=chunk_idx,
-                    start_char=start,
-                    end_char=end,
-                )
-            )
+            chunks.append(_make_chunk_segment(chunk_str, chunk_idx))
             chunk_idx += 1
 
         if end >= n:
@@ -181,18 +153,7 @@ def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> lis
     return chunks
 
 
-def chunk_text(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[tuple[int, int, str]]:
-    """Return list of (start_char, end_char, chunk_text) tuples."""
-    chunks = chunk_document(text, chunk_size=chunk_size, overlap=overlap)
-    return [(c.start_char, c.end_char, c.text) for c in chunks]
-
-
-def extract_doc_segments(path: str, chunk_size: int = 1800, overlap: int = 200) -> list[ExtractedSegment]:
+def extract_doc(path: str, chunk_size: int = 1800, overlap: int = 200) -> list[ExtractedSegment]:
     """Extract document file and return list of ExtractedSegment objects."""
     text = read_doc_text(path)
-    chunks = chunk_document(text, chunk_size=chunk_size, overlap=overlap)
-    return [chunk.to_segment() for chunk in chunks]
-
-
-# Backward-compatible alias
-extract_doc = extract_doc_segments
+    return chunk_document(text, chunk_size=chunk_size, overlap=overlap)

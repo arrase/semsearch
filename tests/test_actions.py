@@ -10,18 +10,14 @@ from semsearch.services.actions import (
     copy_to_clipboard,
     execute_hit_action,
     open_code_at,
-    open_code_editor,
     open_file,
-    open_file_default,
     open_media_at,
-    open_media_timestamp,
     open_pdf_at,
-    open_pdf_page,
     reveal_in_file_manager,
 )
 
 
-def test_open_file_default(monkeypatch):
+def test_open_file(monkeypatch):
     launched = []
 
     def mock_popen(args, **kwargs):
@@ -29,11 +25,11 @@ def test_open_file_default(monkeypatch):
         return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
-    assert open_file_default("/path/to/doc.pdf") is True
+    assert open_file("/path/to/doc.pdf") is True
     assert launched == [["xdg-open", "/path/to/doc.pdf"]]
 
 
-def test_open_media_timestamp(monkeypatch):
+def test_open_media_at(monkeypatch):
     launched = []
 
     def mock_popen(args, **kwargs):
@@ -44,7 +40,7 @@ def test_open_media_timestamp(monkeypatch):
 
     # When mpv exists
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "mpv" else None)
-    assert open_media_timestamp("/path/to/video.mp4", 125.7) is True
+    assert open_media_at("/path/to/video.mp4", 125.7) is True
     assert launched[-1] == ["mpv", "--start=125", "/path/to/video.mp4"]
 
     # When vlc exists (and mpv does not)
@@ -54,11 +50,11 @@ def test_open_media_timestamp(monkeypatch):
 
     # When neither exists, fallback to xdg-open
     monkeypatch.setattr("shutil.which", lambda cmd: None)
-    assert open_media_timestamp("/path/to/video.mp4", 45.0) is True
+    assert open_media_at("/path/to/video.mp4", 45.0) is True
     assert launched[-1] == ["xdg-open", "/path/to/video.mp4"]
 
 
-def test_open_pdf_page(monkeypatch):
+def test_open_pdf_at(monkeypatch):
     launched = []
 
     def mock_popen(args, **kwargs):
@@ -69,7 +65,7 @@ def test_open_pdf_page(monkeypatch):
 
     # When okular exists
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "okular" else None)
-    assert open_pdf_page("/doc.pdf", 12) is True
+    assert open_pdf_at("/doc.pdf", 12) is True
     assert launched[-1] == ["okular", "-p", "12", "/doc.pdf"]
 
     # When evince exists
@@ -79,16 +75,16 @@ def test_open_pdf_page(monkeypatch):
 
     # When zathura exists
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "zathura" else None)
-    assert open_pdf_page("/doc.pdf", 3) is True
+    assert open_pdf_at("/doc.pdf", 3) is True
     assert launched[-1] == ["zathura", "-P", "3", "/doc.pdf"]
 
     # Fallback
     monkeypatch.setattr("shutil.which", lambda cmd: None)
-    assert open_pdf_page("/doc.pdf", 1) is True
+    assert open_pdf_at("/doc.pdf", 1) is True
     assert launched[-1] == ["xdg-open", "/doc.pdf"]
 
 
-def test_open_code_editor(monkeypatch):
+def test_open_code_at(monkeypatch):
     launched = []
 
     def mock_popen(args, **kwargs):
@@ -99,17 +95,17 @@ def test_open_code_editor(monkeypatch):
 
     # VS Code explicit preference
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "code" else None)
-    assert open_code_editor("/src/app.py", line=42, editor_preference="code") is True
+    assert open_code_at("/src/app.py", line=42, editor_preference="code") is True
     assert launched[-1] == ["code", "-g", "/src/app.py:42"]
 
     # Cursor
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "cursor" else None)
-    assert open_code_editor("/src/app.py", line=15, editor_preference="auto") is True
+    assert open_code_at("/src/app.py", line=15, editor_preference="auto") is True
     assert launched[-1] == ["cursor", "-g", "/src/app.py:15"]
 
     # Zed
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "zed" else None)
-    assert open_code_editor("/src/app.py", line=20, editor_preference="zed") is True
+    assert open_code_at("/src/app.py", line=20, editor_preference="zed") is True
     assert launched[-1] == ["zed", "/src/app.py:20"]
 
     # JetBrains IDE (e.g. pycharm)
@@ -119,7 +115,7 @@ def test_open_code_editor(monkeypatch):
 
     # Fallback to xdg-open
     monkeypatch.setattr("shutil.which", lambda cmd: None)
-    assert open_code_editor("/src/app.py", line=10) is True
+    assert open_code_at("/src/app.py", line=10) is True
     assert launched[-1] == ["xdg-open", "/src/app.py"]
 
 
@@ -179,10 +175,10 @@ def test_copy_to_clipboard(monkeypatch):
 def test_execute_hit_action(monkeypatch):
     actions_called = []
 
-    monkeypatch.setattr("semsearch.services.actions.open_code_editor", lambda p, line, editor_preference: actions_called.append(("code", p, line)))
-    monkeypatch.setattr("semsearch.services.actions.open_pdf_page", lambda p, page: actions_called.append(("pdf", p, page)))
-    monkeypatch.setattr("semsearch.services.actions.open_media_timestamp", lambda p, seconds: actions_called.append(("media", p, seconds)))
-    monkeypatch.setattr("semsearch.services.actions.open_file_default", lambda p: actions_called.append(("file", p)))
+    monkeypatch.setattr("semsearch.services.actions.open_code_at", lambda p, line, editor_preference: actions_called.append(("code", p, line)))
+    monkeypatch.setattr("semsearch.services.actions.open_pdf_at", lambda p, page: actions_called.append(("pdf", p, page)))
+    monkeypatch.setattr("semsearch.services.actions.open_media_at", lambda p, seconds: actions_called.append(("media", p, seconds)))
+    monkeypatch.setattr("semsearch.services.actions.open_file", lambda p: actions_called.append(("file", p)))
 
     config = AppConfig(code_editor="code")
 

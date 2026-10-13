@@ -1,12 +1,15 @@
 """Unit and widget tests for multimodal preview components."""
 
 from pathlib import Path
+import zipfile
+
+from docx import Document
 from PIL import Image
 import pymupdf
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from semsearch.core.types import FileKind, ResultRow, SearchHit
+from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import (
     AudioPreviewWidget,
     CodePreviewWidget,
@@ -145,11 +148,108 @@ def test_preview_pane_stacked_routing(tmp_path: Path, qapp: QApplication):
     pane.load_result(hit_code)
     assert pane.currentIndex() == 5
 
-    # ResultRow loading
-    row = ResultRow(title="test.py", folder=str(tmp_path), kind=FileKind.CODE, path=str(py_path))
-    pane.load_result(row)
-    assert pane.currentIndex() == 5
-
     # Clear
     pane.clear()
     assert pane.currentIndex() == 0
+
+
+def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication):
+    """Verify CodePreviewWidget extracts text from binary documents (.docx, .odt) rather than raw bytes."""
+    # 1. Non-existent file
+    widget = CodePreviewWidget()
+    widget.load_code(str(tmp_path / "nonexistent.docx"), "nonexistent.docx")
+    assert widget.editor.toPlainText() == ""
+
+    # 2. DOCX format
+    docx_path = tmp_path / "sample.docx"
+    doc = Document()
+    doc.add_heading("Docx Header", level=1)
+    doc.add_paragraph("Docx preview paragraph text.")
+    doc.save(str(docx_path))
+
+    widget.load_code(str(docx_path), "sample.docx")
+    content = widget.editor.toPlainText()
+    assert "Docx Header" in content
+    assert "Docx preview paragraph text." in content
+    assert "[Content_Types].xml" not in content
+
+    # 3. ODT format
+    odt_path = tmp_path / "sample.odt"
+    content_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                             xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+      <office:body>
+        <office:text>
+          <text:p>ODT extracted body text.</text:p>
+        </office:text>
+      </office:body>
+    </office:document-content>"""
+    with zipfile.ZipFile(odt_path, "w") as zf:
+        zf.writestr("content.xml", content_xml)
+
+    widget.load_code(str(odt_path), "sample.odt")
+    odt_content = widget.editor.toPlainText()
+    assert "ODT extracted body text." in odt_content
+    assert "office:document-content" not in odt_content
+
+    # 4. Uppercase extension (.DOCX)
+    upper_docx = tmp_path / "UPPER.DOCX"
+    doc_upper = Document()
+    doc_upper.add_paragraph("Uppercase DOCX content.")
+    doc_upper.save(str(upper_docx))
+    widget.load_code(str(upper_docx), "UPPER.DOCX")
+    assert "Uppercase DOCX content." in widget.editor.toPlainText()
+
+    # 5. RTF format
+    rtf_path = tmp_path / "sample.rtf"
+    rtf_path.write_text(r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}}\f0\fs20 RTF extracted body text.\par}", encoding="utf-8")
+    widget.load_code(str(rtf_path), "sample.rtf")
+    assert "RTF extracted body text." in widget.editor.toPlainText()
+
+    # 6. HTML format
+    html_path = tmp_path / "sample.html"
+    html_path.write_text("<html><body><h1>HTML Heading</h1><p>HTML paragraph text.</p></body></html>", encoding="utf-8")
+    widget.load_code(str(html_path), "sample.html")
+    html_content = widget.editor.toPlainText()
+    assert "HTML Heading" in html_content
+    assert "HTML paragraph text." in html_content
+    assert "<h1>" not in html_content
+
+
+def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
+    """Verify PreviewPane routes document files to code/text preview with extracted text."""
+    docx_path = tmp_path / "report.docx"
+    doc = Document()
+    doc.add_paragraph("Annual report content.")
+    doc.save(str(docx_path))
+
+    pane = PreviewPane()
+
+    hit = SearchHit(path=str(docx_path), kind=FileKind.DOC, score=1.0)
+    pane.load_result(hit, query="Annual")
+    assert pane.currentIndex() == 5
+    assert "Annual report content." in pane.code_view.editor.toPlainText()
+    assert len(pane.code_view.editor.extraSelections()) >= 2
+
+
+def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
+    """Verify MetadataCard Open and Show in Files action buttons."""
+    opened = []
+    revealed = []
+    monkeypatch.setattr("semsearch.gui.preview.open_file", lambda p: opened.append(p))
+    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", lambda p: revealed.append(p))
+
+    txt_path = tmp_path / "notes.txt"
+    txt_path.write_text("Hello world", encoding="utf-8")
+
+    pane = PreviewPane()
+    hit = SearchHit(path=str(txt_path), kind=FileKind.DOC, score=1.0)
+    pane.load_result(hit)
+
+    pane.code_view.meta_card.open_btn.click()
+    pane.code_view.meta_card.reveal_btn.click()
+
+    assert opened == [str(txt_path)]
+    assert revealed == [str(txt_path)]
+
+

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +23,7 @@ from semsearch.config import ConfigManager
 from semsearch.core.ollama import OllamaClient
 from semsearch.gui.settings import EDITOR_OPTIONS
 from semsearch.gui.theme import ThemeColors, apply_theme, get_ui_font
+from semsearch.i18n import tr
 
 
 class WelcomePage(QWizardPage):
@@ -29,8 +31,8 @@ class WelcomePage(QWizardPage):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setTitle("Welcome to SemSearch")
-        self.setSubTitle("Fast, local, keyboard-driven multimodal search for your Linux desktop.")
+        self.setTitle(tr("Welcome to SemSearch"))
+        self.setSubTitle(tr("Fast, local, keyboard-driven multimodal search for your Linux desktop."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 16, 20)
@@ -40,15 +42,19 @@ class WelcomePage(QWizardPage):
         icon_label.setFont(get_ui_font(40))
 
         desc_label = QLabel(
-            "SemSearch indexes your documents, screenshots, photos, audio, videos, and source code "
-            "using state-of-the-art multimodal embeddings powered by Ollama."
+            tr(
+                "SemSearch indexes your documents, screenshots, photos, audio, videos, and source code "
+                "using state-of-the-art multimodal embeddings powered by Ollama."
+            )
         )
         desc_label.setFont(get_ui_font(13))
         desc_label.setWordWrap(True)
 
         privacy_label = QLabel(
-            "🔒 100% Private: All indexing and vector generation happens completely on your machine. "
-            "No data is ever sent to the cloud."
+            tr(
+                "🔒 100% Private: All indexing and vector generation happens completely on your machine. "
+                "No data is ever sent to the cloud."
+            )
         )
         privacy_label.setFont(get_ui_font(12))
         privacy_label.setStyleSheet(
@@ -68,8 +74,8 @@ class FoldersPage(QWizardPage):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setTitle("Select Folders to Index")
-        self.setSubTitle("Choose the directories you would like SemSearch to index.")
+        self.setTitle(tr("Select Folders to Index"))
+        self.setSubTitle(tr("Choose the directories you would like SemSearch to index."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -85,20 +91,25 @@ class FoldersPage(QWizardPage):
         ]
 
         for name, path in standard_dirs:
-            cb = QCheckBox(f"{name} ({path})")
+            cb = QCheckBox(f"{tr(name)} ({path})")
             cb.setChecked(name in ("Documents", "Pictures"))
             cb.toggled.connect(self._update_estimate)
             layout.addWidget(cb)
             self.folder_checkboxes[str(path)] = cb
 
-        # Custom folders list
         self.custom_list = QListWidget()
-        add_btn = QPushButton("Add Another Folder...")
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton(tr("Add Another Folder..."))
         add_btn.clicked.connect(self._add_custom_folder)
+        remove_btn = QPushButton(tr("Remove Selected"))
+        remove_btn.clicked.connect(self._remove_custom_folder)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch()
 
-        layout.addWidget(QLabel("Custom Folders:"))
+        layout.addWidget(QLabel(tr("Custom Folders:")))
         layout.addWidget(self.custom_list)
-        layout.addWidget(add_btn)
+        layout.addLayout(btn_row)
 
         self.estimate_label = QLabel()
         self.estimate_label.setFont(get_ui_font(11))
@@ -108,15 +119,21 @@ class FoldersPage(QWizardPage):
         self._update_estimate()
 
     def _add_custom_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+        folder = QFileDialog.getExistingDirectory(self, tr("Select Folder"))
         if folder:
             self.custom_list.addItem(folder)
+            self._update_estimate()
+
+    def _remove_custom_folder(self) -> None:
+        row = self.custom_list.currentRow()
+        if row >= 0:
+            self.custom_list.takeItem(row)
             self._update_estimate()
 
     def _update_estimate(self) -> None:
         selected_count = sum(1 for cb in self.folder_checkboxes.values() if cb.isChecked()) + self.custom_list.count()
         est_seconds = max(10, selected_count * 20)
-        self.estimate_label.setText(f"Estimated initial crawl time: ~{est_seconds} seconds")
+        self.estimate_label.setText(tr("Estimated initial crawl time: ~{seconds} seconds", seconds=est_seconds))
 
     def get_selected_folders(self) -> list[str]:
         folders: list[str] = [path for path, cb in self.folder_checkboxes.items() if cb.isChecked()]
@@ -131,8 +148,8 @@ class ModelPage(QWizardPage):
     def __init__(self, ollama_client: OllamaClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.ollama = ollama_client
-        self.setTitle("Multimodal Embedding Model")
-        self.setSubTitle("SemSearch uses vision-language embeddings for cross-modal search.")
+        self.setTitle(tr("Multimodal Embedding Model"))
+        self.setSubTitle(tr("SemSearch uses vision-language embeddings for cross-modal search."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -141,7 +158,7 @@ class ModelPage(QWizardPage):
         form = QFormLayout()
         url_row = QHBoxLayout()
         self.url_edit = QLineEdit("http://localhost:11434")
-        self.test_btn = QPushButton("Test Connection")
+        self.test_btn = QPushButton(tr("Test Connection"))
         self.test_btn.clicked.connect(self.test_connection)
         url_row.addWidget(self.url_edit, stretch=1)
         url_row.addWidget(self.test_btn)
@@ -149,16 +166,18 @@ class ModelPage(QWizardPage):
         self.model_combo = QComboBox()
         self.model_combo.addItem("embeddinggemma-2")
 
-        form.addRow("Ollama Host URL:", url_row)
-        form.addRow("Multimodal Model:", self.model_combo)
+        form.addRow(tr("Ollama Host URL:"), url_row)
+        form.addRow(tr("Multimodal Model:"), self.model_combo)
         layout.addLayout(form)
 
-        self.status_label = QLabel("Click 'Test Connection' to discover installed multimodal models.")
+        self.status_label = QLabel(tr("Click 'Test Connection' to discover installed multimodal models."))
         self.status_label.setFont(get_ui_font(11))
         self.status_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
         layout.addWidget(self.status_label)
 
-        tip_label = QLabel("Default model 'embeddinggemma-2' provides high accuracy for text, documents, and visual items.")
+        tip_label = QLabel(
+            tr("Default model 'embeddinggemma-2' provides high accuracy for text, documents, and visual items.")
+        )
         tip_label.setFont(get_ui_font(11))
         tip_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
         tip_label.setWordWrap(True)
@@ -177,14 +196,18 @@ class ModelPage(QWizardPage):
                 idx = self.model_combo.findText("embeddinggemma-2")
                 if idx >= 0:
                     self.model_combo.setCurrentIndex(idx)
-                self.status_label.setText(f"✓ Ollama connected ({len(models)} multimodal models available)")
+                self.status_label.setText(
+                    tr("✓ Ollama connected ({count} multimodal models available)", count=len(models))
+                )
                 self.status_label.setStyleSheet(f"color: {ThemeColors.LEAF};")
             else:
                 self.model_combo.addItem("embeddinggemma-2")
-                self.status_label.setText("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled.")
+                self.status_label.setText(
+                    tr("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled.")
+                )
                 self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
         except Exception as e:
-            self.status_label.setText(f"⚠ Connection failed: {e}")
+            self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
             self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
 
 
@@ -193,14 +216,14 @@ class CodePage(QWizardPage):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setTitle("Developer & Code Search")
-        self.setSubTitle("Optional symbol indexing for source code projects.")
+        self.setTitle(tr("Developer && Code Search"))
+        self.setSubTitle(tr("Optional symbol indexing for source code projects."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        self.code_enable_check = QCheckBox("Enable Source Code Search")
+        self.code_enable_check = QCheckBox(tr("Enable Source Code Search"))
         self.code_enable_check.setChecked(False)
         self.code_enable_check.toggled.connect(self._on_toggle_code)
         layout.addWidget(self.code_enable_check)
@@ -211,19 +234,25 @@ class CodePage(QWizardPage):
         code_layout.setSpacing(8)
 
         self.repos_list = QListWidget()
-        add_btn = QPushButton("Add Code Root...")
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton(tr("Add Code Root..."))
         add_btn.clicked.connect(self._add_repo)
+        remove_btn = QPushButton(tr("Remove Selected"))
+        remove_btn.clicked.connect(self._remove_repo)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch()
 
         editor_row = QHBoxLayout()
         self.editor_combo = QComboBox()
         for label, val in EDITOR_OPTIONS:
-            self.editor_combo.addItem(label, val)
-        editor_row.addWidget(QLabel("Preferred Editor:"))
+            self.editor_combo.addItem(tr(label) if val == "auto" else label, val)
+        editor_row.addWidget(QLabel(tr("Preferred Editor:")))
         editor_row.addWidget(self.editor_combo, stretch=1)
 
-        code_layout.addWidget(QLabel("Git Repositories / Code Folders:"))
+        code_layout.addWidget(QLabel(tr("Git Repositories / Code Folders:")))
         code_layout.addWidget(self.repos_list)
-        code_layout.addWidget(add_btn)
+        code_layout.addLayout(btn_row)
         code_layout.addLayout(editor_row)
 
         self.code_container.setEnabled(False)
@@ -234,9 +263,14 @@ class CodePage(QWizardPage):
         self.code_container.setEnabled(checked)
 
     def _add_repo(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select Code Root Directory")
+        folder = QFileDialog.getExistingDirectory(self, tr("Select Code Root Directory"))
         if folder:
             self.repos_list.addItem(folder)
+
+    def _remove_repo(self) -> None:
+        row = self.repos_list.currentRow()
+        if row >= 0:
+            self.repos_list.takeItem(row)
 
     def get_code_folders(self) -> list[str]:
         return [self.repos_list.item(i).text() for i in range(self.repos_list.count())]
@@ -247,32 +281,37 @@ class CompletionPage(QWizardPage):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setTitle("Setup Complete!")
-        self.setSubTitle("You're ready to search your desktop with SemSearch.")
+        self.setTitle(tr("Setup Complete!"))
+        self.setSubTitle(tr("You're ready to search your desktop with SemSearch."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 16, 20)
         layout.setSpacing(14)
 
-        hotkey_box = QWidget()
+        hotkey_box = QFrame()
+        hotkey_box.setObjectName("hotkeyCard")
         hotkey_box.setStyleSheet(
-            f"background-color: {ThemeColors.BG_CARD}; border: 1px solid {ThemeColors.BORDER};"
-            "border-radius: 8px; padding: 14px;"
+            f"QFrame#hotkeyCard {{ background-color: {ThemeColors.BG_CARD}; "
+            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 8px; }}"
         )
         hotkey_layout = QVBoxLayout(hotkey_box)
+        hotkey_layout.setContentsMargins(14, 14, 14, 14)
         hotkey_layout.setSpacing(6)
 
-        title = QLabel("Global Keyboard Shortcut")
+        title = QLabel(tr("Global Keyboard Shortcut"))
         title.setFont(get_ui_font(13, get_ui_font().weight()))
+        title.setStyleSheet("border: none; background: transparent;")
 
-        shortcut_label = QLabel("Press  Ctrl + Shift + Space  anytime to open Quick Search")
+        shortcut_label = QLabel(tr("Press  Ctrl + Shift + Space  anytime to open Quick Search"))
         shortcut_label.setFont(get_ui_font(14))
-        shortcut_label.setStyleSheet(f"color: {ThemeColors.BRAND_START}; font-weight: bold;")
+        shortcut_label.setStyleSheet(f"color: {ThemeColors.BRAND_START}; font-weight: bold; border: none; background: transparent;")
 
         hotkey_layout.addWidget(title)
         hotkey_layout.addWidget(shortcut_label)
 
-        tray_tip = QLabel("SemSearch will now run in your system tray and start indexing your selected folders.")
+        tray_tip = QLabel(
+            tr("SemSearch will now run in your system tray and start indexing your selected folders.")
+        )
         tray_tip.setFont(get_ui_font(12))
         tray_tip.setWordWrap(True)
 
@@ -296,7 +335,7 @@ class OnboardingWizard(QWizard):
         self.config_manager = config_manager
         self.ollama = ollama_client
 
-        self.setWindowTitle("SemSearch Setup")
+        self.setWindowTitle(tr("SemSearch Setup"))
         self.resize(580, 460)
 
         self.welcome_page = WelcomePage()
@@ -335,7 +374,7 @@ class OnboardingWizard(QWizard):
 
         # 4. Mark onboarded
         cfg.onboarded = True
-        self.config_manager.save(cfg)
+        self.config_manager.save()
 
         self.indexing_started.emit()
         super().accept()

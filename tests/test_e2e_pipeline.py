@@ -203,9 +203,8 @@ def test_inotify_filesystem_watcher_e2e(tmp_path: Path) -> None:
     new_doc.write_text("Realtime inotify event log: TOKEN-WATCH-1122", encoding="utf-8")
 
     # Manually trigger debounce bucket flush to simulate quiet window expiration quickly
-    bucket_entry = watcher._buckets.get(str(watch_dir.resolve()))
-    assert bucket_entry is not None
-    bucket, is_code, target_db = bucket_entry
+    bucket = watcher._buckets.get(str(watch_dir.resolve()))
+    assert bucket is not None
 
     deadline = time.time() + 2.0
     while time.time() < deadline:

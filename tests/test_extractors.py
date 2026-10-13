@@ -11,7 +11,7 @@ from PIL import Image
 import pymupdf as fitz
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.code import extract_code, extract_notebook
-from semsearch.extractors.docs import chunk_document, extract_doc, has_words
+from semsearch.extractors.docs import extract_doc
 from semsearch.extractors.images import extract_image
 from semsearch.extractors.media import extract_audio, extract_video
 from semsearch.extractors.pdfs import extract_pdf
@@ -23,19 +23,23 @@ def test_image_extractor_scaling_and_base64(tmp_path: Path) -> None:
     img = Image.new("RGB", (2000, 1500), color=(120, 80, 40))
     img.save(img_path, format="JPEG")
     ext_img = extract_image(str(img_path), is_screenshot=False)
-    assert ext_img.width == 1024
-    assert ext_img.height == 768
-    assert ext_img.format == "jpeg"
-    assert len(base64.b64decode(ext_img.data_base64)) > 0
+    assert isinstance(ext_img.payload, dict)
+    raw_jpg = base64.b64decode(ext_img.payload["image"])
+    assert len(raw_jpg) > 0
+    with Image.open(io.BytesIO(raw_jpg)) as im:
+        assert im.size == (1024, 768)
+        assert im.format == "JPEG"
 
     # Screenshot (1536 max)
     shot_path = tmp_path / "screen.png"
     shot = Image.new("RGB", (3000, 1000), color=(20, 30, 40))
     shot.save(shot_path, format="PNG")
     ext_shot = extract_image(str(shot_path), is_screenshot=True)
-    assert ext_shot.width == 1536
-    assert ext_shot.height == 512
-    assert ext_shot.format == "png"
+    assert isinstance(ext_shot.payload, dict)
+    raw_png = base64.b64decode(ext_shot.payload["image"])
+    with Image.open(io.BytesIO(raw_png)) as im:
+        assert im.size == (1536, 512)
+        assert im.format == "PNG"
 
 
 def test_pdf_extractor_text_vs_render_zero_ocr(tmp_path: Path) -> None:
@@ -163,7 +167,9 @@ def test_video_extractor_ahash_shot_deduplication(tmp_path: Path) -> None:
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert res.returncode == 0
 
-    frames, audio = extract_video(str(vid_path), sample_interval_sec=3.0, hash_threshold=4)
+    segs = extract_video(str(vid_path), sample_interval_sec=3.0, hash_threshold=4)
+    frames = [s for s in segs if s.kind == SegmentKind.FRAME]
+    audio = [s for s in segs if s.kind == SegmentKind.AUDIO]
     assert len(frames) == 2
     assert frames[0].loc == 0.0
     assert frames[1].loc == 3.0
@@ -186,8 +192,8 @@ def test_code_extractor_and_notebook_strip_outputs(tmp_path: Path) -> None:
 
     stretches = extract_code(str(code_path))
     assert len(stretches) == 1
-    assert stretches[0].focus == 3
-    assert stretches[0].loc == 1
+    assert stretches[0].focus == 3.0
+    assert stretches[0].loc == 1.0
 
     # 2. Notebook output stripping
     nb_path = tmp_path / "notebook.ipynb"
@@ -209,7 +215,7 @@ def test_code_extractor_and_notebook_strip_outputs(tmp_path: Path) -> None:
 
     nb_stretches = extract_notebook(str(nb_path))
     assert len(nb_stretches) >= 1
-    combined = "".join(s.text for s in nb_stretches)
+    combined = "".join(str(s.payload) for s in nb_stretches)
     assert "# Title" in combined
     assert "print(12345)" in combined
     assert "SECRET_OUTPUT_VALUE" not in combined

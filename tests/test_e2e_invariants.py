@@ -55,12 +55,12 @@ def test_zero_ocr_architectural_invariant() -> None:
             )
 
 
-def test_multimodal_model_default_and_filtering_invariant() -> None:
+def test_multimodal_model_default_and_filtering_invariant(tmp_path: Path) -> None:
     # 1. Default model invariant
     cfg = AppConfig()
     assert cfg.model == "embeddinggemma-2"
 
-    cfg_mgr = ConfigManager()
+    cfg_mgr = ConfigManager(tmp_path / "config.json")
     assert cfg_mgr.config.model == "embeddinggemma-2"
 
     # 2. Strict multimodal model filtering
@@ -70,6 +70,7 @@ def test_multimodal_model_default_and_filtering_invariant() -> None:
         {"name": "nomic-embed-text:latest", "details": {"families": ["nomic-bert"]}},
         {"name": "bge-m3:latest", "details": {"families": ["bert"]}},
         {"name": "all-minilm:latest", "details": {"families": ["bert"]}},
+        {"name": "qwen3.8:latest", "capabilities": ["completion", "vision", "tools"]},
     ]
     ollama.get_tags = MagicMock(return_value=mock_tags)
 
@@ -78,6 +79,7 @@ def test_multimodal_model_default_and_filtering_invariant() -> None:
     assert "nomic-embed-text:latest" not in filtered
     assert "bge-m3:latest" not in filtered
     assert "all-minilm:latest" not in filtered
+    assert "qwen3.8:latest" not in filtered
 
 
 def test_gui_component_parity(qapp: QApplication, tmp_path: Path) -> None:
@@ -113,7 +115,7 @@ def test_gui_component_parity(qapp: QApplication, tmp_path: Path) -> None:
     settings = SettingsDialog(cfg_mgr, db=db, ollama_client=mock_ollama)
     assert settings is not None
     assert settings.tabs.count() == 4
-    tab_names = [settings.tabs.tabText(i) for i in range(settings.tabs.count())]
+    tab_names = [settings.tabs.tabText(i).replace("&&", "&") for i in range(settings.tabs.count())]
     assert "Folders" in tab_names
     assert "Code" in tab_names
     assert "Storage & Model" in tab_names

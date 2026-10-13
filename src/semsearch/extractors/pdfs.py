@@ -2,8 +2,8 @@
 
 import base64
 import pymupdf as fitz
+from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
-from semsearch.extractors.docs import has_words
 
 
 def extract_pdf(
@@ -46,12 +46,14 @@ def extract_pdf(
 
                 img_bytes = pix.tobytes("jpeg")
                 b64_data = base64.b64encode(img_bytes).decode("ascii")
+                clean_text = " ".join(text[:300].split())
+                excerpt = clean_text if clean_text and has_words(clean_text) else f"Page {page_num + 1} (visual)"
                 segments.append(
                     ExtractedSegment(
                         kind=SegmentKind.PAGE_IMAGE,
                         modality=Modality.IMAGE,
                         loc=float(page_num + 1),
-                        excerpt=f"Page {page_num + 1} (visual)",
+                        excerpt=excerpt,
                         payload={"image": b64_data},
                     )
                 )

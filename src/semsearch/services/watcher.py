@@ -9,7 +9,12 @@ from watchdog.observers import Observer
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
-from semsearch.core.rules import SKIPPED_FOLDER_NAMES, classify_file, should_skip
+from semsearch.core.rules import (
+    SKIPPED_FOLDER_NAMES,
+    classify_file,
+    is_path_excluded,
+    should_skip,
+)
 from semsearch.services.indexer import IndexService
 
 
@@ -79,18 +84,28 @@ class SemSearchEventHandler(FileSystemEventHandler):
             if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
                 return True
 
+        if is_path_excluded(path_str, self.config.excluded_folders):
+            return True
+
         ext = p.suffix.lstrip(".").lower()
-        if ext in self.config.excluded_types:
+        norm_excl = {t.lstrip(".").strip().lower() for t in self.config.excluded_types if t.strip()}
+        if not self.is_code and ext in norm_excl:
             return True
 
         if p.is_file():
-            skip, _ = should_skip(path_str, is_code_mode=self.is_code)
+            skip, _ = should_skip(
+                path_str,
+                is_code_mode=self.is_code,
+                excluded_folders=self.config.excluded_folders,
+                excluded_types=None if self.is_code else self.config.excluded_types,
+            )
             if skip:
                 return True
-            if classify_file(path_str) is None:
+            if classify_file(path_str, is_code_mode=self.is_code) is None:
                 return True
 
         return False
+
 
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory or self._should_filter(event.src_path):
@@ -105,6 +120,20 @@ class SemSearchEventHandler(FileSystemEventHandler):
     def on_moved(self, event: FileSystemEvent) -> None:
         dest_path = getattr(event, "dest_path", "")
         if event.is_directory:
+            src_root = Path(event.src_path).resolve()
+            dest_root = Path(dest_path).resolve()
+            for f in self.db.find_files_under(str(src_root)):
+                try:
+                    rel = Path(f.path).resolve().relative_to(src_root)
+                    new_p = str(dest_root / rel)
+                except ValueError:
+                    continue
+
+                if self._should_filter(new_p):
+                    self.db.delete_file(f.id)
+                else:
+                    self.db.move_file(f.id, new_p)
+                    self.bucket.add(new_p)
             return
 
         rec = self.db.find_by_path(event.src_path)
@@ -141,24 +170,47 @@ class FileSystemWatcher:
         self.check_interval_sec = check_interval_sec
 
         self._observer: Observer | None = None
-        self._buckets: dict[str, tuple[DebounceBucket, bool, Database]] = {}
+        self._buckets: dict[str, DebounceBucket] = {}
         self._stop_event = threading.Event()
         self._timer_thread: threading.Thread | None = None
 
     def _debounce_loop(self) -> None:
         while not self._stop_event.is_set():
             now = time.time()
-            for root, (bucket, is_code, target_db) in list(self._buckets.items()):
+            for bucket in list(self._buckets.values()):
                 if bucket.is_ready(now):
                     flushed = bucket.flush()
                     if flushed:
-                        self._sync_root(root, is_code, target_db, flushed)
+                        self._sync_paths(flushed)
             self._stop_event.wait(self.check_interval_sec)
 
-    def _sync_root(self, root: str, is_code: bool, target_db: Database, paths: set[str]) -> None:
+    def _sync_paths(self, paths: set[str]) -> None:
         for p in paths:
             if os.path.exists(p):
                 self.index_service.enqueue_file(p)
+
+    def _schedule_folders(
+        self,
+        folders: list[str],
+        is_code: bool,
+        target_db: Database,
+        quiet_window: float,
+        max_ceiling: float | None = None,
+    ) -> None:
+        assert self._observer is not None
+        for folder in folders:
+            f_path = str(Path(folder).resolve())
+            if os.path.isdir(f_path):
+                bucket = DebounceBucket(quiet_window=quiet_window, max_ceiling=max_ceiling)
+                self._buckets[f_path] = bucket
+                handler = SemSearchEventHandler(
+                    root=f_path,
+                    is_code=is_code,
+                    bucket=bucket,
+                    db=target_db,
+                    config=self.config,
+                )
+                self._observer.schedule(handler, f_path, recursive=True)
 
     def start(self) -> None:
         """Start the inotify observer and debouncing worker thread."""
@@ -168,38 +220,21 @@ class FileSystemWatcher:
         self._observer = Observer()
         self._buckets.clear()
 
-        # General folders: quiet debounce window 0.75s, no ceiling
-        for folder in self.config.folders:
-            f_path = str(Path(folder).resolve())
-            if os.path.isdir(f_path):
-                bucket = DebounceBucket(quiet_window=0.75, max_ceiling=None)
-                target_db = self.index_service.db
-                self._buckets[f_path] = (bucket, False, target_db)
-                handler = SemSearchEventHandler(
-                    root=f_path,
-                    is_code=False,
-                    bucket=bucket,
-                    db=target_db,
-                    config=self.config,
-                )
-                self._observer.schedule(handler, f_path, recursive=True)
+        self._schedule_folders(
+            self.config.folders,
+            is_code=False,
+            target_db=self.index_service.db,
+            quiet_window=0.75,
+        )
 
-        # Code folders: quiet debounce window 60s, max ceiling 600s (10 min)
         if self.config.code_enabled and self.index_service.code_db is not None:
-            for c_folder in self.config.code_folders:
-                cf_path = str(Path(c_folder).resolve())
-                if os.path.isdir(cf_path):
-                    bucket = DebounceBucket(quiet_window=60.0, max_ceiling=600.0)
-                    target_db = self.index_service.code_db
-                    self._buckets[cf_path] = (bucket, True, target_db)
-                    handler = SemSearchEventHandler(
-                        root=cf_path,
-                        is_code=True,
-                        bucket=bucket,
-                        db=target_db,
-                        config=self.config,
-                    )
-                    self._observer.schedule(handler, cf_path, recursive=True)
+            self._schedule_folders(
+                self.config.code_folders,
+                is_code=True,
+                target_db=self.index_service.code_db,
+                quiet_window=60.0,
+                max_ceiling=600.0,
+            )
 
         self._stop_event.clear()
         self._timer_thread = threading.Thread(target=self._debounce_loop, name="WatcherDebounceThread", daemon=True)

@@ -5,17 +5,21 @@ import numpy as np
 import pytest
 
 from semsearch.core.database import Database
-from semsearch.core.ollama import OllamaClient
+from semsearch.core.ollama import (
+    OllamaClient,
+    format_code_query_prompt,
+    format_query_prompt,
+)
+from semsearch.core.search_text import is_lookup_query, make_fts_patterns
 from semsearch.core.types import (
     Candidate,
     FileKind,
     Modality,
-    ResultRow,
     SearchHit,
     SegmentKind,
 )
 from semsearch.core.vectors import DIM, float16_to_bytes, l2_normalize
-from semsearch.services.searcher import Prompts, ResultSet, SearchService
+from semsearch.services.searcher import ResultSet, SearchService
 
 
 @pytest.fixture
@@ -26,39 +30,41 @@ def mock_dbs(tmp_path: Path) -> tuple[Database, Database]:
 
 
 def test_prompts_formatting():
-    assert Prompts.query("quarterly report") == "task: search result | query: quarterly report"
-    assert Prompts.code_query("binary search") == "task: code retrieval | query: binary search"
+    assert format_query_prompt("quarterly report") == "task: search result | query: quarterly report"
+    assert format_code_query_prompt("binary search") == "task: code retrieval | query: binary search"
 
 
 def test_is_lookup_query():
-    searcher = SearchService(db=Database(":memory:"))
-    assert searcher.is_lookup_query("getUserProfile") is True
-    assert searcher.is_lookup_query("get_user_profile") is True
-    assert searcher.is_lookup_query("src/core/types.py") is True
-    assert searcher.is_lookup_query("models.User") is True
-    assert searcher.is_lookup_query("std::vector") is True
-    assert searcher.is_lookup_query("ABC-12345") is True
-    assert searcher.is_lookup_query("0x7ffcd3") is True
-    assert searcher.is_lookup_query("error404") is True
-    assert searcher.is_lookup_query("natural language query") is False
-    assert searcher.is_lookup_query("simple search text") is False
-    assert searcher.is_lookup_query("") is False
+    assert is_lookup_query("getUserProfile") is True
+    assert is_lookup_query("get_user_profile") is True
+    assert is_lookup_query("src/core/types.py") is True
+    assert is_lookup_query("models.User") is True
+    assert is_lookup_query("std::vector") is True
+    assert is_lookup_query("ABC-12345") is True
+    assert is_lookup_query("0x7ffcd3") is True
+    assert is_lookup_query("error404") is True
+    assert is_lookup_query("natural language query") is False
+    assert is_lookup_query("simple search text") is False
+    assert is_lookup_query("") is False
 
 
-def test_compute_coverage():
-    searcher = SearchService(db=Database(":memory:"))
-    assert searcher.compute_coverage([], "some text") == 0.0
-    terms = ["financial", "report", "2026"]
+def test_compute_coverage(mock_dbs):
+    db, _ = mock_dbs
+    assert db.compute_coverage([], [1]) == {}
     text = "The annual financial report for fiscal year 2026 is published."
-    assert searcher.compute_coverage(terms, text) == 1.0
+    fid = db.insert_file(Candidate(path="/docs/report.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=1, device=1))
+    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, text, None, "report.txt", text, "")
+
+    patterns = make_fts_patterns(["financial", "report", "2026"])
+    assert db.compute_coverage(patterns, [fid])[fid] == 1.0
 
     # Partial prefix match on last term
-    terms_prefix = ["financial", "repo"]
-    assert searcher.compute_coverage(terms_prefix, text) == 1.0
+    patterns_prefix = make_fts_patterns(["financial", "repo"], prefix_last=True)
+    assert db.compute_coverage(patterns_prefix, [fid])[fid] == 1.0
 
     # Partial match missing some terms
-    terms_partial = ["financial", "budget", "quarterly"]
-    assert pytest.approx(searcher.compute_coverage(terms_partial, text), 0.01) == 0.33
+    patterns_partial = make_fts_patterns(["financial", "budget", "quarterly"])
+    assert pytest.approx(db.compute_coverage(patterns_partial, [fid])[fid], 0.01) == 0.33
 
 
 def test_query_routing_general_vs_code(mock_dbs):
@@ -168,41 +174,6 @@ def test_weaker_matches_folding(mock_dbs):
     assert any(h.path == "/b.txt" for h in results.weaker)
 
 
-def test_format_results_view_models(mock_dbs):
-    searcher = SearchService(db=Database(":memory:"))
-    hit1 = SearchHit(
-        path="/src/main.py",
-        kind=FileKind.CODE,
-        score=5.0,
-        z=2.5,
-        keyword_rank=-1,
-        segment=SegmentKind.LINES,
-        loc=10.0,
-        loc_end=20.0,
-        excerpt="def start_server():",
-        focus=10.0,
-    )
-    hit2 = SearchHit(
-        path="/src/worker.py",
-        kind=FileKind.CODE,
-        score=1.0,
-        z=0.0,
-        keyword_rank=1,
-        segment=SegmentKind.LINES,
-        loc=5.0,
-        excerpt="worker thread",
-    )
-    res_set = ResultSet(ranked=[hit1], weaker=[hit2])
-    primary, weaker = searcher.format_results(res_set, query="start_server")
-
-    assert len(primary) == 1
-    assert len(weaker) == 1
-    assert primary[0].title == "main.py"
-    assert primary[0].code_line == 10
-    assert primary[0].matched_meaning is True
-    assert weaker[0].title == "worker.py"
-
-
 def test_code_definition_line_jump(tmp_path: Path):
     code_path = tmp_path / "parser.py"
     code_path.write_text(
@@ -220,3 +191,176 @@ def test_code_definition_line_jump(tmp_path: Path):
     assert len(results.ranked) == 1
     hit = results.ranked[0]
     assert hit.focus == 3.0  # Line 3 is where `def parse_tokens` is defined!
+
+
+def test_fts_keyword_rank_positive_and_matches_words(tmp_path: Path):
+    """Verify FTS matches yield positive keyword_rank and hit.reason is 'Matches words'."""
+    code_path = tmp_path / "service.py"
+    code_path.write_text("def handle_request(): pass\n", encoding="utf-8")
+    db = Database(tmp_path / "test_kw.sqlite")
+    c = Candidate(path=str(code_path), kind=FileKind.CODE, size=50, mtime=1.0, inode=1, device=1)
+    fid = db.insert_file(c)
+    db.insert_segment(
+        file_id=fid,
+        kind=SegmentKind.LINES,
+        modality=Modality.TEXT,
+        loc=1.0,
+        loc_end=1.0,
+        excerpt="def handle_request(): pass",
+        vec=None,
+        name="service.py",
+        body="def handle_request(): pass",
+        original="",
+    )
+
+    searcher = SearchService(db=db)
+    results = searcher.search("handle_request")
+
+    assert len(results.ranked) == 1
+    hit = results.ranked[0]
+    assert hit.keyword_rank > 0
+    assert hit.reason == "Matches words"
+
+
+def test_filename_match_outranks_incidental_body_mention(mock_dbs):
+    """Verify a file matching query terms in its filename outranks a file mentioning them only in body."""
+    db, _ = mock_dbs
+
+    c_body = Candidate(
+        path="/docs/informacion_fiscal_2025.pdf",
+        kind=FileKind.PDF,
+        size=1000,
+        mtime=10.0,
+        inode=1,
+        device=1,
+    )
+    fid_body = db.insert_file(c_body)
+    db.insert_segment(
+        fid_body,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "Declaración de impuestos de Juan Ezquerro",
+        None,
+        "",
+        "Declaración de impuestos de Juan Ezquerro",
+        "",
+    )
+
+    c_name = Candidate(
+        path="/docs/Autorización Juan Ezquerro.pdf",
+        kind=FileKind.PDF,
+        size=500,
+        mtime=5.0,
+        inode=2,
+        device=1,
+    )
+    fid_name = db.insert_file(c_name)
+    db.insert_segment(
+        fid_name,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "Documento firmado",
+        None,
+        "",
+        "Documento firmado",
+        "",
+    )
+
+    searcher = SearchService(db=db)
+    res = searcher.search("juan ezquerro")
+    assert len(res.ranked) >= 1
+    assert res.ranked[0].path == "/docs/Autorización Juan Ezquerro.pdf"
+
+
+def test_pure_kind_hint_query_returns_matching_files(mock_dbs):
+    """Verify queries consisting only of kind hint words (e.g. 'captura de pantalla') return matching files."""
+    db, _ = mock_dbs
+    c_shot = Candidate(
+        path="/pics/Captura de pantalla_20260927.png",
+        kind=FileKind.SCREENSHOT,
+        size=200,
+        mtime=20.0,
+        inode=1,
+        device=1,
+    )
+    fid_shot = db.insert_file(c_shot)
+    db.insert_segment(fid_shot, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "screenshot", None, "", "", "")
+
+    c_doc = Candidate(
+        path="/docs/manual_de_usuario.pdf",
+        kind=FileKind.PDF,
+        size=300,
+        mtime=30.0,
+        inode=2,
+        device=1,
+    )
+    fid_doc = db.insert_file(c_doc)
+    db.insert_segment(
+        fid_doc,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "Manual de instrucciones en español",
+        None,
+        "",
+        "Manual de instrucciones de uso",
+        "",
+    )
+
+    searcher = SearchService(db=db)
+    res = searcher.search("captura de pantalla")
+    assert len(res.ranked) == 1
+    assert res.ranked[0].path == "/pics/Captura de pantalla_20260927.png"
+
+
+def test_code_definition_bonus_outranks_caller(tmp_path: Path):
+    """Verify code file defining a class/function ranks above files that merely import or call it."""
+    code_db = Database(tmp_path / "code.sqlite")
+
+    caller_path = tmp_path / "window.py"
+    caller_path.write_text("from searcher import SearchService\nsvc = SearchService()\n", encoding="utf-8")
+    fid_caller = code_db.insert_file(
+        Candidate(str(caller_path), FileKind.CODE, 80, 20.0, 1, 1)
+    )
+    code_db.insert_segment(
+        fid_caller,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        1.0,
+        2.0,
+        "from searcher import SearchService",
+        None,
+        "window.py",
+        caller_path.read_text(encoding="utf-8"),
+        caller_path.read_text(encoding="utf-8"),
+    )
+
+    def_path = tmp_path / "searcher.py"
+    def_path.write_text("# Search module\nclass SearchService:\n    pass\n", encoding="utf-8")
+    fid_def = code_db.insert_file(
+        Candidate(str(def_path), FileKind.CODE, 80, 10.0, 2, 1)
+    )
+    code_db.insert_segment(
+        fid_def,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        1.0,
+        3.0,
+        "class SearchService:",
+        None,
+        "searcher.py",
+        def_path.read_text(encoding="utf-8"),
+        def_path.read_text(encoding="utf-8"),
+    )
+
+    searcher = SearchService(db=Database(":memory:"), code_db=code_db)
+    res = searcher.search("code: SearchService")
+    assert len(res.ranked) >= 1
+    assert res.ranked[0].path == str(def_path)
+    assert res.ranked[0].focus == 2.0
+

@@ -7,7 +7,8 @@ import wave
 import docx
 from PIL import Image
 import pymupdf as fitz
-from semsearch.extractors.docs import has_words
+from semsearch.core.search_text import has_words
+from semsearch.core.types import SegmentKind
 from semsearch.extractors.media import extract_audio, extract_video
 from semsearch.extractors.pdfs import extract_pdf
 from tests.testbed import (
@@ -103,7 +104,9 @@ def test_synthetic_audio_and_video(tmp_path: Path) -> None:
 
     vid_path = create_synthetic_video(tmp_path / "media" / "clip.mp4")
     assert vid_path.is_file()
-    frames, audio = extract_video(str(vid_path), sample_interval_sec=3.0)
+    segs = extract_video(str(vid_path), sample_interval_sec=3.0)
+    frames = [s for s in segs if s.kind == SegmentKind.FRAME]
+    audio = [s for s in segs if s.kind == SegmentKind.AUDIO]
     assert len(frames) >= 2
     assert len(audio) >= 1
 

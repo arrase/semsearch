@@ -12,6 +12,7 @@ import pytest
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
+from semsearch.core.search_text import is_lookup_query
 from semsearch.core.types import (
     Candidate,
     FileKind,
@@ -24,10 +25,6 @@ from semsearch.core.vectors import DIM, l2_normalize
 from semsearch.main import build_parser
 from semsearch.services.actions import (
     execute_hit_action,
-    open_code_editor,
-    open_file_default,
-    open_media_timestamp,
-    open_pdf_page,
     reveal_in_file_manager,
 )
 from semsearch.services.indexer import IndexService
@@ -245,8 +242,8 @@ def test_lookup_serial_query_e2e(tmp_path: Path) -> None:
     db, code_db, searcher, files = _build_and_index_testbed(tmp_path)
 
     # Serial query triggers lookup detection
-    assert searcher.is_lookup_query("ERR-4096-FAIL") is True
-    assert searcher.is_lookup_query("INV-2026-X99") is True
+    assert is_lookup_query("ERR-4096-FAIL") is True
+    assert is_lookup_query("INV-2026-X99") is True
 
     # Hardware serial BM25 lookup
     res_serial = searcher.search("ERR-4096-FAIL")

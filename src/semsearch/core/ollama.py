@@ -23,13 +23,29 @@ class OllamaModelError(OllamaError):
 MULTIMODAL_INDICATORS = {
     "clip",
     "mllama",
-    "gemma2",
+    "gemma-embedding2",
     "vision",
     "audio",
     "llava",
     "bakllava",
     "embeddinggemma",
 }
+
+
+def format_query_prompt(text: str) -> str:
+    """Format general document query prompt."""
+    return f"task: search result | query: {text}"
+
+
+def format_code_query_prompt(text: str) -> str:
+    """Format source code retrieval query prompt."""
+    return f"task: code retrieval | query: {text}"
+
+
+def format_doc_prompt(title: str, text: str) -> str:
+    """Format document embedding prompt with title context."""
+    clean_title = title.strip() or "none"
+    return f"title: {clean_title} | text: {text}"
 
 
 class OllamaClient:
@@ -49,10 +65,19 @@ class OllamaClient:
         self.max_batch_size = max_batch_size
         self.default_model = default_model
 
-    def get_tags(self) -> list[dict[str, Any]]:
-        """Query available models from GET /api/tags."""
+    def _request(
+        self,
+        endpoint: str,
+        timeout: float,
+        payload: dict[str, Any] | None = None,
+        model_name: str = "",
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{endpoint}"
         try:
-            response = httpx.get(f"{self.base_url}/api/tags", timeout=self.timeout)
+            if payload is None:
+                response = httpx.get(url, timeout=timeout)
+            else:
+                response = httpx.post(url, json=payload, timeout=timeout)
         except httpx.ConnectError as err:
             raise OllamaConnectionError(f"Cannot connect to Ollama at {self.base_url}") from err
         except httpx.TimeoutException as err:
@@ -60,37 +85,32 @@ class OllamaClient:
         except httpx.HTTPError as err:
             raise OllamaError(f"HTTP error: {err}") from err
 
-        if response.status_code >= 400:
-            raise OllamaError(f"Ollama error ({response.status_code}): {response.text}")
-
-        data = response.json()
-        return data.get("models", [])
-
-    def show_model(self, model: str) -> dict[str, Any]:
-        """Query model details and capabilities from POST /api/show."""
-        try:
-            response = httpx.post(
-                f"{self.base_url}/api/show",
-                json={"name": model, "model": model},
-                timeout=self.timeout,
-            )
-        except httpx.ConnectError as err:
-            raise OllamaConnectionError(f"Cannot connect to Ollama at {self.base_url}") from err
-        except httpx.TimeoutException as err:
-            raise OllamaTimeoutError(f"Request to Ollama timed out at {self.base_url}") from err
-        except httpx.HTTPError as err:
-            raise OllamaError(f"HTTP error: {err}") from err
-
-        if response.status_code == 404:
-            raise OllamaModelError(f"Model not found: {model}")
+        if response.status_code == 404 and model_name:
+            raise OllamaModelError(f"Model not found: {model_name}")
         if response.status_code >= 400:
             raise OllamaError(f"Ollama error ({response.status_code}): {response.text}")
 
         return response.json()
 
+    def get_tags(self) -> list[dict[str, Any]]:
+        """Query available models from GET /api/tags."""
+        data = self._request("/api/tags", timeout=self.timeout)
+        return data.get("models", [])
+
+    def show_model(self, model: str) -> dict[str, Any]:
+        """Query model details and capabilities from POST /api/show."""
+        return self._request(
+            "/api/show",
+            timeout=self.timeout,
+            payload={"name": model, "model": model},
+            model_name=model,
+        )
+
     def _is_info_multimodal(self, info: dict[str, Any], model_name: str = "") -> bool:
         """Check capabilities, details, architecture, and name for multimodal support."""
-        caps = [str(c).lower() for c in info.get("capabilities", [])]
+        caps = [str(c).lower() for c in (info.get("capabilities") or [])]
+        if "completion" in caps and "embedding" not in caps:
+            return False
         if any(c in ("vision", "audio") for c in caps):
             return True
 
@@ -110,41 +130,59 @@ class OllamaClient:
             return True
 
         name = model_name or str(info.get("name") or info.get("model") or "")
-        if any(indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "llava", "bakllava")):
-            return True
-
-        return False
+        return any(indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "llava", "bakllava"))
 
     def is_multimodal(self, model: str | dict[str, Any], tag_info: dict[str, Any] | None = None) -> bool:
         """Inspect capabilities, details, or architecture to check if a model is multimodal."""
         if isinstance(model, dict):
             return self._is_info_multimodal(model)
 
-        model_name = model
-        if tag_info and self._is_info_multimodal(tag_info, model_name=model_name):
-            return True
+        if tag_info:
+            caps = [str(c).lower() for c in (tag_info.get("capabilities") or [])]
+            if "completion" in caps and "embedding" not in caps:
+                return False
+            if self._is_info_multimodal(tag_info, model_name=model):
+                return True
 
         try:
-            full_info = self.show_model(model_name)
-            return self._is_info_multimodal(full_info, model_name=model_name)
+            full_info = self.show_model(model)
+            return self._is_info_multimodal(full_info, model_name=model)
         except OllamaError:
             return False
+
+    def resolve_model_name(self, preferred: str) -> str:
+        """Resolve model name, falling back to installed multimodal model if preferred is not found."""
+        try:
+            tags = self.get_tags()
+        except OllamaError:
+            return preferred
+
+        names = [item.get("name") or item.get("model", "") for item in tags]
+        if preferred in names:
+            return preferred
+
+        clean_pref = preferred.lower().replace("-", "").replace("_", "")
+        for n in names:
+            clean_n = n.lower().replace("-", "").replace("_", "")
+            if clean_pref in clean_n or clean_n in clean_pref:
+                return n
+
+        return preferred
 
     def validate_model(self, model: str) -> bool:
         """Validate that model exists and supports multimodal embeddings."""
         if not self.is_multimodal(model):
-            raise OllamaModelError(f"Model '{model}' does not support multimodal embeddings")
+            resolved = self.resolve_model_name(model)
+            if not self.is_multimodal(resolved):
+                raise OllamaModelError(f"Model '{model}' does not support multimodal embeddings")
         return True
 
     def list_multimodal_models(self) -> list[str]:
         """Return list of model names that support multimodal embeddings."""
-        models = self.get_tags()
         result: list[str] = []
-        for item in models:
+        for item in self.get_tags():
             name = item.get("name") or item.get("model", "")
-            if not name:
-                continue
-            if self.is_multimodal(name, tag_info=item):
+            if name and self.is_multimodal(name, tag_info=item):
                 result.append(name)
         return result
 
@@ -158,35 +196,17 @@ class OllamaClient:
         if not inputs:
             return []
 
+        target_model = self.resolve_model_name(model)
         all_embeddings: list[list[float]] = []
 
         for i in range(0, len(inputs), self.max_batch_size):
             batch = inputs[i : i + self.max_batch_size]
-            payload = {
-                "model": model,
-                "input": batch,
-                "truncate": truncate,
-            }
-            try:
-                response = httpx.post(
-                    f"{self.base_url}/api/embed",
-                    json=payload,
-                    timeout=self.embed_timeout,
-                )
-            except httpx.ConnectError as err:
-                raise OllamaConnectionError(f"Cannot connect to Ollama at {self.base_url}") from err
-            except httpx.TimeoutException as err:
-                raise OllamaTimeoutError(f"Embed request timed out at {self.base_url}") from err
-            except httpx.HTTPError as err:
-                raise OllamaError(f"HTTP error: {err}") from err
-
-            if response.status_code == 404:
-                raise OllamaModelError(f"Model not found: {model}")
-            if response.status_code >= 400:
-                raise OllamaError(f"Ollama error ({response.status_code}): {response.text}")
-
-            data = response.json()
-            embeddings = data.get("embeddings", [])
-            all_embeddings.extend(embeddings)
+            data = self._request(
+                "/api/embed",
+                timeout=self.embed_timeout,
+                payload={"model": target_model, "input": batch, "truncate": truncate},
+                model_name=model,
+            )
+            all_embeddings.extend(data.get("embeddings", []))
 
         return all_embeddings

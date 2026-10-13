@@ -5,10 +5,10 @@ from PySide6.QtCore import QObject, Signal
 
 
 def normalize_hotkey(shortcut: str) -> str:
-    """Format shortcut string for pynput GlobalHotKeys syntax (e.g. '<ctrl>+<shift>+<space>')."""
+    """Format shortcut string for pynput GlobalHotKeys syntax (e.g. '<ctrl>+<shift>+k')."""
     clean = shortcut.replace("<", "").replace(">", "").strip().lower()
     parts = [p.strip() for p in clean.split("+") if p.strip()]
-    return "+".join(f"<{p}>" for p in parts)
+    return "+".join(f"<{p}>" if len(p) > 1 else p for p in parts)
 
 
 class HotkeyListener(QObject):

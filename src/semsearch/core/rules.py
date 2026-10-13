@@ -74,7 +74,14 @@ PROJECT_MARKERS = {
 
 PROJECT_BUNDLE_EXTENSIONS = {".xcodeproj", ".xcworkspace"}
 
-SCREENSHOT_PREFIXES = ("screenshot", "screen shot", "cleanshot", "scr-")
+SCREENSHOT_PREFIXES = (
+    "screenshot",
+    "screen shot",
+    "cleanshot",
+    "scr-",
+    "captura de pantalla",
+    "captura",
+)
 
 CAMERA_PREFIXES = (
     "img",
@@ -87,6 +94,7 @@ CAMERA_PREFIXES = (
     "photo",
     "whatsapp",
     "screenshot",
+    "captura",
 )
 
 IMAGE_EXTENSIONS = {
@@ -108,6 +116,7 @@ DOC_EXTENSIONS = {
     "text",
     "md",
     "markdown",
+    "rst",
     "rtf",
     "docx",
     "doc",
@@ -115,6 +124,7 @@ DOC_EXTENSIONS = {
     "html",
     "htm",
 }
+CODE_DOC_EXTENSIONS = {"md", "markdown", "rst"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff"}
 VIDEO_EXTENSIONS = {"mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv"}
 CODE_EXTENSIONS = {
@@ -203,6 +213,17 @@ CODE_FILENAMES = {
     "jenkinsfile",
 }
 
+DATA_EXTENSIONS = {
+    "json",
+    "jsonl",
+    "xml",
+    "toml",
+    "plist",
+    "csv",
+    "tsv",
+    "lock",
+}
+
 
 def is_secret(path: str) -> bool:
     """Return True if path represents a secret, private key, or credential file."""
@@ -260,13 +281,16 @@ def is_dataset_folder(paths: list[str]) -> bool:
     return False
 
 
-def classify_file(path: str) -> FileKind | None:
+def classify_file(path: str, is_code_mode: bool = False) -> FileKind | None:
     """Map a file path to its FileKind classification, or None if unsupported."""
     p = Path(path)
     ext = p.suffix.lstrip(".").lower()
     name = p.name.lower()
 
     if name in CODE_FILENAMES or name.startswith("dockerfile"):
+        return FileKind.CODE
+
+    if is_code_mode and ext in CODE_DOC_EXTENSIONS:
         return FileKind.CODE
 
     if ext in IMAGE_EXTENSIONS:
@@ -303,7 +327,32 @@ def is_inside_code_project(path: str) -> bool:
     return False
 
 
-def should_skip(path: str, is_code_mode: bool) -> tuple[bool, str]:
+def is_path_excluded(path: str, excluded_folders: list[str] | set[str] | None) -> bool:
+    """Return True if path is inside any user-configured excluded folder."""
+    if not excluded_folders:
+        return False
+    p = Path(path)
+    resolved = str(p.resolve()) if p.is_absolute() else str(p)
+    parts_set = set(p.parts)
+    for excl in excluded_folders:
+        clean = excl.strip()
+        if not clean:
+            continue
+        if clean.startswith("/") or clean.startswith("~"):
+            excl_resolved = str(Path(clean).expanduser().resolve())
+            if resolved == excl_resolved or resolved.startswith(f"{excl_resolved}/"):
+                return True
+        elif clean in parts_set:
+            return True
+    return False
+
+
+def should_skip(
+    path: str,
+    is_code_mode: bool,
+    excluded_folders: list[str] | set[str] | None = None,
+    excluded_types: list[str] | set[str] | None = None,
+) -> tuple[bool, str]:
     """Determine whether to skip a file during indexing."""
     p = Path(path)
 
@@ -311,18 +360,34 @@ def should_skip(path: str, is_code_mode: bool) -> tuple[bool, str]:
         if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
             return True, f"inside skipped folder {part}"
 
+    if is_path_excluded(path, excluded_folders):
+        return True, "inside excluded folder"
+
     if is_secret(path):
         return True, "secret or credential file"
 
-    kind = classify_file(path)
+    ext = p.suffix.lstrip(".").lower()
+    name = p.name.lower()
+    if is_code_mode and (ext in DATA_EXTENSIONS or name.endswith(".lock") or "-lock." in name):
+        return True, "data format in code mode"
+
+    kind = classify_file(path, is_code_mode=is_code_mode)
     if kind is None:
         return True, "unsupported file kind"
+
+    if excluded_types:
+        norm_types = {t.lstrip(".").strip().lower() for t in excluded_types if t.strip()}
+        if ext in norm_types or kind.value in norm_types:
+            return True, f"excluded file type {ext or kind.value}"
 
     if is_code_mode:
         if kind != FileKind.CODE:
             return True, "not a code file"
     else:
+        if kind == FileKind.CODE:
+            return True, "code file in general mode"
         if kind != FileKind.SCREENSHOT and is_inside_code_project(path):
             return True, "non-screenshot inside code project"
 
     return False, ""
+

@@ -5,77 +5,33 @@ from pathlib import Path
 import re
 import numpy as np
 
+from semsearch.core.code_lookup import (
+    extract_identifier,
+    find_definition,
+    find_first_line_with_words,
+    identifier_phrase,
+)
 from semsearch.core.database import Database
-from semsearch.core.ollama import OllamaClient
+from semsearch.core.ollama import (
+    OllamaClient,
+    OllamaError,
+    format_code_query_prompt,
+    format_query_prompt,
+)
+from semsearch.core.search_text import (
+    _fold_latin_diacritics,
+    extract_kind_hints,
+    extract_terms,
+    is_lookup_query,
+    make_fts_patterns,
+)
 from semsearch.core.types import (
     FileKind,
-    ResultRow,
+    FileRecord,
     SearchHit,
     SegmentKind,
 )
 from semsearch.core.vectors import cosine_similarity, z_score_normalize
-from semsearch.extractors.code import DEFINITION_RE
-
-STOP_WORDS = {
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
-    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
-    "below", "between", "both", "but", "by", "can't", "cannot", "could", "couldn't",
-    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during",
-    "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't",
-    "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
-    "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i",
-    "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's",
-    "its", "itself", "let's", "me", "more", "most", "mustn't", "my", "myself",
-    "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought",
-    "our", "ours", "ourselves", "out", "over", "own", "same", "shan't", "she",
-    "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
-    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
-    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
-    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
-    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
-    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
-    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
-    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
-    "yourself", "yourselves",
-}
-
-FILE_KIND_TERMS: dict[str, FileKind] = {
-    "screenshot": FileKind.SCREENSHOT,
-    "screenshots": FileKind.SCREENSHOT,
-    "image": FileKind.IMAGE,
-    "images": FileKind.IMAGE,
-    "photo": FileKind.IMAGE,
-    "photos": FileKind.IMAGE,
-    "picture": FileKind.IMAGE,
-    "pictures": FileKind.IMAGE,
-    "pdf": FileKind.PDF,
-    "pdfs": FileKind.PDF,
-    "doc": FileKind.DOC,
-    "docs": FileKind.DOC,
-    "document": FileKind.DOC,
-    "documents": FileKind.DOC,
-    "audio": FileKind.AUDIO,
-    "sound": FileKind.AUDIO,
-    "music": FileKind.AUDIO,
-    "video": FileKind.VIDEO,
-    "videos": FileKind.VIDEO,
-    "movie": FileKind.VIDEO,
-    "code": FileKind.CODE,
-}
-
-
-class Prompts:
-    """Ollama prompt formatting templates."""
-
-    @staticmethod
-    def query(text: str) -> str:
-        """Format general document query prompt."""
-        return f"task: search result | query: {text}"
-
-    @staticmethod
-    def code_query(text: str) -> str:
-        """Format source code retrieval query prompt."""
-        return f"task: code retrieval | query: {text}"
 
 
 @dataclass
@@ -110,232 +66,328 @@ class SearchService:
         self.ollama = ollama
         self.model = model
 
-    def is_lookup_query(self, query: str) -> bool:
-        """Determine whether the query is an identifier, symbol, or serial lookup."""
-        q = query.strip()
-        if not q:
-            return False
-        if re.search(r"[a-z][A-Z]", q):
-            return True
-        if re.search(r"[a-zA-Z0-9]+_[a-zA-Z0-9]+", q):
-            return True
-        if "/" in q or "\\" in q or "::" in q or re.search(r"\w+\.\w+", q):
-            return True
-        if re.search(r"\b[A-Za-z0-9]+-[A-Za-z0-9]+\b", q) or re.search(r"\b0x[0-9a-fA-F]+\b", q):
-            return True
-        words = re.findall(r"\w+", q)
-        if any(re.search(r"[0-9]", w) and re.search(r"[a-zA-Z]", w) for w in words):
-            return True
-        return False
+    def _resolve_code_place(
+        self,
+        target_db: Database,
+        file_rec: FileRecord,
+        segment_id: int,
+        identifier: list[str] | None,
+        clean_query: str,
+        terms: list[str],
+        words_here: bool,
+    ) -> tuple[int, float, int]:
+        """Resolve code stretch segment, precise line number jump, and definition strength."""
+        name = clean_query.strip().removesuffix("()")
+        can_check_def = identifier is not None or len(terms) == 1
 
-    def compute_coverage(self, terms: list[str], text: str) -> float:
-        """Calculate query term coverage ratio in [0.0, 1.0]."""
-        if not terms:
-            return 0.0
-        text_words = set(re.findall(r"\w+", text.lower()))
-        matched = 0
-        for idx, term in enumerate(terms):
-            is_last = idx == len(terms) - 1
-            if term in text_words:
-                matched += 1
-            elif is_last and any(tw.startswith(term) for tw in text_words):
-                matched += 1
-        return min(matched / len(terms), 1.0)
+        if identifier:
+            phrase = identifier_phrase(identifier)
+            best_def: tuple[int, int, int] | None = None
+            for s_id, s_loc, s_text in target_db.find_code_segments(file_rec.id, phrase):
+                def_res = find_definition(name, s_text, first_line=s_loc)
+                if def_res:
+                    line_num, strength = def_res
+                    if best_def is None or strength > best_def[2]:
+                        best_def = (s_id, line_num, strength)
+                    if strength == 2:
+                        break
 
-    def _normalize_query(self, query: str) -> tuple[list[str], FileKind | None, str]:
-        raw_words = re.findall(r"\w+", query.lower())
-        target_kind: FileKind | None = None
-        for word in raw_words:
-            if word in FILE_KIND_TERMS:
-                target_kind = FILE_KIND_TERMS[word]
-                break
+            if best_def is not None:
+                return best_def[0], float(best_def[1]), best_def[2]
 
-        meaningful_terms = [w for w in raw_words if w not in STOP_WORDS and w not in FILE_KIND_TERMS]
-        if not meaningful_terms:
-            meaningful_terms = [w for w in raw_words if w not in STOP_WORDS]
-        if not meaningful_terms:
-            meaningful_terms = raw_words
+        if can_check_def:
+            best_seg_def: tuple[int, int, int] | None = None
+            for s_id, s_kind, s_loc, s_loc_end, _, s_body in target_db.get_file_segments(file_rec.id):
+                if s_kind == SegmentKind.LINES and s_body:
+                    def_res = find_definition(name, s_body, first_line=int(s_loc or 1))
+                    if def_res:
+                        line_num, strength = def_res
+                        if best_seg_def is None or strength > best_seg_def[2]:
+                            best_seg_def = (s_id, line_num, strength)
+                        if strength == 2:
+                            break
+            if best_seg_def is not None:
+                return best_seg_def[0], float(best_seg_def[1]), best_seg_def[2]
 
-        fts_query = " ".join(meaningful_terms) if meaningful_terms else query
-        return meaningful_terms, target_kind, fts_query
+            file_path = Path(file_rec.path)
+            if file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    content = ""
+                if content:
+                    def_res = find_definition(name, content, first_line=1)
+                    if def_res:
+                        line_num, strength = def_res
+                        matched_seg_id = segment_id
+                        for s_id, s_kind, s_loc, s_loc_end, _, _ in target_db.get_file_segments(file_rec.id):
+                            if s_kind == SegmentKind.LINES and s_loc <= line_num <= max(s_loc_end, s_loc):
+                                matched_seg_id = s_id
+                                break
+                        return matched_seg_id, float(line_num), strength
 
-    def _find_code_definition_line(self, path: str, terms: list[str]) -> int:
-        target_path = Path(path)
-        if not target_path.is_file():
-            return 0
-        lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        term_set = {t.lower() for t in terms}
-        first_def_line = 0
-        for idx, line in enumerate(lines, start=1):
-            m = DEFINITION_RE.match(line)
-            if m:
-                if not first_def_line:
-                    first_def_line = idx
-                symbol_name = m.group(1).lower()
-                if symbol_name in term_set:
-                    return idx
-        return first_def_line
+        if words_here or identifier is not None:
+            seg_text = target_db.get_segment_text(segment_id)
+            if seg_text is not None:
+                first_l, text_content = seg_text
+                query_words = terms if not identifier else [name.lower()]
+                line_hit = find_first_line_with_words(query_words, text_content, first_line=first_l)
+                if line_hit is not None:
+                    return segment_id, float(line_hit), 0
 
-    def search(self, query: str, limit: int = 50) -> ResultSet:
+        return segment_id, 0.0, 0
+
+    def search(
+        self,
+        query: str,
+        limit: int = 50,
+        is_code: bool = False,
+        prefix_last: bool = False,
+        kinds: set[FileKind] | None = None,
+    ) -> ResultSet:
         """Execute hybrid search with dual query routing, Z-score fusion, gating, and folding."""
         stripped = query.strip()
         if not stripped:
             return ResultSet()
 
-        is_code = stripped.startswith("code:")
+        is_code_prefix = stripped.lower().startswith("code:")
+        if not is_code:
+            is_code = is_code_prefix
         if is_code:
             target_db = self.code_db
-            clean_query = stripped[5:].strip()
+            clean_query = stripped[5:].strip() if is_code_prefix else stripped
             if target_db is None or not clean_query:
                 return ResultSet()
         else:
             target_db = self.db
             clean_query = stripped
 
-        terms, target_kind, fts_query_str = self._normalize_query(clean_query)
-        is_lookup = self.is_lookup_query(clean_query)
+        hinted_kinds = extract_kind_hints(clean_query)
+        extracted_terms = extract_terms(clean_query)
+        pure_kind_query = not extracted_terms and bool(hinted_kinds) and not is_code
+
+        if extracted_terms:
+            terms = extracted_terms
+        elif pure_kind_query:
+            terms = []
+        else:
+            terms = [w.lower() for w in re.findall(r"\w+", clean_query) if len(w) >= 2]
+            if not terms:
+                terms = [clean_query.lower()]
+
+        identifier = extract_identifier(clean_query) if is_code else None
+        is_lookup = (identifier is not None) or is_lookup_query(clean_query, terms=terms)
 
         # 1. Vector Search
-        segment_z_scores: dict[int, tuple[float, float]] = {}
+        best: dict[int, tuple[float, float, int]] = {}
         if self.ollama is not None:
-            prompt = Prompts.code_query(clean_query) if is_code else Prompts.query(clean_query)
+            prompt = format_code_query_prompt(clean_query) if is_code else format_query_prompt(clean_query)
             try:
                 embeddings = self.ollama.embed(self.model, [prompt])
-            except Exception:
+            except OllamaError:
                 embeddings = []
 
             if embeddings:
                 query_vec = np.array(embeddings[0], dtype=np.float32)
-                seg_ids, file_ids, modalities, mat = target_db.get_all_vectors()
+                seg_ids, file_ids, modalities, mat, sets_scale = target_db.get_all_vectors_with_scale()
                 if len(seg_ids) > 0 and mat.shape[0] > 0:
                     cosines = cosine_similarity(query_vec, mat)
-                    z_scores = z_score_normalize(cosines, modalities)
-                    pos_candidates = [
-                        (seg_id, float(cos), float(z))
-                        for seg_id, cos, z in zip(seg_ids, cosines, z_scores)
-                        if z > 0.0
-                    ]
-                    pos_candidates.sort(key=lambda item: item[2], reverse=True)
-                    for seg_id, cos, z in pos_candidates[:200]:
-                        segment_z_scores[seg_id] = (cos, z)
+                    z_scores = z_score_normalize(cosines, modalities, sets_scale=sets_scale)
+                    for seg_id, f_id, cos, z in zip(seg_ids, file_ids, cosines, z_scores):
+                        z_val = float(z)
+                        cos_val = float(cos)
+                        if f_id not in best or z_val > best[f_id][0]:
+                            best[f_id] = (z_val, cos_val, seg_id)
 
         # 2. Keyword Search
-        fts_rows = target_db.fts_search(fts_query_str, limit=200) if fts_query_str else []
-        fts_by_seg: dict[int, dict] = {row["segment_id"]: row for row in fts_rows}
+        if identifier is not None:
+            patterns = [identifier_phrase(identifier)]
+        elif terms:
+            patterns = make_fts_patterns(terms, prefix_last=prefix_last)
+            for idx, p in enumerate(patterns):
+                if len(terms[idx]) >= 3 and not p.endswith("*"):
+                    if not target_db.is_indexed(p):
+                        patterns[idx] = p + "*"
+        else:
+            patterns = []
 
-        candidate_segment_ids = set(segment_z_scores.keys()) | set(fts_by_seg.keys())
-        if not candidate_segment_ids:
+        words: list[dict] = []
+        coverage: dict[int, float] = {}
+        if patterns:
+            fts_query_str = " OR ".join(patterns)
+            fts_rows = target_db.fts_search(fts_query_str, limit=1000, terms=terms)
+            seen_files: set[int] = set()
+            for r in fts_rows:
+                fid = r["file_id"]
+                if fid is not None and fid not in seen_files:
+                    seen_files.add(fid)
+                    words.append(r)
+                    if len(words) >= 200:
+                        break
+
+            cov_fids = list(seen_files | {fid for fid, sem in best.items() if sem[0] >= 1.5})
+            if cov_fids:
+                coverage = target_db.compute_coverage(patterns, cov_fids)
+
+        word_rank: dict[int, tuple[int, dict]] = {
+            w["file_id"]: (idx + 1, w) for idx, w in enumerate(words)
+        }
+
+        # 3. Quality Gating & Score Fusion
+        z_gate = 2.0
+        word_weight = 1.0 if is_code else 2.0
+        meaning_weight, words_weight = (0.5, word_weight * 2.0) if is_lookup else (1.0, word_weight)
+
+        if pure_kind_query:
+            candidates = {
+                f_rec.id
+                for f_rec in target_db.find_all_files()
+                if f_rec.kind in hinted_kinds
+            }
+        else:
+            candidates = {fid for fid, sem in best.items() if sem[0] >= z_gate}
+            for fid, cov in coverage.items():
+                if cov >= 0.5:
+                    candidates.add(fid)
+
+        if not candidates:
             return ResultSet()
 
-        # Batch query segment and file records
-        placeholders = ",".join("?" for _ in candidate_segment_ids)
-        cursor = target_db._conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT s.id, s.file, s.kind, s.loc, s.loc_end, s.excerpt,
-                   f.path, f.kind, f.mtime, f.size, f.info
-            FROM segments s
-            JOIN files f ON f.id = s.file
-            WHERE s.id IN ({placeholders})
-            """,
-            list(candidate_segment_ids),
+        scored: dict[int, float] = {}
+        file_records: dict[int, FileRecord] = {}
+        resolved_code_places: dict[int, tuple[int, float, int]] = {}
+        folded_terms = [_fold_latin_diacritics(t) for t in terms if _fold_latin_diacritics(t)]
+
+        for fid in candidates:
+            f_rec = target_db.find_by_id(fid)
+            if f_rec is None:
+                continue
+            if kinds is not None and f_rec.kind not in kinds:
+                continue
+            file_records[fid] = f_rec
+
+            sem = best.get(fid)
+            z_val = sem[0] if sem else 0.0
+            cov_val = coverage.get(fid, 0.0)
+
+            kind_bonus = 1.0 if f_rec.kind in hinted_kinds else 0.0
+
+            name_bonus = 0.0
+            if folded_terms and cov_val >= 0.5:
+                stem_folded = _fold_latin_diacritics(Path(f_rec.path).stem)
+                matched_in_stem = sum(1 for ft in folded_terms if ft in stem_folded)
+                if matched_in_stem > 0:
+                    name_ratio = matched_in_stem / len(folded_terms)
+                    name_bonus = 3.0 * (name_ratio ** 1.5)
+
+            def_bonus = 0.0
+            if is_code:
+                keyword = word_rank.get(fid)
+                use_meaning = sem is not None and (sem[0] >= z_gate or keyword is None)
+                init_seg_id = sem[2] if use_meaning and sem is not None else (keyword[1]["segment_id"] if keyword else None)
+                if init_seg_id is not None:
+                    res_seg_id, res_focus, strength = self._resolve_code_place(
+                        target_db=target_db,
+                        file_rec=f_rec,
+                        segment_id=init_seg_id,
+                        identifier=identifier,
+                        clean_query=clean_query,
+                        terms=terms,
+                        words_here=(keyword is not None and keyword[1]["segment_id"] == init_seg_id) or identifier is not None,
+                    )
+                    resolved_code_places[fid] = (res_seg_id, res_focus, strength)
+                    if strength == 2:
+                        def_bonus = 3.0
+                    elif strength == 1:
+                        def_bonus = 1.5
+
+            score = (
+                meaning_weight * max(z_val, 0.0)
+                + words_weight * (cov_val ** 1.5)
+                + kind_bonus
+                + name_bonus
+                + def_bonus
+            )
+            scored[fid] = score
+
+        if not scored:
+            return ResultSet()
+
+        # 4. Result Hit Assembly
+        sorted_files = sorted(
+            scored.keys(),
+            key=lambda fid: (scored[fid], file_records[fid].mtime),
+            reverse=True,
         )
-        records = cursor.fetchall()
+        hits: list[SearchHit] = []
 
-        # 3. Weights calculation
-        if is_code:
-            w_meaning = 0.5 if is_lookup else 1.0
-            w_words = 2.0 if is_lookup else 1.0
-        else:
-            w_meaning = 0.5 if is_lookup else 1.0
-            w_words = 4.0 if is_lookup else 2.0
+        for fid in sorted_files:
+            f_rec = file_records[fid]
+            semantic = best.get(fid)
+            keyword = word_rank.get(fid)
 
-        hits_by_file: dict[int, SearchHit] = {}
-
-        for row in records:
-            seg_id, file_id, s_kind, s_loc, s_loc_end, s_excerpt, f_path, f_kind_val, f_mtime, f_size, f_info_json = row
-            file_kind = FileKind(f_kind_val)
-            seg_kind = SegmentKind(s_kind)
-
-            cos, z = segment_z_scores.get(seg_id, (0.0, 0.0))
-
-            fts_item = fts_by_seg.get(seg_id)
-            kw_rank = int(fts_item["rank"]) if fts_item else 0
-            snippet = fts_item["snippet"] if fts_item and fts_item["snippet"] else s_excerpt
-
-            file_path_obj = Path(f_path)
-            content_text = " ".join([file_path_obj.name, snippet, s_excerpt])
-            coverage = self.compute_coverage(terms, content_text)
-
-            # Quality Gating
-            if z < 2.0 and coverage < 0.5:
+            use_meaning = semantic is not None and (semantic[0] >= z_gate or keyword is None)
+            segment_id = (
+                semantic[2]
+                if use_meaning and semantic is not None
+                else (keyword[1]["segment_id"] if keyword else None)
+            )
+            if segment_id is None and pure_kind_query:
+                file_segs = target_db.get_file_segments(fid)
+                if file_segs:
+                    segment_id = file_segs[0][0]
+            if segment_id is None:
                 continue
 
-            # HintBonus
-            hint_bonus = 0.0
-            if target_kind is not None and file_kind == target_kind:
-                hint_bonus += 1.0
+            focus_line: float = 0.0
+            if is_code and fid in resolved_code_places:
+                segment_id, focus_line, _ = resolved_code_places[fid]
 
-            filename_cov = self.compute_coverage(terms, file_path_obj.name)
-            hint_bonus += 0.5 * filename_cov
+            seg_meta = target_db.get_segment(segment_id)
+            if seg_meta is not None:
+                s_kind, s_loc, s_loc_end, s_excerpt = seg_meta
+            else:
+                s_kind, s_loc, s_loc_end, s_excerpt = SegmentKind.NAME, 0.0, 0.0, ""
 
-            focus_line = 0.0
-            if is_code:
-                focus_line = float(self._find_code_definition_line(f_path, terms))
-                if focus_line > 0:
-                    hint_bonus += 0.3
+            snippet = ""
+            if keyword and keyword[1]["segment_id"] == segment_id:
+                raw_snip = keyword[1]["snippet"]
+                if raw_snip and "«" in raw_snip:
+                    snippet = raw_snip
 
-            score = w_meaning * max(z, 0.0) + w_words * (coverage ** 1.5) + hint_bonus
+            if not snippet:
+                snippet = s_excerpt
 
-            hit = SearchHit(
-                path=f_path,
-                kind=file_kind,
-                score=score,
-                z=z,
-                cosine=cos,
-                keyword_rank=kw_rank,
-                segment=seg_kind,
-                segment_id=seg_id,
-                loc=s_loc or 0.0,
-                loc_end=s_loc_end or 0.0,
-                excerpt=snippet or s_excerpt,
-                modified=f_mtime,
-                size=f_size,
-                focus=focus_line,
+            kw_rank = keyword[0] if keyword else 0
+
+            hits.append(
+                SearchHit(
+                    path=f_rec.path,
+                    kind=f_rec.kind,
+                    score=scored[fid],
+                    z=semantic[0] if semantic else 0.0,
+                    cosine=semantic[1] if semantic else 0.0,
+                    keyword_rank=kw_rank,
+                    segment=s_kind,
+                    segment_id=segment_id,
+                    loc=s_loc,
+                    loc_end=s_loc_end,
+                    excerpt=snippet,
+                    modified=f_rec.mtime,
+                    size=f_rec.size,
+                    info=f_rec.info,
+                    focus=focus_line,
+                )
             )
 
-            if file_id not in hits_by_file or hit.score > hits_by_file[file_id].score:
-                hits_by_file[file_id] = hit
-
-        all_hits = sorted(hits_by_file.values(), key=lambda h: h.score, reverse=True)
-        if not all_hits:
+        if not hits:
             return ResultSet()
 
-        top_score = all_hits[0].score
+        top_score = hits[0].score
         threshold = 0.5 * top_score
 
-        ranked = [h for h in all_hits if h.score >= threshold][:limit]
-        weaker = [h for h in all_hits if h.score < threshold]
+        ranked = [h for h in hits if h.score >= threshold][:limit]
+        weaker = [h for h in hits if h.score < threshold]
 
         return ResultSet(ranked=ranked, weaker=weaker)
 
-    def format_results(
-        self,
-        hits: list[SearchHit] | ResultSet,
-        query: str = "",
-    ) -> tuple[list[ResultRow], list[ResultRow]]:
-        """Transform search hits into primary and weaker ResultRow view models."""
-        terms = re.findall(r"\w+", query.lower())
-        if isinstance(hits, ResultSet):
-            primary = [ResultRow.from_hit(h, terms=terms) for h in hits.ranked]
-            weaker = [ResultRow.from_hit(h, terms=terms) for h in hits.weaker]
-            return primary, weaker
-
-        if not hits:
-            return [], []
-
-        top_score = max(h.score for h in hits)
-        threshold = 0.5 * top_score
-        primary = [ResultRow.from_hit(h, terms=terms) for h in hits if h.score >= threshold]
-        weaker = [ResultRow.from_hit(h, terms=terms) for h in hits if h.score < threshold]
-        return primary, weaker

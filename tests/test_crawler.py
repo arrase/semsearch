@@ -98,6 +98,32 @@ def test_rules_should_skip(tmp_path: Path):
     skip, _ = should_skip(str(code_file), is_code_mode=True)
     assert skip is False
 
+    # In general mode, standalone code files/scripts outside code projects are skipped
+    skip, reason = should_skip("/tmp/random/script.py", is_code_mode=False)
+    assert skip is True
+    assert "code file in general mode" in reason
+
+    skip, reason = should_skip("/tmp/random/run.sh", is_code_mode=False)
+    assert skip is True
+    assert "code file in general mode" in reason
+
+    # In code mode, data formats are skipped
+    for data_file in (
+        "data.json",
+        "log.jsonl",
+        "config.xml",
+        "Cargo.toml",
+        "Info.plist",
+        "sheet.csv",
+        "sheet.tsv",
+        "poetry.lock",
+        "pnpm-lock.yaml",
+        "helm-lock.yaml",
+    ):
+        skip, reason = should_skip(f"/tmp/repo/{data_file}", is_code_mode=True)
+        assert skip is True
+        assert "data format" in reason
+
 
 def test_rules_dataset_folder():
     """Verify dataset detection for 300+ machine-named files."""
@@ -348,4 +374,29 @@ def test_crawl_folder_root_never_treated_as_dataset(tmp_path: Path):
     candidates_with_nested = crawl_folder(str(root), is_code=False)
     # The 350 from root are kept, the 350 image files from nested are skipped as dataset
     assert len(candidates_with_nested) == 350
+
+
+def test_crawl_and_sync_with_excluded_folders_and_types(db: Database, tmp_path: Path):
+    """Verify crawl_folder and sync_candidates respect excluded_folders and excluded_types."""
+    root = tmp_path / "excl_root"
+    root.mkdir()
+    (root / "keep.md").write_text("Markdown doc")
+    (root / "skip.txt").write_text("Plain text")
+    (root / "Captura de pantalla_20260927.png").write_text("png")
+
+    priv = root / "Private"
+    priv.mkdir()
+    (priv / "secret_doc.md").write_text("Private doc")
+
+    candidates = crawl_folder(
+        str(root),
+        is_code=False,
+        excluded_folders=[str(priv)],
+        excluded_types=["txt"],
+    )
+    by_name = {Path(c.path).name: c.kind for c in candidates}
+    assert by_name == {
+        "keep.md": FileKind.DOC,
+        "Captura de pantalla_20260927.png": FileKind.SCREENSHOT,
+    }
 

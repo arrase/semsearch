@@ -50,7 +50,8 @@ def test_l2_normalize_2d():
 
 def test_float16_bytes_roundtrip():
     """Verify serialization to and from float16 bytes."""
-    vec = np.random.randn(DIM).astype(np.float32)
+    rng = np.random.default_rng(42)
+    vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
     data = float16_to_bytes(vec)
     assert len(data) == DIM * 2  # 1536 bytes for 768 float16 values
 
@@ -112,3 +113,30 @@ def test_z_score_normalize_large_modality_uses_modality_mean():
     # Because each group was centered by its own mean (0.8 - 0.8 = 0, 0.4 - 0.4 = 0),
     # all centered values are 0.0, sigma will be clamped to minimum 0.02
     assert np.allclose(z, 0.0)
+
+
+def test_z_score_normalize_small_image_uses_global_mean_without_penalty():
+    """Verify small image group (< 20 items) uses global mean without subtracting an artificial offset."""
+    text_scores = np.full(25, 0.30, dtype=np.float32)
+    image_scores = np.array([0.42, 0.25], dtype=np.float32)
+
+    cosines = np.concatenate([text_scores, image_scores])
+    modalities = [Modality.TEXT] * 25 + [Modality.IMAGE] * 2
+
+    z = z_score_normalize(cosines, modalities)
+    assert z[25] > 2.0
+    assert z[26] < 0.0
+
+
+def test_z_score_normalize_sets_scale_excludes_deep_segments():
+    """Verify sets_scale=False segments do not skew mean or standard deviation."""
+    scale_scores = np.linspace(0.20, 0.40, 20, dtype=np.float32)
+    deep_scores = np.full(50, 0.90, dtype=np.float32)
+    cosines = np.concatenate([scale_scores, deep_scores])
+    modalities = [Modality.TEXT] * 70
+    sets_scale = [True] * 20 + [False] * 50
+
+    z = z_score_normalize(cosines, modalities, sets_scale=sets_scale)
+    assert np.isclose(np.mean(z[:20]), 0.0, atol=1e-4)
+    assert np.all(z[20:] > 5.0)
+

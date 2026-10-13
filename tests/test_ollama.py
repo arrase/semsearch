@@ -86,19 +86,31 @@ def test_is_multimodal() -> None:
     assert client.is_multimodal({"capabilities": ["vision", "text"]}) is True
     assert client.is_multimodal({"capabilities": ["audio"]}) is True
     assert client.is_multimodal({"capabilities": ["text"]}) is False
+    assert client.is_multimodal({"capabilities": ["completion", "vision"]}) is False
+    assert client.is_multimodal({"capabilities": ["embedding", "vision"]}) is True
+    assert client.is_multimodal({"capabilities": ["completion", "embedding", "vision"]}) is True
+    assert client.is_multimodal({"capabilities": ["completion", "vision", "tools", "thinking"]}) is False
+    assert client.is_multimodal({"capabilities": ["COMPLETION", "VISION"]}) is False
+    assert client.is_multimodal({"capabilities": ["EMBEDDING", "VISION"]}) is True
+    assert client.is_multimodal({"capabilities": None}) is False
 
     # Details families
     assert client.is_multimodal({"details": {"families": ["clip", "text"]}}) is True
     assert client.is_multimodal({"details": {"family": "mllama"}}) is True
+    assert client.is_multimodal({"details": {"family": "gemma-embedding2"}}) is True
+    assert client.is_multimodal({"details": {"family": "gemma2"}}) is False
     assert client.is_multimodal({"details": {"family": "llama"}}) is False
 
     # Model info architecture
-    assert client.is_multimodal({"model_info": {"general.architecture": "gemma2"}}) is True
+    assert client.is_multimodal({"model_info": {"general.architecture": "gemma-embedding2"}}) is True
+    assert client.is_multimodal({"model_info": {"general.architecture": "gemma2"}}) is False
     assert client.is_multimodal({"model_info": {"clip.vision.embedding_length": 768}}) is True
     assert client.is_multimodal({"model_info": {"llama.block_count": 32}}) is False
 
     # Model name
     assert client.is_multimodal({"name": "embeddinggemma-2"}) is True
+    assert client.is_multimodal({"name": "gemma2"}) is False
+    assert client.is_multimodal({"name": "gemma2:latest"}) is False
 
 
 def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,9 +121,10 @@ def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
             200,
             json={
                 "models": [
-                    {"name": "embeddinggemma-2:latest", "details": {"family": "gemma2"}},
+                    {"name": "embeddinggemma-2:latest", "details": {"family": "gemma-embedding2"}},
                     {"name": "llama3:latest", "details": {"family": "llama"}},
                     {"name": "llava:latest", "details": {"family": "llava"}},
+                    {"name": "qwen3.8:latest", "capabilities": ["completion", "vision"]},
                 ]
             },
         )
@@ -129,6 +142,7 @@ def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "embeddinggemma-2:latest" in multimodal
     assert "llava:latest" in multimodal
     assert "llama3:latest" not in multimodal
+    assert "qwen3.8:latest" not in multimodal
 
 
 def test_embed_batching_and_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,6 +221,13 @@ def test_is_multimodal_fallback_to_show_model(monkeypatch: pytest.MonkeyPatch) -
             return httpx.Response(200, json={"capabilities": ["vision"]})
         if name == "custom-text":
             return httpx.Response(200, json={"capabilities": ["text"]})
+        if name == "generative-show":
+            return httpx.Response(200, json={"capabilities": ["completion", "vision"]})
+        if name == "gemma2-model":
+            return httpx.Response(
+                200,
+                json={"details": {"family": "gemma2"}, "model_info": {"general.architecture": "gemma2"}},
+            )
         return httpx.Response(500, text="server error")
 
     monkeypatch.setattr(httpx, "post", mock_post)
@@ -228,3 +249,16 @@ def test_is_multimodal_fallback_to_show_model(monkeypatch: pytest.MonkeyPatch) -
 
     # 4. tag_info unconfirmed and show_model raises OllamaError
     assert client.is_multimodal("error-model", tag_info={"name": "error-model"}) is False
+
+    # 5. tag_info has completion capability: show_model should NOT be called
+    tag_generative = {"name": "qwen-chat", "capabilities": ["completion", "vision"]}
+    assert client.is_multimodal("qwen-chat", tag_info=tag_generative) is False
+    assert "qwen-chat" not in called_models
+
+    # 6. show_model returns completion capability: evaluates to False
+    assert client.is_multimodal("generative-show") is False
+    assert "generative-show" in called_models
+
+    # 7. show_model returns gemma2 family and architecture: evaluates to False
+    assert client.is_multimodal("gemma2-model") is False
+    assert "gemma2-model" in called_models

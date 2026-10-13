@@ -1,54 +1,15 @@
 """Media extractor for audio and video files."""
 
 import base64
-from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import Any
 import wave
 import numpy as np
 from PIL import Image
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
-
-
-@dataclass
-class AudioWindow:
-    """Window of extracted audio."""
-
-    data_base64: str
-    loc: float
-    loc_end: float
-
-    def to_segment(self) -> ExtractedSegment:
-        """Convert audio window into an ExtractedSegment."""
-        return ExtractedSegment(
-            kind=SegmentKind.AUDIO,
-            modality=Modality.AUDIO,
-            loc=self.loc,
-            loc_end=self.loc_end,
-            payload={"audio": self.data_base64},
-        )
-
-
-@dataclass
-class VideoFrame:
-    """Sampled video frame with perceptual hash."""
-
-    data_base64: str
-    loc: float
-    hash: int
-
-    def to_segment(self) -> ExtractedSegment:
-        """Convert video frame into an ExtractedSegment."""
-        return ExtractedSegment(
-            kind=SegmentKind.FRAME,
-            modality=Modality.IMAGE,
-            loc=self.loc,
-            payload={"image": self.data_base64},
-        )
 
 
 def average_hash(im: Image.Image, hash_size: int = 8) -> int:
@@ -73,7 +34,7 @@ def extract_audio(
     window_sec: float = 30.0,
     hop_sec: float = 25.0,
     min_rms: float = 0.003,
-) -> list[AudioWindow]:
+) -> list[ExtractedSegment]:
     """Decode audio to 16 kHz mono WAV, slice into windows, and filter silence."""
     cmd = [
         "ffmpeg",
@@ -105,7 +66,7 @@ def extract_audio(
     window_samples = int(window_sec * target_sr)
     hop_samples = int(hop_sec * target_sr)
 
-    windows: list[AudioWindow] = []
+    segments: list[ExtractedSegment] = []
     pos = 0
 
     while pos < n_samples:
@@ -123,11 +84,13 @@ def extract_audio(
                 wf.writeframes(chunk_int16.tobytes())
 
             b64_audio = base64.b64encode(buf.getvalue()).decode("ascii")
-            windows.append(
-                AudioWindow(
-                    data_base64=b64_audio,
+            segments.append(
+                ExtractedSegment(
+                    kind=SegmentKind.AUDIO,
+                    modality=Modality.AUDIO,
                     loc=round(pos / target_sr, 2),
                     loc_end=round(end_pos / target_sr, 2),
+                    payload={"audio": b64_audio},
                 )
             )
 
@@ -135,16 +98,16 @@ def extract_audio(
             break
         pos += hop_samples
 
-    return windows
+    return segments
 
 
 def extract_video(
     path: str,
     sample_interval_sec: float = 3.0,
     hash_threshold: int = 4,
-) -> tuple[list[VideoFrame], list[AudioWindow]]:
+) -> list[ExtractedSegment]:
     """Sample video frames at intervals, deduplicate shots via aHash, and extract soundtrack."""
-    video_frames: list[VideoFrame] = []
+    segments: list[ExtractedSegment] = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         cmd = [
@@ -173,21 +136,14 @@ def extract_video(
 
                 prev_hash = h
                 b64_frame = base64.b64encode(frame_file.read_bytes()).decode("ascii")
-                video_frames.append(VideoFrame(data_base64=b64_frame, loc=timestamp, hash=h))
+                segments.append(
+                    ExtractedSegment(
+                        kind=SegmentKind.FRAME,
+                        modality=Modality.IMAGE,
+                        loc=timestamp,
+                        payload={"image": b64_frame},
+                    )
+                )
 
-    audio_windows = extract_audio(path)
-    return video_frames, audio_windows
-
-
-def extract_audio_segments(path: str, **kwargs: Any) -> list[ExtractedSegment]:
-    """Extract audio segments from an audio file."""
-    windows = extract_audio(path, **kwargs)
-    return [w.to_segment() for w in windows]
-
-
-def extract_video_segments(path: str, **kwargs: Any) -> list[ExtractedSegment]:
-    """Extract video segments (frames and audio windows) from a video file."""
-    frames, audio_windows = extract_video(path, **kwargs)
-    segments = [f.to_segment() for f in frames]
-    segments.extend(w.to_segment() for w in audio_windows)
+    segments.extend(extract_audio(path))
     return segments

@@ -6,6 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from semsearch.config import ConfigManager
+from semsearch.core.database import Database
 from semsearch.gui.settings import (
     SettingsDialog,
     is_autostart_enabled,
@@ -129,3 +130,133 @@ def test_settings_dialog_test_connection_error_handling(tmp_path: Path, mock_db,
     dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
     dialog.storage_tab.test_connection()
     assert "Connection failed" in dialog.storage_tab.status_label.text()
+
+
+def test_settings_dialog_code_db_stats_aggregation(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify update_database_stats aggregates metrics and disk size from both db and code_db."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    db_file = tmp_path / "index.db"
+    db_file.write_bytes(b"x" * 2048)
+    mock_db = MagicMock()
+    mock_db.path = str(db_file)
+    mock_db.stats.return_value = {"files": 100, "segments": 300, "vectors": 250}
+
+    code_db_file = tmp_path / "code.db"
+    code_db_file.write_bytes(b"x" * 1024)
+    mock_code_db = MagicMock()
+    mock_code_db.path = str(code_db_file)
+    mock_code_db.stats.return_value = {"files": 50, "segments": 150, "vectors": 120}
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db, code_db=mock_code_db)
+    dialog.storage_tab.update_database_stats()
+
+    label_text = dialog.storage_tab.stats_label.text()
+    assert "Indexed Files: 150" in label_text
+    assert "Segments: 450" in label_text
+    assert "Vectors: 370" in label_text
+    assert "3.0 KB" in label_text
+
+
+def test_settings_dialog_stats_no_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify stats label when both db and code_db are None."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, db=None, code_db=None)
+    dialog.storage_tab.update_database_stats()
+    assert dialog.storage_tab.stats_label.text() == "Database metrics unavailable"
+
+
+def test_settings_dialog_vacuum_both_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify _vacuum_database executes VACUUM on both db and code_db and refreshes stats."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    mock_db = MagicMock()
+    mock_db.path = str(tmp_path / "index.db")
+    mock_db.stats.return_value = {"files": 10, "segments": 20, "vectors": 20}
+
+    mock_code_db = MagicMock()
+    mock_code_db.path = str(tmp_path / "code.db")
+    mock_code_db.stats.return_value = {"files": 5, "segments": 10, "vectors": 10}
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db, code_db=mock_code_db)
+    dialog.storage_tab.vacuum_btn.click()
+
+    mock_db.vacuum.assert_called_once()
+    mock_code_db.vacuum.assert_called_once()
+
+
+def test_settings_dialog_reindex_requested_signal_forwarding(
+    tmp_path: Path, mock_ollama, mock_db, qapp: QApplication
+):
+    """Verify clicking reindex button emits reindex_requested signal from tab and dialog."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
+    tab_spy = MagicMock()
+    dialog_spy = MagicMock()
+
+    dialog.storage_tab.reindex_requested.connect(tab_spy)
+    dialog.reindex_requested.connect(dialog_spy)
+
+    dialog.storage_tab.reindex_btn.click()
+
+    tab_spy.assert_called_once()
+    dialog_spy.assert_called_once()
+
+
+def test_settings_dialog_stats_code_db_only(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify update_database_stats works when db is None but code_db is present."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    code_db_file = tmp_path / "code.db"
+    code_db_file.write_bytes(b"x" * 1024)
+    mock_code_db = MagicMock()
+    mock_code_db.path = str(code_db_file)
+    mock_code_db.stats.return_value = {"files": 42, "segments": 84, "vectors": 70}
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, db=None, code_db=mock_code_db)
+    dialog.storage_tab.update_database_stats()
+
+    label_text = dialog.storage_tab.stats_label.text()
+    assert "Indexed Files: 42" in label_text
+    assert "Segments: 84" in label_text
+    assert "Vectors: 70" in label_text
+    assert "1.0 KB" in label_text
+
+
+def test_settings_dialog_vacuum_db_only(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify _vacuum_database executes VACUUM on db when code_db is None without error."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    mock_db = MagicMock()
+    mock_db.path = str(tmp_path / "index.db")
+    mock_db.stats.return_value = {"files": 10, "segments": 20, "vectors": 20}
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db, code_db=None)
+    dialog.storage_tab.vacuum_btn.click()
+
+    mock_db.vacuum.assert_called_once()
+
+
+def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+    """Verify _vacuum_database executes VACUUM on real SQLite database instances."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+
+    real_db = Database(tmp_path / "real_index.db")
+    real_code_db = Database(tmp_path / "real_code.db")
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, real_db, code_db=real_code_db)
+    dialog.storage_tab.vacuum_btn.click()
+
+    assert "Indexed Files: 0" in dialog.storage_tab.stats_label.text()
+    assert "Segments: 0" in dialog.storage_tab.stats_label.text()
+    assert "8.0 KB" in dialog.storage_tab.stats_label.text()
+

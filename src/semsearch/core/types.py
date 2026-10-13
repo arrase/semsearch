@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-import re
+
+from semsearch.i18n import tr
 
 
 class FileKind(str, Enum):
@@ -93,20 +93,6 @@ class FileRecord:
 
 
 @dataclass
-class SegmentRecord:
-    """Searchable segment record with embedding vector."""
-
-    id: int
-    file_id: int
-    kind: SegmentKind
-    modality: Modality
-    loc: float = 0.0
-    loc_end: float = 0.0
-    excerpt: str = ""
-    vec: bytes = b""
-
-
-@dataclass
 class ExtractedSegment:
     """Searchable segment piece extracted from a file."""
 
@@ -139,73 +125,14 @@ class SearchHit:
     info: dict = field(default_factory=dict)
     focus: float = 0.0
 
-
-@dataclass
-class ResultRow:
-    """View model representing a search hit in the GUI."""
-
-    title: str = ""
-    folder: str = ""
-    place: str = ""
-    reason: str = ""
-    details: str = ""
-    found_words: list[str] = field(default_factory=list)
-    matched_meaning: bool = False
-    matched_words: bool = False
-    code_line: int | None = None
-    path: str = ""
-    kind: FileKind | None = None
-    score: float = 0.0
-
-    @classmethod
-    def from_hit(cls, hit: SearchHit, terms: list[str] | None = None) -> "ResultRow":
-        """Build ResultRow from a SearchHit."""
-        file_path = Path(hit.path)
-        title = file_path.name
-        folder = str(file_path.parent)
-
-        place = ""
-        if hit.loc > 0:
-            if hit.segment in (SegmentKind.PAGE, SegmentKind.PAGE_IMAGE):
-                place = f"p. {int(hit.loc)}"
-            elif hit.segment == SegmentKind.LINES:
-                end = int(hit.loc_end) if hit.loc_end > 0 else int(hit.loc)
-                place = f"L{int(hit.loc)}" if end == int(hit.loc) else f"L{int(hit.loc)}–{end}"
-            elif hit.segment in (SegmentKind.AUDIO, SegmentKind.FRAME):
-                minutes = int(hit.loc) // 60
-                seconds = int(hit.loc) % 60
-                place = f"{minutes}:{seconds:02d}"
-
-        found_words: list[str] = []
-        if hit.excerpt:
-            matches = re.findall(r"«(.*?)»", hit.excerpt)
-            for m in matches:
-                clean = m.strip()
-                if clean and clean not in found_words:
-                    found_words.append(clean)
-
-        matched_meaning = hit.z >= 2.0
-        matched_words = hit.keyword_rank > 0
-
-        reason = "Matches meaning" if matched_meaning else ("Matches words" if matched_words else "Matches name")
-        details = hit.excerpt
-
-        code_line = int(hit.focus) if hit.focus > 0 else (int(hit.loc) if hit.kind == FileKind.CODE and hit.loc > 0 else None)
-
-        return cls(
-            title=title,
-            folder=folder,
-            place=place,
-            reason=reason,
-            details=details,
-            found_words=found_words,
-            matched_meaning=matched_meaning,
-            matched_words=matched_words,
-            code_line=code_line,
-            path=hit.path,
-            kind=hit.kind,
-            score=hit.score,
-        )
+    @property
+    def reason(self) -> str:
+        """Human-readable explanation for why this hit matched."""
+        if self.z >= 2.0:
+            return tr("Matches meaning")
+        if self.keyword_rank > 0:
+            return tr("Matches words")
+        return tr("Matches name")
 
 
 @dataclass

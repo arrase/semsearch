@@ -1,6 +1,8 @@
 """Tests for IndexService, priority queue tiers, pipelining, and partial continuation."""
 
 from pathlib import Path
+import time
+from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
@@ -17,31 +19,13 @@ from semsearch.core.types import (
     SegmentKind,
 )
 from semsearch.core.vectors import DIM
-from semsearch.services.indexer import IndexQueueTier, IndexService, MeasuredCosts
+from semsearch.services.indexer import IndexQueueTier, IndexService, _code_place
+
 
 
 class MockOllama(OllamaClient):
     def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
         return [[0.1] * DIM for _ in inputs]
-
-
-def test_measured_costs_tracking_and_estimates():
-    costs = MeasuredCosts()
-
-    # Initial estimates
-    est_time = costs.estimate_time({"image": 5, "doc": 10})
-    assert est_time > 0.0
-
-    est_disk = costs.estimate_disk_growth(10)
-    assert est_disk > 0
-
-    # Update metrics
-    costs.update(Modality.TEXT, elapsed_ms=100.0, count=2, bytes_added=3200)
-    assert costs.ms_per_chunk == 50.0
-    assert costs.bytes_per_segment == 1600
-
-    costs.update(Modality.IMAGE, elapsed_ms=200.0, count=1)
-    assert costs.ms_per_image == 200.0
 
 
 def test_process_file_with_ollama_vectors(tmp_path: Path):
@@ -218,7 +202,7 @@ def test_modified_file_requeuing(tmp_path: Path):
     rec = db.find_by_id(fid)
     assert rec is not None
     assert rec.state == FileState.PENDING
-    assert fid in service._new_files_queue
+    assert (fid, False) in service._new_files_queue
 
     cursor = db._conn.cursor()
     cursor.execute("SELECT id FROM segments WHERE file = ? AND kind != 'name'", (fid,))
@@ -244,7 +228,7 @@ def test_extraction_failure_handling(tmp_path: Path, monkeypatch):
     def failing_extract(path):
         raise RuntimeError("Extraction failed due to parser crash")
 
-    monkeypatch.setattr("semsearch.services.indexer.extract_doc_segments", failing_extract)
+    monkeypatch.setattr("semsearch.services.indexer.extract_doc", failing_extract)
 
     service = IndexService(db=db)
     rec = db.find_by_id(fid)
@@ -257,3 +241,410 @@ def test_extraction_failure_handling(tmp_path: Path, monkeypatch):
     assert updated_rec is not None
     assert updated_rec.state == FileState.FAILED
     assert "Extraction failed due to parser crash" in (updated_rec.detail or "")
+
+
+def test_crawl_and_sync_resets_activity_to_idle(tmp_path: Path):
+    doc_folder = tmp_path / "docs"
+    doc_folder.mkdir()
+    (doc_folder / "note.txt").write_text("hello world", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    config = AppConfig(folders=[str(doc_folder)])
+    service = IndexService(db=db, config=config)
+
+    assert service.get_status().activity == EngineActivity.STARTING
+    service.crawl_and_sync(is_code=False)
+    assert service.get_status().activity == EngineActivity.IDLE
+
+    stats = db.stats()
+    assert stats["files"] == 1
+    assert stats["pending"] == 1
+
+    # Also verify code crawling resets activity to IDLE and populates code_db
+    code_folder = tmp_path / "code"
+    code_folder.mkdir()
+    (code_folder / "app.py").write_text("print(1)", encoding="utf-8")
+    code_db = Database(tmp_path / "code.sqlite")
+    service_with_code = IndexService(db=db, code_db=code_db, config=AppConfig(code_folders=[str(code_folder)], code_enabled=True))
+    service_with_code.crawl_and_sync(is_code=True)
+    assert service_with_code.get_status().activity == EngineActivity.IDLE
+    assert code_db.stats()["files"] == 1
+
+
+def test_crawl_and_sync_early_returns_when_code_db_none(tmp_path: Path, monkeypatch):
+    """Verify early return when is_code is True but code_db is None."""
+    db = Database(tmp_path / "index.sqlite")
+    code_folder = tmp_path / "code"
+    code_folder.mkdir()
+    service = IndexService(db=db, code_db=None, config=AppConfig(code_folders=[str(code_folder)], code_enabled=True))
+    mock_crawl = MagicMock()
+    monkeypatch.setattr("semsearch.services.indexer.crawl_folder", mock_crawl)
+
+    initial_activity = service.get_status().activity
+    service.crawl_and_sync(is_code=True)
+    service.crawl_and_sync(roots=[str(code_folder)], is_code=True)
+    assert service.get_status().activity == initial_activity
+    mock_crawl.assert_not_called()
+
+
+def test_crawl_and_sync_early_returns_when_stopped(tmp_path: Path, monkeypatch):
+    """Verify early return when service is already stopped."""
+    db = Database(tmp_path / "index.sqlite")
+    doc_folder = tmp_path / "docs"
+    doc_folder.mkdir()
+    service = IndexService(db=db, config=AppConfig(folders=[str(doc_folder)]))
+    mock_crawl = MagicMock()
+    monkeypatch.setattr("semsearch.services.indexer.crawl_folder", mock_crawl)
+
+    service._stop_event.set()
+    initial_activity = service.get_status().activity
+    service.crawl_and_sync(is_code=False)
+    assert service.get_status().activity == initial_activity
+    mock_crawl.assert_not_called()
+
+
+def test_crawl_and_sync_preserves_indexing_state(tmp_path: Path):
+    """Verify crawl_and_sync does not overwrite INDEXING activity to SYNCING or IDLE."""
+    doc_folder = tmp_path / "docs"
+    doc_folder.mkdir()
+    (doc_folder / "file.txt").write_text("content", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    service = IndexService(db=db, config=AppConfig(folders=[str(doc_folder)]))
+    service.status.activity = EngineActivity.INDEXING
+    service.crawl_and_sync(is_code=False)
+
+    assert service.get_status().activity == EngineActivity.INDEXING
+    assert db.stats()["files"] == 1
+
+
+def test_crawl_and_sync_preserves_paused_state(tmp_path: Path):
+    """Verify crawl_and_sync preserves PAUSED status and activity."""
+    doc_folder = tmp_path / "docs"
+    doc_folder.mkdir()
+    (doc_folder / "file.txt").write_text("content", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    service = IndexService(db=db, config=AppConfig(folders=[str(doc_folder)]))
+    service.pause("user request")
+    assert service.get_status().paused is True
+    assert service.get_status().activity == EngineActivity.PAUSED
+
+    service.crawl_and_sync(is_code=False)
+    assert service.get_status().paused is True
+    assert service.get_status().activity == EngineActivity.PAUSED
+    assert db.stats()["files"] == 1
+
+
+def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch):
+    """Verify root crawling loop terminates early when stop_event is set."""
+    folder1 = tmp_path / "f1"
+    folder2 = tmp_path / "f2"
+    folder1.mkdir()
+    folder2.mkdir()
+    (folder1 / "a.txt").write_text("a", encoding="utf-8")
+    (folder2 / "b.txt").write_text("b", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    config = AppConfig(folders=[str(folder1), str(folder2)])
+    service = IndexService(db=db, config=config)
+
+    crawled_roots: list[str] = []
+
+    def mock_crawl(root: str, is_code: bool = False):
+        crawled_roots.append(root)
+        service._stop_event.set()
+        return []
+
+    monkeypatch.setattr("semsearch.services.indexer.crawl_folder", mock_crawl)
+    service.crawl_and_sync(is_code=False)
+    assert len(crawled_roots) == 1
+
+
+def test_get_next_file_code_db_id_collision(tmp_path: Path):
+    """Reproduce ID collision between index.db and code.db in _new_files_queue."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    code_folder = tmp_path / "code"
+    code_folder.mkdir(parents=True, exist_ok=True)
+    config = AppConfig(code_enabled=True, code_folders=[str(code_folder)])
+
+    # Insert file in general db (gets fid=1)
+    p_gen = tmp_path / "general.md"
+    p_gen.write_text("General content", encoding="utf-8")
+    st_gen = p_gen.stat()
+    cand_gen = Candidate(
+        path=str(p_gen),
+        kind=FileKind.DOC,
+        size=st_gen.st_size,
+        mtime=st_gen.st_mtime,
+        inode=st_gen.st_ino,
+        device=st_gen.st_dev,
+    )
+    fid_gen = db.insert_file(cand_gen)
+
+    # Insert file in code db (gets fid=1 as well)
+    p_code = code_folder / "main.py"
+    p_code.write_text("def hello(): pass", encoding="utf-8")
+    st_code = p_code.stat()
+    cand_code = Candidate(
+        path=str(p_code),
+        kind=FileKind.CODE,
+        size=st_code.st_size,
+        mtime=st_code.st_mtime,
+        inode=st_code.st_ino,
+        device=st_code.st_dev,
+    )
+    fid_code = code_db.insert_file(cand_code)
+
+    assert fid_gen == 1
+    assert fid_code == 1
+    assert db.find_by_id(1).state == FileState.PENDING
+    assert code_db.find_by_id(1).state == FileState.PENDING
+
+    service = IndexService(db=db, code_db=code_db, config=config)
+
+    # Enqueue code file first
+    service.enqueue_file(str(p_code), tier=IndexQueueTier.NEW_FILES)
+
+    # _get_next_file should retrieve from code_db, not db
+    rec, target_db, tier = service._get_next_file()
+    assert tier == IndexQueueTier.NEW_FILES
+    assert target_db is code_db
+    assert rec is not None
+    assert rec.id == fid_code
+    assert rec.path == str(p_code.resolve())
+    assert rec.kind == FileKind.CODE
+
+    # Now enqueue general file
+    service.enqueue_file(str(p_gen), tier=IndexQueueTier.NEW_FILES)
+    rec2, target_db2, tier2 = service._get_next_file()
+    assert tier2 == IndexQueueTier.NEW_FILES
+    assert target_db2 is db
+    assert rec2 is not None
+    assert rec2.id == fid_gen
+    assert rec2.path == str(p_gen.resolve())
+
+
+def test_get_next_file_code_db_skips_non_pending_without_affecting_general_db(tmp_path: Path):
+    """Verify that a non-pending file in code_db does not match a pending file with same ID in db."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    code_folder = tmp_path / "code"
+    code_folder.mkdir(parents=True, exist_ok=True)
+    config = AppConfig(code_enabled=True, code_folders=[str(code_folder)])
+
+    p_gen = tmp_path / "doc.txt"
+    p_gen.write_text("General doc", encoding="utf-8")
+    st_gen = p_gen.stat()
+    fid_gen = db.insert_file(Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev))
+
+    p_code = code_folder / "script.py"
+    p_code.write_text("print('test')", encoding="utf-8")
+    st_code = p_code.stat()
+    fid_code = code_db.insert_file(Candidate(str(p_code), FileKind.CODE, st_code.st_size, st_code.st_mtime, st_code.st_ino, st_code.st_dev))
+
+    assert fid_gen == 1
+    assert fid_code == 1
+
+    # Mark code file as DONE in code_db, while gen file remains PENDING in db
+    code_db.update_file_state(fid_code, FileState.DONE)
+
+    service = IndexService(db=db, code_db=code_db, config=config)
+    # Manually append the code file item to simulate a stale queue entry
+    service._new_files_queue.append((fid_code, True))
+    # And append general file
+    service._new_files_queue.append((fid_gen, False))
+
+    rec, target_db, tier = service._get_next_file()
+    # It must skip (1, True) because code_db record is DONE, and return (1, False) with target_db is db
+    assert tier == IndexQueueTier.NEW_FILES
+    assert target_db is db
+    assert rec is not None
+    assert rec.id == fid_gen
+    assert rec.path == str(p_gen.resolve())
+
+
+def test_get_next_file_code_file_skips_when_code_db_none_without_matching_general_db(tmp_path: Path):
+    """Verify that a code queue item does not fall back to general db when code_db is None."""
+    db = Database(tmp_path / "index.sqlite")
+    p_gen = tmp_path / "general.md"
+    p_gen.write_text("General content", encoding="utf-8")
+    st_gen = p_gen.stat()
+    fid_gen = db.insert_file(Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev))
+    assert fid_gen == 1
+
+    service = IndexService(db=db, code_db=None)
+    # Enqueue a code entry with fid=1, simulating an item enqueued for code
+    service._new_files_queue.append((1, True))
+
+    rec, target_db, tier = service._get_next_file()
+    # It must NOT return the general db record for fid=1 under NEW_FILES
+    # Since code_db is None, the item is skipped, falling back to Tier 2 (BACKFILL)
+    assert tier == IndexQueueTier.BACKFILL
+    assert target_db is db
+    assert rec is not None
+    assert rec.id == fid_gen
+
+
+def test_enqueue_file_folder_prefix_containment(tmp_path: Path):
+    """Verify that directory prefix string matching does not confuse sibling folders."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    code_root = tmp_path / "code"
+    code_root.mkdir()
+    sibling_root = tmp_path / "code_notes"
+    sibling_root.mkdir()
+
+    config = AppConfig(code_enabled=True, code_folders=[str(code_root)])
+    service = IndexService(db=db, code_db=code_db, config=config)
+
+    sibling_file = sibling_root / "note.txt"
+    sibling_file.write_text("Not code", encoding="utf-8")
+
+    service.enqueue_file(str(sibling_file))
+
+    # sibling_file should be enqueued into general db with is_code=False
+    assert (1, False) in service._new_files_queue
+    assert db.find_by_id(1) is not None
+    assert code_db.find_by_id(1) is None
+
+
+def test_process_file_ollama_embed_failure_marks_failed(tmp_path: Path):
+    doc_path = tmp_path / "failing.md"
+    doc_path.write_text("Some text for embedding", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    cand = Candidate(
+        path=str(doc_path),
+        kind=FileKind.DOC,
+        size=len(doc_path.read_bytes()),
+        mtime=1.0,
+        inode=1,
+        device=1,
+    )
+    fid = db.insert_file(cand)
+
+    mock_ollama = MagicMock(spec=OllamaClient)
+    mock_ollama.embed.side_effect = RuntimeError("Ollama connection failed")
+
+    service = IndexService(db=db, ollama=mock_ollama)
+    file_rec = db.find_by_path(str(doc_path))
+    assert file_rec is not None
+
+    success = service.process_file(file_rec, db)
+    assert success is False
+
+    updated_rec = db.find_by_id(fid)
+    assert updated_rec is not None
+    assert updated_rec.state == FileState.FAILED
+    assert "Ollama connection failed" in updated_rec.detail
+
+    content_segments = [
+        s
+        for s in db._conn.execute(
+            "SELECT * FROM segments WHERE file = ? AND kind != 'name'", (fid,)
+        ).fetchall()
+    ]
+    assert len(content_segments) == 0
+
+
+def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    doc_path = tmp_path / "crash.md"
+    doc_path.write_text("Content to process", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    cand = Candidate(
+        path=str(doc_path),
+        kind=FileKind.DOC,
+        size=len(doc_path.read_bytes()),
+        mtime=1.0,
+        inode=1,
+        device=1,
+    )
+    fid = db.insert_file(cand)
+
+    service = IndexService(db=db)
+
+    call_count = 0
+
+    def failing_process_file(file_record, target_db):
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("Unexpected extraction crash")
+
+    service.process_file = failing_process_file
+    monkeypatch.setattr(time, "sleep", lambda _: service._stop_event.set())
+
+    file_rec = db.find_by_id(fid)
+    assert file_rec is not None
+    assert file_rec.state == FileState.PENDING
+
+    service._worker_loop()
+
+    assert call_count == 1
+    assert service.status.activity == EngineActivity.IDLE
+    assert service.status.pending == 0
+
+    updated_rec = db.find_by_id(fid)
+    assert updated_rec is not None
+    assert updated_rec.state == FileState.FAILED
+    assert "Unexpected extraction crash" in updated_rec.detail
+
+
+def test_worker_loop_code_db_process_file_exception_marks_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    code_folder = tmp_path / "code"
+    code_folder.mkdir()
+    code_path = code_folder / "crash.py"
+    code_path.write_text("def crash(): pass", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    cand = Candidate(
+        path=str(code_path),
+        kind=FileKind.CODE,
+        size=len(code_path.read_bytes()),
+        mtime=1.0,
+        inode=1,
+        device=1,
+    )
+    fid = code_db.insert_file(cand)
+
+    config = AppConfig(code_enabled=True, code_folders=[str(code_folder)])
+    service = IndexService(db=db, code_db=code_db, config=config)
+
+    call_count = 0
+
+    def failing_process_file(file_record, target_db):
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("Code processing failure")
+
+    service.process_file = failing_process_file
+    monkeypatch.setattr(time, "sleep", lambda _: service._stop_event.set())
+
+    service._worker_loop()
+
+    assert call_count == 1
+    assert db.find_by_id(fid) is None
+    updated_rec = code_db.find_by_id(fid)
+    assert updated_rec is not None
+    assert updated_rec.state == FileState.FAILED
+    assert "Code processing failure" in updated_rec.detail
+
+
+def test_code_place_nested_git_repo(tmp_path: Path):
+    """Verify _code_place walks up to .git before parent code_folders and prefixes title with repo name."""
+    develop = tmp_path / "Develop"
+    repo_dir = develop / "semsearch"
+    (repo_dir / ".git").mkdir(parents=True)
+    file_path = repo_dir / "src" / "semsearch" / "services" / "searcher.py"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text("class SearchService: pass", encoding="utf-8")
+
+    repo, title = _code_place(str(file_path), code_folders=[str(develop)])
+    assert repo == str(repo_dir.resolve())
+    assert title == "src/semsearch/services/searcher.py"
+

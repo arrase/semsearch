@@ -54,8 +54,26 @@ def test_extract_pdf_visual_rendering(tmp_path: Path) -> None:
     assert seg.loc == 1.0
     assert isinstance(seg.payload, dict)
     assert "image" in seg.payload
+    assert seg.excerpt == "Figure 1: Diagram"
     decoded = base64.b64decode(seg.payload["image"])
     assert len(decoded) > 0
+
+
+def test_extract_pdf_whitespace_and_control_chars_fallback(tmp_path: Path) -> None:
+    """Verify pages with only whitespace or control characters fall back to Page N (visual)."""
+    pdf_path = tmp_path / "whitespace_only.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text(fitz.Point(50, 50), "   \t\n   --- ... ___   \n")
+    doc.save(str(pdf_path))
+    doc.close()
+
+    segments, is_complete = extract_pdf(str(pdf_path))
+    assert is_complete is True
+    assert len(segments) == 1
+    seg = segments[0]
+    assert seg.kind == SegmentKind.PAGE_IMAGE
+    assert seg.excerpt == "Page 1 (visual)"
 
 
 def test_extract_pdf_two_stage_pagination(tmp_path: Path) -> None:

@@ -9,9 +9,10 @@ from semsearch.core.rules import (
     SKIPPED_FOLDER_NAMES,
     classify_file,
     is_dataset_folder,
+    is_path_excluded,
     should_skip,
 )
-from semsearch.core.types import Candidate, FileKind, FileRecord
+from semsearch.core.types import Candidate, FileKind, FileState
 
 
 @dataclass
@@ -25,10 +26,17 @@ class SyncReport:
     unchanged: int = 0
 
 
-def crawl_folder(root: str, is_code: bool = False) -> list[Candidate]:
+def crawl_folder(
+    root: str,
+    is_code: bool = False,
+    excluded_folders: list[str] | set[str] | None = None,
+    excluded_types: list[str] | set[str] | None = None,
+) -> list[Candidate]:
     """Recursively scan files under root using os.scandir, skipping ignored folders, secrets, and datasets."""
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
+        return []
+    if is_path_excluded(str(root_path), excluded_folders):
         return []
 
     candidates: list[Candidate] = []
@@ -47,6 +55,7 @@ def crawl_folder(root: str, is_code: bool = False) -> list[Candidate]:
                             entry.name not in SKIPPED_FOLDER_NAMES
                             and not entry.name.startswith(".")
                             and not entry.name.endswith(".noindex")
+                            and not is_path_excluded(entry.path, excluded_folders)
                         ):
                             subdirs.append(Path(entry.path))
                     elif entry.is_file(follow_symlinks=False):
@@ -60,17 +69,22 @@ def crawl_folder(root: str, is_code: bool = False) -> list[Candidate]:
             dir_files = [
                 e
                 for e in dir_files
-                if classify_file(e.path) not in (FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO)
+                if classify_file(e.path, is_code_mode=is_code)
+                not in (FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO)
             ]
 
         for entry in dir_files:
-            skip, _ = should_skip(entry.path, is_code_mode=is_code)
+            skip, _ = should_skip(
+                entry.path,
+                is_code_mode=is_code,
+                excluded_folders=excluded_folders,
+                excluded_types=excluded_types,
+            )
             if skip:
                 continue
 
-            kind = classify_file(entry.path)
-            if kind is None:
-                continue
+            kind = classify_file(entry.path, is_code_mode=is_code)
+            assert kind is not None
 
             try:
                 stat = entry.stat(follow_symlinks=False)
@@ -99,25 +113,16 @@ def _is_under_root(path: str, root: str) -> bool:
 def sync_candidates(
     db: Database,
     candidates: list[Candidate],
-    roots: list[str] | str | None = None,
+    roots: list[str] | None = None,
 ) -> SyncReport:
     """Reconcile crawled candidates against database records."""
     report = SyncReport()
 
     if roots is not None:
-        root_list = [roots] if isinstance(roots, (str, Path)) else list(roots)
-        resolved_roots = [str(Path(r).resolve()) for r in root_list]
+        resolved_roots = [str(Path(r).resolve()) for r in roots]
         vanished_roots = {r for r in resolved_roots if not os.path.exists(r)}
-        existing_files: list[FileRecord] = []
-        for r in resolved_roots:
-            existing_files.extend(db.find_files_under(r))
-        seen_ids: set[int] = set()
-        deduped: list[FileRecord] = []
-        for f in existing_files:
-            if f.id not in seen_ids:
-                seen_ids.add(f.id)
-                deduped.append(f)
-        existing_files = deduped
+        existing_by_id = {f.id: f for r in resolved_roots for f in db.find_files_under(r)}
+        existing_files = list(existing_by_id.values())
     else:
         vanished_roots = set()
         existing_files = db.find_all_files()
@@ -131,12 +136,18 @@ def sync_candidates(
     for candidate in candidates:
         if candidate.path in by_path:
             existing = by_path[candidate.path]
-            if (
+            size_or_mtime_changed = (
                 existing.size != candidate.size
                 or abs(existing.mtime - candidate.mtime) > 0.001
-                or existing.kind != candidate.kind
-            ):
+            )
+            if size_or_mtime_changed:
                 db.requeue_file(existing.id, candidate)
+                report.changed += 1
+            elif existing.kind != candidate.kind:
+                if existing.state == FileState.DONE:
+                    db.update_file_kind(existing.id, candidate.kind)
+                else:
+                    db.requeue_file(existing.id, candidate)
                 report.changed += 1
             else:
                 report.unchanged += 1
@@ -177,3 +188,4 @@ def sync_candidates(
                     report.deleted += 1
 
     return report
+

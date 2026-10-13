@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock
 from PySide6.QtWidgets import QApplication
-from semsearch.config import AppConfig
 from semsearch.core.types import EngineActivity, EngineStatus
 from semsearch.gui.tray import SystemTrayManager, render_tray_icon
 
@@ -22,7 +21,7 @@ def test_render_tray_icon_states(qapp: QApplication):
 
 def test_system_tray_manager_menu_actions(qapp: QApplication):
     """Verify menu action signal wiring."""
-    manager = SystemTrayManager(AppConfig())
+    manager = SystemTrayManager()
 
     panel_spy = MagicMock()
     window_spy = MagicMock()
@@ -57,7 +56,7 @@ def test_system_tray_manager_status_updates(qapp: QApplication):
         paused=False,
     )
 
-    manager = SystemTrayManager(AppConfig(), index_service=mock_indexer)
+    manager = SystemTrayManager(index_service=mock_indexer)
 
     # Initial indexing status
     manager.update_status(mock_indexer.status)
@@ -85,3 +84,37 @@ def test_system_tray_manager_status_updates(qapp: QApplication):
     )
     manager.update_status(idle_status)
     assert "Idle - 120 indexed" in manager.status_action.text()
+
+
+def test_system_tray_manager_periodic_poll_timer(qapp: QApplication):
+    """Verify periodic QTimer is configured and updates status periodically."""
+    mock_indexer = MagicMock()
+    mock_indexer.status = EngineStatus(
+        activity=EngineActivity.INDEXING,
+        indexed=10,
+        total=50,
+        paused=False,
+    )
+
+    manager = SystemTrayManager(index_service=mock_indexer)
+    assert manager._poll_timer is not None
+    assert manager._poll_timer.isActive()
+    assert manager._poll_timer.interval() == 1000
+
+    # Simulate timer trigger via timeout signal
+    mock_indexer.status = EngineStatus(
+        activity=EngineActivity.INDEXING,
+        indexed=25,
+        total=50,
+        paused=False,
+    )
+    manager._poll_timer.timeout.emit()
+    assert "Indexing: 50%" in manager.status_action.text()
+    assert "Indexing: 50%" in manager.tray_icon.toolTip()
+
+
+def test_system_tray_manager_no_indexer(qapp: QApplication):
+    """Verify SystemTrayManager without index_service does not initialize poll timer."""
+    manager = SystemTrayManager(index_service=None)
+    assert manager._poll_timer is None
+    manager._poll_status()

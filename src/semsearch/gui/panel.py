@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -11,14 +11,18 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from semsearch.config import AppConfig
+from semsearch.core.search_text import extract_terms, make_fts_patterns
 from semsearch.core.types import FileKind, SearchHit
-from semsearch.gui.preview import PreviewPane
+from semsearch.gui.preview import PreviewPane, format_tilde_path
 from semsearch.gui.theme import ThemeColors, ThemeLayout, apply_theme, get_ui_font
+from semsearch.gui.worker import SearchWorker
+from semsearch.i18n import tr
 from semsearch.services.actions import (
     copy_file_to_clipboard,
     execute_hit_action,
@@ -38,36 +42,67 @@ KIND_GROUP_NAMES = {
 }
 
 
+def format_hit_place_badge(hit: SearchHit) -> str:
+    """Format a compact location badge (page, timestamp, or line) for a search hit."""
+    if hit.kind == FileKind.PDF and hit.loc > 0:
+        return tr("p. {page}", page=int(hit.loc))
+    if hit.kind in (FileKind.AUDIO, FileKind.VIDEO) and hit.loc > 0:
+        mins, secs = divmod(int(hit.loc), 60)
+        return f"{mins}:{secs:02d}"
+    if hit.kind == FileKind.CODE:
+        line = int(hit.focus) if hit.focus > 0 else int(hit.loc)
+        if line > 0:
+            return f"L{line}"
+    return ""
+
+
 class ResultItemWidget(QWidget):
     """Custom widget rendered inside search result list rows."""
 
     def __init__(self, hit: SearchHit, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
 
         self.icon_label = QLabel(self._icon_for_kind(hit.kind))
-        self.icon_label.setFixedWidth(20)
+        self.icon_label.setFont(get_ui_font(14))
+        self.icon_label.setFixedWidth(22)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setStyleSheet("background: transparent; border: none;")
 
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
 
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+
         file_name = Path(hit.path).name
         self.title_label = QLabel(file_name)
         self.title_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
-        self.title_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY};")
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.title_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; background: transparent; border: none;")
+        top_row.addWidget(self.title_label, stretch=1)
 
-        path_text = str(Path(hit.path).parent)
-        home = str(Path.home())
-        if path_text.startswith(home):
-            path_text = "~" + path_text[len(home):]
-        self.path_label = QLabel(path_text)
+        place_text = format_hit_place_badge(hit)
+        if place_text:
+            self.place_badge = QLabel(place_text)
+            self.place_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
+            self.place_badge.setStyleSheet(
+                f"color: {ThemeColors.TEXT_SECONDARY}; background-color: rgba(255, 255, 255, 0.06); "
+                "border-radius: 4px; padding: 1px 5px;"
+            )
+            top_row.addWidget(self.place_badge)
+
+        parent_str = format_tilde_path(str(Path(hit.path).parent))
+        self.path_label = QLabel(parent_str)
         self.path_label.setFont(get_ui_font(10))
-        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
+        self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
 
-        text_layout.addWidget(self.title_label)
+        text_layout.addLayout(top_row)
         text_layout.addWidget(self.path_label)
 
         layout.addWidget(self.icon_label)
@@ -112,12 +147,12 @@ class SearchPanel(QWidget):
         self.weaker_expanded = False
         self._current_result_set: ResultSet = ResultSet()
         self._last_query = ""
+        self._worker: SearchWorker | None = None
 
-        # Semantic debounce timer (120ms)
         self._semantic_timer = QTimer(self)
         self._semantic_timer.setSingleShot(True)
         self._semantic_timer.setInterval(120)
-        self._semantic_timer.timeout.connect(self._on_semantic_debounce_fired)
+        self._semantic_timer.timeout.connect(self._trigger_async_semantic_search)
 
         self._build_ui()
         self._set_geometry_collapsed()
@@ -128,54 +163,118 @@ class SearchPanel(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        # Rounded container frame
         self.container = QFrame(self)
         self.container.setObjectName("panelContainer")
         self.container.setStyleSheet(
-            f"#panelContainer {{"
+            f"QFrame#panelContainer {{"
             f"  background-color: {ThemeColors.BG_PANEL};"
             f"  border: 1px solid rgba(255, 255, 255, 0.12);"
             f"  border-radius: {ThemeLayout.PANEL_RADIUS}px;"
             f"}}"
         )
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(12, 10, 12, 10)
-        container_layout.setSpacing(8)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
 
-        # Header Search Input
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(14, 8, 14, 8)
+        header_layout.setSpacing(8)
+
+        self.search_icon = QLabel("🔍")
+        self.search_icon.setFont(get_ui_font(14))
+        self.search_icon.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search files, documents, code, media...")
+        self.search_input.setPlaceholderText(
+            tr("Search files, documents, code, media... (prefix 'code:' for source)")
+        )
         self.search_input.setFixedHeight(38)
         self.search_input.setFont(get_ui_font(14))
+        self.search_input.setStyleSheet(
+            f"QLineEdit {{ background: transparent; border: none; color: {ThemeColors.TEXT_PRIMARY}; padding: 0px 4px; }}"
+        )
         self.search_input.textChanged.connect(self._on_query_text_changed)
         self.search_input.installEventFilter(self)
 
-        container_layout.addWidget(self.search_input)
+        self.status_badge = QLabel("")
+        self.status_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
+        self.status_badge.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
 
-        # Results and preview split view container
+        header_layout.addWidget(self.search_icon)
+        header_layout.addWidget(self.search_input, stretch=1)
+        header_layout.addWidget(self.status_badge)
+
+        container_layout.addWidget(header_widget)
+
         self.content_widget = QWidget()
-        content_layout = QHBoxLayout(self.content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(8)
+        content_outer = QVBoxLayout(self.content_widget)
+        content_outer.setContentsMargins(0, 0, 0, 0)
+        content_outer.setSpacing(0)
 
-        # Left: Result list (330px)
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background-color: {ThemeColors.BORDER}; border: none;")
+        content_outer.addWidget(divider)
+
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
         self.result_list = QListWidget()
+        self.result_list.setObjectName("panelResultList")
         self.result_list.setFixedWidth(ThemeLayout.LIST_WIDTH)
+        self.result_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.result_list.setStyleSheet(
+            f"QListWidget#panelResultList {{ border-right: 1px solid {ThemeColors.BORDER}; padding: 4px 6px; }}"
+        )
         self.result_list.currentItemChanged.connect(self._on_selection_changed)
         self.result_list.itemClicked.connect(self._on_item_clicked)
+        self.result_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.result_list.installEventFilter(self)
 
-        # Right: Preview pane (418px)
         self.preview_pane = PreviewPane()
-        self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH)
+        self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH - 2)
 
         content_layout.addWidget(self.result_list)
-        content_layout.addWidget(self.preview_pane)
+        content_layout.addWidget(self.preview_pane, stretch=1)
+        content_outer.addLayout(content_layout, stretch=1)
+
+        footer = QFrame()
+        footer.setFixedHeight(26)
+        footer.setStyleSheet(
+            f"background-color: rgba(15, 17, 21, 0.55); border-top: 1px solid {ThemeColors.BORDER}; "
+            f"border-bottom-left-radius: {ThemeLayout.PANEL_RADIUS}px; "
+            f"border-bottom-right-radius: {ThemeLayout.PANEL_RADIUS}px;"
+        )
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(12, 0, 12, 0)
+        self.footer_hint = QLabel(
+            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    ⌃O Full Window    Esc Dismiss")
+        )
+        self.footer_hint.setFont(get_ui_font(10))
+        self.footer_hint.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
+        footer_layout.addWidget(self.footer_hint)
+        footer_layout.addStretch()
+
+        content_outer.addWidget(footer)
 
         self.content_widget.setVisible(False)
         container_layout.addWidget(self.content_widget, stretch=1)
 
         outer_layout.addWidget(self.container)
+
+    def retranslate_ui(self) -> None:
+        """Refresh translated panel strings."""
+        self.search_input.setPlaceholderText(
+            tr("Search files, documents, code, media... (prefix 'code:' for source)")
+        )
+        self.footer_hint.setText(
+            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    ⌃O Full Window    Esc Dismiss")
+        )
+        self.preview_pane.retranslate_ui()
+        if self._current_result_set.ranked or self._current_result_set.weaker:
+            self._populate_list(self._current_result_set)
 
     def _set_geometry_collapsed(self) -> None:
         self.is_expanded = False
@@ -197,46 +296,64 @@ class SearchPanel(QWidget):
             y = geo.y() + int(geo.height() * 0.16)
             self.move(x, y)
 
+    def _stop_workers(self) -> None:
+        self._semantic_timer.stop()
+        if self._worker is not None:
+            self._worker.stop()
+            self._worker.wait(500)
+
     def _on_query_text_changed(self, text: str) -> None:
         stripped = text.strip()
         self._last_query = stripped
         if not stripped:
-            self._semantic_timer.stop()
+            self._stop_workers()
+            self.status_badge.setText("")
             self.result_list.clear()
             self.preview_pane.clear()
             self._set_geometry_collapsed()
             return
 
-        # 1. Instant lexical search on keystroke
+        self.status_badge.setText(tr("Searching…"))
         self._execute_instant_lexical(stripped)
-
-        # 2. Debounced semantic vector search after 120ms
         self._semantic_timer.start(120)
 
     def _execute_instant_lexical(self, query: str) -> None:
-        """Run fast keyword match against SQLite index."""
-        # Use SearchService with keyword weighting
-        target_db = self.search_service.code_db if query.startswith("code:") and self.search_service.code_db else self.search_service.db
-        clean_q = query[5:].strip() if query.startswith("code:") else query
+        """Run fast keyword match against SQLite index, deduplicating by file_id."""
+        is_code = query.lower().startswith("code:")
+        target_db = self.search_service.code_db if is_code and self.search_service.code_db else self.search_service.db
+        clean_q = query[5:].strip() if is_code else query
 
         fts_rows = target_db.fts_search(clean_q, limit=50)
-        hits: list[SearchHit] = []
+        if not fts_rows:
+            terms = extract_terms(clean_q)
+            if terms:
+                fts_q = " OR ".join(make_fts_patterns(terms, prefix_last=True))
+                fts_rows = target_db.fts_search(fts_q, limit=50)
+        best_by_file: dict[int, SearchHit] = {}
         for r in fts_rows:
-            file_rec = target_db.find_by_id(r["file_id"])
+            fid = int(r["file_id"])
+            score = float(-r["rank"])
+            if fid in best_by_file and best_by_file[fid].score >= score:
+                continue
+            file_rec = target_db.find_by_id(fid)
             if file_rec:
-                hits.append(
-                    SearchHit(
-                        path=file_rec.path,
-                        kind=file_rec.kind,
-                        score=float(10.0 - min(r["rank"], 9.0)),
-                        excerpt=r["snippet"] or r["excerpt"],
-                        keyword_rank=r["rank"],
-                        segment_id=r["segment_id"],
-                        loc=r["loc"] or 0.0,
-                    )
+                raw_size = getattr(file_rec, "size", 0)
+                raw_mtime = getattr(file_rec, "mtime", 0.0)
+                best_by_file[fid] = SearchHit(
+                    path=file_rec.path,
+                    kind=file_rec.kind,
+                    score=score,
+                    excerpt=r["snippet"] or r["excerpt"],
+                    keyword_rank=max(1, int(score)) if score > 0 else 0,
+                    segment_id=r["segment_id"],
+                    loc=r["loc"],
+                    size=raw_size if isinstance(raw_size, int) else 0,
+                    modified=float(raw_mtime) if isinstance(raw_mtime, (int, float)) else 0.0,
                 )
 
+        hits = list(best_by_file.values())
         if hits:
+            hits.sort(key=lambda h: h.score, reverse=True)
             top_score = hits[0].score
             threshold = 0.5 * top_score
             ranked = [h for h in hits if h.score >= threshold]
@@ -244,17 +361,36 @@ class SearchPanel(QWidget):
             self._current_result_set = ResultSet(ranked=ranked, weaker=weaker)
             self._populate_list(self._current_result_set)
             self._set_geometry_expanded()
-        elif not self.is_expanded:
-            self._set_geometry_collapsed()
+        else:
+            self.result_list.clear()
+            self.preview_pane.clear()
+            if not self.is_expanded:
+                self._set_geometry_collapsed()
 
-    def _on_semantic_debounce_fired(self) -> None:
-        """Execute full hybrid semantic vector search and update results in place."""
+    def _trigger_async_semantic_search(self) -> None:
+        """Trigger background worker for semantic search."""
         if not self._last_query:
             return
-        result_set = self.search_service.search(self._last_query, limit=50)
+        self._stop_workers()
+        self._worker = SearchWorker(self.search_service, self._last_query, limit=50)
+        self._worker.results_ready.connect(self._on_semantic_results_ready)
+        self._worker.start()
+
+    def _on_semantic_results_ready(self, query: str, result_set: ResultSet) -> None:
+        """Handle background search results when query matches active query."""
+        if query != self._last_query:
+            return
+        self._apply_semantic_results(result_set)
+
+    def _apply_semantic_results(self, result_set: ResultSet) -> None:
+        """Apply semantic search results to UI list and preview."""
         self._current_result_set = result_set
+        total = len(result_set.ranked) + len(result_set.weaker)
+        self.status_badge.setText(
+            tr("{count} matches", count=len(result_set.ranked)) if total > 0 else tr("No matches")
+        )
         self._populate_list(result_set)
-        if len(result_set.ranked) > 0 or len(result_set.weaker) > 0:
+        if total > 0:
             self._set_geometry_expanded()
         else:
             self.preview_pane.clear()
@@ -263,46 +399,45 @@ class SearchPanel(QWidget):
     def _populate_list(self, result_set: ResultSet) -> None:
         self.result_list.clear()
 
-        # Group ranked hits by FileKind
         grouped: dict[FileKind, list[SearchHit]] = {}
         for hit in result_set.ranked:
             grouped.setdefault(hit.kind, []).append(hit)
 
         for kind, hits in grouped.items():
-            # Add Section Header
-            header_item = QListWidgetItem(KIND_GROUP_NAMES.get(kind, "Other"))
+            header_item = QListWidgetItem(tr(KIND_GROUP_NAMES.get(kind, "Other")).upper())
             header_item.setFont(get_ui_font(10, QFont.Weight.Bold))
             header_item.setForeground(QColor(ThemeColors.TEXT_MUTED))
             header_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            header_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 24))
             self.result_list.addItem(header_item)
 
             for hit in hits:
                 item = QListWidgetItem()
-                item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 24, 46))
+                item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 50))
                 item.setData(Qt.ItemDataRole.UserRole, hit)
                 widget = ResultItemWidget(hit)
                 self.result_list.addItem(item)
                 self.result_list.setItemWidget(item, widget)
 
-        # Folded Weaker Matches Section
         if result_set.weaker:
-            toggle_text = f"▾ {len(result_set.weaker)} weaker matches" if self.weaker_expanded else f"▸ {len(result_set.weaker)} weaker matches"
+            arrow = "▾" if self.weaker_expanded else "▸"
+            toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(result_set.weaker))
             toggle_item = QListWidgetItem(toggle_text)
             toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
             toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
             toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
+            toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
             self.result_list.addItem(toggle_item)
 
             if self.weaker_expanded:
                 for hit in result_set.weaker:
                     item = QListWidgetItem()
-                    item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 24, 46))
+                    item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 50))
                     item.setData(Qt.ItemDataRole.UserRole, hit)
                     widget = ResultItemWidget(hit)
                     self.result_list.addItem(item)
                     self.result_list.setItemWidget(item, widget)
 
-        # Auto select first selectable item
         self._select_first_result()
 
     def _select_first_result(self) -> None:
@@ -323,6 +458,12 @@ class SearchPanel(QWidget):
         if item.data(Qt.ItemDataRole.UserRole + 1) == "toggle":
             self.weaker_expanded = not self.weaker_expanded
             self._populate_list(self._current_result_set)
+
+    def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
+        hit = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(hit, SearchHit):
+            execute_hit_action(hit, self.config)
+            self.hide_panel()
 
     def eventFilter(self, watched, event) -> bool:
         """Handle keyboard navigation across search input and results list."""
@@ -402,6 +543,7 @@ class SearchPanel(QWidget):
 
     def show_panel(self) -> None:
         """Present search panel with focus."""
+        self._stop_workers()
         self.search_input.clear()
         self.result_list.clear()
         self.preview_pane.clear()
@@ -413,4 +555,9 @@ class SearchPanel(QWidget):
 
     def hide_panel(self) -> None:
         """Dismiss search panel."""
+        self._stop_workers()
         self.hide()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._stop_workers()
+        super().closeEvent(event)

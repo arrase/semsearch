@@ -68,15 +68,72 @@ def build_qss() -> str:
     return f"""
     QWidget {{
         color: {ThemeColors.TEXT_PRIMARY};
-        background: transparent;
-        font-family: {FONT_FAMILY_UI};
-        font-size: 13px;
         selection-background-color: {ThemeColors.BRAND_START};
         selection-color: #FFFFFF;
     }}
 
-    QMainWindow, QDialog {{
+    QMainWindow, QDialog, QWizard, QWizardPage {{
         background-color: #16181D;
+        color: {ThemeColors.TEXT_PRIMARY};
+    }}
+
+    QLabel, QCheckBox, QRadioButton {{
+        background: transparent;
+    }}
+
+    QScrollArea {{
+        background: transparent;
+        border: none;
+    }}
+
+    QMenu {{
+        background-color: #1E2128;
+        color: {ThemeColors.TEXT_PRIMARY};
+        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        border-radius: 8px;
+        padding: 4px;
+    }}
+
+    QMenu::item {{
+        padding: 6px 20px;
+        border-radius: 5px;
+    }}
+
+    QMenu::item:selected {{
+        background-color: {ThemeColors.BRAND_START};
+        color: #FFFFFF;
+    }}
+
+    QMenu::separator {{
+        height: 1px;
+        background: {ThemeColors.BORDER};
+        margin: 4px 8px;
+    }}
+
+    QToolTip {{
+        background-color: #20232B;
+        color: {ThemeColors.TEXT_PRIMARY};
+        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        border-radius: 6px;
+        padding: 4px 8px;
+    }}
+
+    QGroupBox {{
+        background-color: rgba(28, 31, 38, 0.65);
+        border: 1px solid {ThemeColors.BORDER};
+        border-radius: 10px;
+        margin-top: 10px;
+        padding-top: 10px;
+        font-weight: 600;
+        color: {ThemeColors.TEXT_PRIMARY};
+    }}
+
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 12px;
+        padding: 0 6px;
+        color: {ThemeColors.TEXT_SECONDARY};
     }}
 
     QLineEdit {{
@@ -84,8 +141,7 @@ def build_qss() -> str:
         color: {ThemeColors.TEXT_PRIMARY};
         border: 1px solid {ThemeColors.BORDER};
         border-radius: 10px;
-        padding: 8px 14px;
-        font-size: 14px;
+        padding: 6px 12px;
     }}
 
     QLineEdit:focus {{
@@ -93,17 +149,54 @@ def build_qss() -> str:
         background-color: rgba(36, 40, 50, 0.95);
     }}
 
-    QListView, QListWidget, QTableView, QTableWidget {{
-        background-color: transparent;
+    QAbstractSpinBox, QTimeEdit, QSpinBox {{
+        background-color: {ThemeColors.BG_CARD};
+        color: {ThemeColors.TEXT_PRIMARY};
+        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        border-radius: 6px;
+        padding: 4px 8px;
+        min-height: 24px;
+        min-width: 72px;
+    }}
+
+    QAbstractSpinBox QLineEdit {{
+        padding: 0px;
         border: none;
+        background: transparent;
+    }}
+
+    QPlainTextEdit, QTextEdit {{
+        background-color: #121418;
+        color: {ThemeColors.TEXT_PRIMARY};
+        border: 1px solid {ThemeColors.BORDER};
+        border-radius: 8px;
+        padding: 6px;
+    }}
+
+    QListView, QListWidget, QTableView, QTableWidget {{
+        background-color: rgba(18, 20, 24, 0.55);
+        border: 1px solid {ThemeColors.BORDER};
+        border-radius: 8px;
         outline: none;
     }}
 
+    QListWidget#panelResultList, QListWidget#codeResultList {{
+        background-color: transparent;
+        border: none;
+        border-radius: 0px;
+    }}
+
     QListView::item, QListWidget::item {{
-        padding: 8px 10px;
-        border-radius: 8px;
+        padding: 6px 10px;
+        border-radius: 6px;
         color: {ThemeColors.TEXT_PRIMARY};
         border: none;
+    }}
+
+    QListWidget#panelResultList::item, QListWidget#codeResultList::item {{
+        padding: 0px;
+        margin: 1px 6px;
+        border-radius: 8px;
     }}
 
     QListView::item:hover, QListWidget::item:hover {{
@@ -113,6 +206,38 @@ def build_qss() -> str:
     QListView::item:selected, QListWidget::item:selected {{
         background-color: {ThemeColors.BG_CARD_ACTIVE};
         color: #FFFFFF;
+    }}
+
+    QSplitter::handle {{
+        background-color: {ThemeColors.BORDER};
+    }}
+
+    QSplitter::handle:horizontal {{
+        width: 1px;
+    }}
+
+    QSplitter::handle:vertical {{
+        height: 1px;
+    }}
+
+    QSlider::groove:horizontal {{
+        height: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 2px;
+    }}
+
+    QSlider::sub-page:horizontal {{
+        background: {ThemeColors.BRAND_START};
+        border-radius: 2px;
+    }}
+
+    QSlider::handle:horizontal {{
+        background: #FFFFFF;
+        border: 2px solid {ThemeColors.BRAND_START};
+        width: 12px;
+        height: 12px;
+        margin: -5px 0;
+        border-radius: 7px;
     }}
 
     QScrollBar:vertical {{
@@ -242,6 +367,7 @@ def build_qss() -> str:
         border-color: {ThemeColors.BRAND_START};
     }}
     """
+
 
 
 def apply_theme(widget: QWidget) -> None:

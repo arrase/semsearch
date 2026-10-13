@@ -10,11 +10,11 @@ import pytest
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
 from semsearch.core.ollama import OllamaClient
+from semsearch.core.search_text import is_lookup_query, make_fts_patterns
 from semsearch.core.types import (
     Candidate,
     FileKind,
     Modality,
-    ResultRow,
     SearchHit,
     SegmentKind,
 )
@@ -158,10 +158,10 @@ def test_fts5_bm25_keyword_matching(indexed_testbed):
 
 def test_identifier_and_serial_lookup_routing(indexed_testbed):
     _, files, _, _, searcher, _ = indexed_testbed
-    assert searcher.is_lookup_query("ERR-4096-FAIL") is True
-    assert searcher.is_lookup_query("0xdeadbeef") is True
-    assert searcher.is_lookup_query("calculateMetrics") is True
-    assert searcher.is_lookup_query("general plain text") is False
+    assert is_lookup_query("ERR-4096-FAIL") is True
+    assert is_lookup_query("0xdeadbeef") is True
+    assert is_lookup_query("calculateMetrics") is True
+    assert is_lookup_query("general plain text") is False
 
     # Lookup search for hardware serial
     res_serial = searcher.search("ERR-4096-FAIL")
@@ -170,19 +170,22 @@ def test_identifier_and_serial_lookup_routing(indexed_testbed):
     assert "4096" in res_serial.ranked[0].excerpt
 
 
-def test_term_coverage_multi_term_and_prefix():
-    searcher = SearchService(db=Database(":memory:"))
-    terms = ["systems", "architectural", "report"]
+def test_term_coverage_multi_term_and_prefix(tmp_path: Path):
+    db = Database(tmp_path / "cov.db")
+    fid = db.insert_file(Candidate(path="/tmp/report.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=1, device=1))
     doc_text = "Quarterly Systems Architectural Report 2026"
-    assert searcher.compute_coverage(terms, doc_text) == 1.0
+    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, doc_text, None, "report.txt", doc_text, "")
+
+    patterns = make_fts_patterns(["systems", "architectural", "report"])
+    assert db.compute_coverage(patterns, [fid])[fid] == 1.0
 
     # Prefix match on last term
-    prefix_terms = ["systems", "architec"]
-    assert searcher.compute_coverage(prefix_terms, doc_text) == 1.0
+    prefix_patterns = make_fts_patterns(["systems", "architec"], prefix_last=True)
+    assert db.compute_coverage(prefix_patterns, [fid])[fid] == 1.0
 
     # Partial match
-    partial_terms = ["systems", "unknown", "missing"]
-    assert pytest.approx(searcher.compute_coverage(partial_terms, doc_text), 0.01) == 0.33
+    partial_patterns = make_fts_patterns(["systems", "unknown", "missing"])
+    assert pytest.approx(db.compute_coverage(partial_patterns, [fid])[fid], 0.01) == 0.33
 
 
 # Section 5: Code Search & Definition Line Anchor Verification
@@ -255,12 +258,11 @@ def test_folded_weaker_matches_partitioning(indexed_testbed):
         assert w.score < 0.5 * res.ranked[0].score
 
 
-def test_result_view_model_formatting(indexed_testbed):
+def test_result_hit_properties(indexed_testbed):
     _, _, _, _, searcher, _ = indexed_testbed
     results = searcher.search("Strategy Brief")
-    primary_rows, weaker_rows = searcher.format_results(results, query="Strategy Brief")
-    assert len(primary_rows) > 0
-    first = primary_rows[0]
-    assert isinstance(first, ResultRow)
-    assert first.title == "brief.docx"
-    assert "brief" in first.title.lower()
+    assert len(results.ranked) > 0
+    first = results.ranked[0]
+    assert isinstance(first, SearchHit)
+    assert Path(first.path).name == "brief.docx"
+    assert first.reason in ("Matches meaning", "Matches words", "Matches name")

@@ -70,13 +70,6 @@ class PowerScheduler:
 
         return True, ""
 
-    def should_run_backfill(self, config: AppConfig | None = None) -> bool:
-        """Determine if intensive backfill operations are permitted right now."""
-        active_config = config or self.config
-        if not active_config.index_on_battery and self.is_on_battery():
-            return False
-        return self.is_within_schedule()
-
     def check_and_update(self) -> None:
         """Evaluate policy once and update IndexService pause state."""
         allowed, reason = self.evaluate_policy()

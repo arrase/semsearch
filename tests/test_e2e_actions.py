@@ -7,10 +7,6 @@ from semsearch.config import AppConfig
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.services.actions import (
     execute_hit_action,
-    open_code_editor,
-    open_file_default,
-    open_media_timestamp,
-    open_pdf_page,
     reveal_in_file_manager,
 )
 

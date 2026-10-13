@@ -44,29 +44,50 @@ def bytes_to_float16(data: bytes) -> np.ndarray:
     return np.frombuffer(data, dtype=np.float16)
 
 
-def z_score_normalize(cosines: np.ndarray, modalities: list[Modality]) -> np.ndarray:
-    """Compute modality-aware Z-score normalization."""
-    if len(cosines) == 0:
+def z_score_normalize(
+    cosines: np.ndarray,
+    modalities: list[Modality],
+    sets_scale: list[bool] | np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute modality-aware Z-score normalization over scale-eligible segments."""
+    n = len(cosines)
+    if n == 0:
         return np.empty((0,), dtype=np.float32)
 
     scores = np.asarray(cosines, dtype=np.float64)
-    global_mean = float(np.mean(scores))
+    if sets_scale is None:
+        scale_mask = np.ones(n, dtype=bool)
+    else:
+        scale_mask = np.asarray(sets_scale, dtype=bool)
+        if not np.any(scale_mask):
+            scale_mask = np.ones(n, dtype=bool)
 
     sums: dict[Modality, float] = {}
     counts: dict[Modality, int] = {}
-    for score, mod in zip(scores, modalities):
-        sums[mod] = sums.get(mod, 0.0) + float(score)
-        counts[mod] = counts.get(mod, 0) + 1
+    global_sum = 0.0
+    global_n = 0
 
+    for idx in range(n):
+        if scale_mask[idx]:
+            mod = modalities[idx]
+            val = float(scores[idx])
+            sums[mod] = sums.get(mod, 0.0) + val
+            counts[mod] = counts.get(mod, 0) + 1
+            global_sum += val
+            global_n += 1
+
+    global_mean = global_sum / global_n if global_n > 0 else 0.0
     means: dict[Modality, float] = {}
-    for mod, count in counts.items():
-        if count >= 20:
-            means[mod] = sums[mod] / count
-        else:
-            means[mod] = global_mean
+    for mod in set(modalities):
+        cnt = counts.get(mod, 0)
+        means[mod] = sums[mod] / cnt if cnt >= 20 else global_mean
 
-    c = np.array([score - means[mod] for score, mod in zip(scores, modalities)], dtype=np.float64)
-    sigma = max(float(np.std(c)), 0.02)
-    mean_c = float(np.mean(c))
-    z = (c - mean_c) / sigma
-    return z.astype(np.float32)
+    centered = np.array(
+        [scores[idx] - means[modalities[idx]] for idx in range(n)],
+        dtype=np.float64,
+    )
+    scale_centered = centered[scale_mask]
+    variance = float(np.mean(scale_centered * scale_centered)) if len(scale_centered) > 0 else 0.0
+    sigma = max(float(np.sqrt(variance)), 0.02)
+    return (centered / sigma).astype(np.float32)
+

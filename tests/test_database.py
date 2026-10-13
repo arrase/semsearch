@@ -1,6 +1,7 @@
 """Unit tests for SQLite WAL database and FTS indexing."""
 
 from pathlib import Path
+import threading
 import numpy as np
 import pytest
 
@@ -12,6 +13,7 @@ from semsearch.core.types import (
     Modality,
     SegmentKind,
 )
+
 
 
 @pytest.fixture
@@ -295,6 +297,34 @@ def test_find_files_under(db: Database):
     assert len(proj2_files) == 1
     assert proj2_files[0].path == "/data/proj2/app.py"
 
+    c5 = Candidate("/data/proj_special/sub/file1.txt", FileKind.DOC, 100, 10.0, 5, 1)
+    c6 = Candidate("/data/proj-special/sub/file2.txt", FileKind.DOC, 100, 10.0, 6, 1)
+    db.insert_file(c5)
+    db.insert_file(c6)
+
+    special_files = db.find_files_under("/data/proj_special")
+    assert len(special_files) == 1
+    assert special_files[0].path == "/data/proj_special/sub/file1.txt"
+
+    c7 = Candidate("/data/proj%special/sub/file3.txt", FileKind.DOC, 100, 10.0, 7, 1)
+    c8 = Candidate("/data/projOTHERspecial/sub/file4.txt", FileKind.DOC, 100, 10.0, 8, 1)
+    c9 = Candidate(r"/data/proj\special/sub/file5.txt", FileKind.DOC, 100, 10.0, 9, 1)
+    db.insert_file(c7)
+    db.insert_file(c8)
+    db.insert_file(c9)
+
+    percent_files = db.find_files_under("/data/proj%special")
+    assert len(percent_files) == 1
+    assert percent_files[0].path == "/data/proj%special/sub/file3.txt"
+
+    backslash_files = db.find_files_under(r"/data/proj\special")
+    assert len(backslash_files) == 1
+    assert backslash_files[0].path == r"/data/proj\special/sub/file5.txt"
+
+    all_files = db.find_files_under("/")
+    assert len(all_files) == 9
+
+
 
 def test_fts_search_snippet_highlighting(db: Database):
     """Verify fts_search returns snippet with highlighted text markers."""
@@ -320,4 +350,119 @@ def test_fts_search_snippet_highlighting(db: Database):
     assert "snippet" in hit
     assert "«brown»" in hit["snippet"]
     assert "«fox»" in hit["snippet"]
+
+
+def test_fts_search_includes_loc_and_excerpt(db: Database):
+    """Verify fts_search includes loc and excerpt fields with proper fallbacks and negative BM25 rank."""
+    candidate = Candidate("/tmp/manual.pdf", FileKind.PDF, 2048, 10.0, 1, 1)
+    file_id = db.insert_file(candidate)
+
+    # Segment with specific loc and excerpt
+    db.insert_segment(
+        file_id=file_id,
+        kind=SegmentKind.PAGE,
+        modality=Modality.TEXT,
+        loc=15.0,
+        loc_end=15.0,
+        excerpt="Page 15 content about system diagnostics",
+        vec=None,
+        name="manual.pdf",
+        body="Page 15 content about system diagnostics",
+        original="",
+    )
+
+    results = db.fts_search("diagnostics")
+    assert len(results) == 1
+    hit = results[0]
+    assert "loc" in hit
+    assert hit["loc"] == 15.0
+    assert "excerpt" in hit
+    assert hit["excerpt"] == "Page 15 content about system diagnostics"
+    assert "rank" in hit
+    assert hit["rank"] < 0  # SQLite FTS5 bm25 returns negative values
+
+    # Segment with None loc and empty excerpt
+    db.insert_segment(
+        file_id=file_id,
+        kind=SegmentKind.CHUNK,
+        modality=Modality.TEXT,
+        loc=None,
+        loc_end=None,
+        excerpt=None,
+        vec=None,
+        name="manual.pdf",
+        body="Troubleshooting steps for system recovery",
+        original="",
+    )
+
+    results_null = db.fts_search("troubleshooting")
+    assert len(results_null) == 1
+    hit_null = results_null[0]
+    assert hit_null["loc"] == 0.0
+    assert hit_null["excerpt"] == ""
+
+    # Orphaned FTS row with no corresponding segment
+    cursor = db._conn.cursor()
+    cursor.execute("INSERT INTO fts (rowid, name, body, original) VALUES (9999, 'orphan.pdf', 'system orphan', '')")
+    db._conn.commit()
+
+    results_orphan = db.fts_search("orphan")
+    assert len(results_orphan) == 1
+    hit_orphan = results_orphan[0]
+    assert hit_orphan["segment_id"] == 9999
+    assert hit_orphan["file_id"] is None
+    assert hit_orphan["loc"] == 0.0
+    assert hit_orphan["excerpt"] == ""
+
+
+def test_get_all_vectors_with_scale_and_file_segments(db: Database):
+    """Verify get_all_vectors_with_scale marks only the first segment per (file, modality)."""
+    c1 = Candidate("/tmp/multi.md", FileKind.DOC, 500, 10.0, 1, 1)
+    fid1 = db.insert_file(c1)
+    vec_bytes = np.ones(768, dtype=np.float16).tobytes()
+
+    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0.0, 1.0, "chunk 0", vec_bytes, "", "chunk zero", "")
+    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 1.0, 2.0, "chunk 1", vec_bytes, "", "chunk one", "")
+
+    seg_ids, file_ids, modalities, matrix, sets_scale = db.get_all_vectors_with_scale()
+    assert len(seg_ids) == 2
+    assert sets_scale == [True, False]
+
+    segs = db.get_file_segments(fid1)
+    assert len(segs) == 2
+    assert segs[0][1] == SegmentKind.CHUNK
+    assert segs[0][5] == "chunk zero"
+
+    db.update_file_kind(fid1, FileKind.SCREENSHOT)
+    assert db.find_by_id(fid1).kind == FileKind.SCREENSHOT
+
+
+def test_fts_malformed_query_and_thread_safety(db: Database):
+    """Verify malformed FTS queries return empty list and concurrent threads do not fail."""
+    assert db.fts_search('unclosed "quote') == []
+
+    errors: list[Exception] = []
+
+    def worker(idx: int) -> None:
+        try:
+            cid = db.insert_file(
+                Candidate(f"/tmp/f_{idx}.txt", FileKind.DOC, 10, float(idx), idx + 100, 1)
+            )
+            db.insert_segment(
+                cid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, f"body {idx}", None, f"f_{idx}.txt", f"body {idx}", ""
+            )
+            db.fts_search("body")
+            db.stats()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert db.stats()["files"] == 8
+
 

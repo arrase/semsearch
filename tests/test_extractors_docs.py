@@ -4,13 +4,11 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import zipfile
 from docx import Document
+from semsearch.core.search_text import has_words
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.docs import (
     chunk_document,
-    chunk_text,
     extract_doc,
-    extract_doc_segments,
-    has_words,
     read_doc_text,
     strip_html,
 )
@@ -99,18 +97,14 @@ def test_chunk_document_word_boundaries() -> None:
     chunks = chunk_document(full_text, chunk_size=1800, overlap=200)
     assert len(chunks) >= 2
     for chunk in chunks:
-        assert len(chunk.text) <= 1800
+        assert isinstance(chunk.payload, str)
+        assert len(chunk.payload) <= 1800
         # Assert word boundary snapping: no partial words at start or end
-        assert not chunk.text.startswith(" ")
-        assert not chunk.text.endswith(" ")
+        assert not chunk.payload.startswith(" ")
+        assert not chunk.payload.endswith(" ")
         # Every word should be a complete "wordX"
-        for w in chunk.text.split():
+        for w in chunk.payload.split():
             assert w.startswith("word")
-
-    # Check chunk_text returns matching tuples
-    tuples = chunk_text(full_text, chunk_size=1800, overlap=200)
-    assert len(tuples) == len(chunks)
-    assert tuples[0][2] == chunks[0].text
 
 
 def test_extract_doc_segments(tmp_path: Path) -> None:
@@ -161,7 +155,7 @@ def test_docx_table_extraction(tmp_path: Path) -> None:
     assert "Column A" in extracted
     assert "Column B" in extracted
 
-    # Also test extract_doc_segments
-    segments = extract_doc_segments(str(docx_file))
+    # Also test extract_doc
+    segments = extract_doc(str(docx_file))
     assert len(segments) >= 1
-    assert any("Merged Header" in s.payload for s in segments)
+    assert any("Merged Header" in str(s.payload) for s in segments)
