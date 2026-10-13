@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import pymupdf
-from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QDrag,
@@ -46,6 +46,7 @@ from semsearch.gui.theme import (
     get_mono_font,
     get_ui_font,
 )
+from semsearch.gui.widgets import ElidedLabel
 from semsearch.gui.worker import SearchWorker
 from semsearch.i18n import tr
 from semsearch.services.actions import (
@@ -104,12 +105,9 @@ class ResultCard(QFrame):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(4)
 
-        name = Path(hit.path).name
-        self.title_label = QLabel(name)
+        self.title_label = ElidedLabel(Path(hit.path).name)
         self.title_label.setFont(get_ui_font(11, QFont.Weight.DemiBold))
-        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.title_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; background: transparent; border: none;")
-        self.title_label.setToolTip(name)
         title_row.addWidget(self.title_label, stretch=1)
 
         badge_str = format_hit_place_badge(hit)
@@ -123,11 +121,9 @@ class ResultCard(QFrame):
             title_row.addWidget(self.place_badge)
 
         raw_snippet = _clean_single_line(hit.excerpt) if hit.excerpt else format_tilde_path(str(Path(hit.path).parent))
-        self.snippet_label = QLabel(raw_snippet)
+        self.snippet_label = ElidedLabel(raw_snippet, Qt.TextElideMode.ElideRight)
         self.snippet_label.setFont(get_ui_font(10))
-        self.snippet_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.snippet_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
-        self.snippet_label.setToolTip(raw_snippet)
 
         layout.addWidget(self.thumb_label)
         layout.addLayout(title_row)
@@ -264,6 +260,7 @@ class CardGridView(QScrollArea):
         super().__init__(parent)
         self.config = config
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet("background: transparent; border: none;")
 
         self.container = QWidget()
@@ -277,6 +274,7 @@ class CardGridView(QScrollArea):
         self.empty_label.setFont(get_ui_font(13))
         self.empty_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; padding: 48px 16px;")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label.setWordWrap(True)
         self.outer_layout.addWidget(self.empty_label)
 
         self.grid_widget = QWidget()
@@ -381,11 +379,21 @@ class CardGridView(QScrollArea):
     def select_hit(self, target: SearchHit) -> None:
         """Highlight the card matching target."""
         for card in self._cards + self._weaker_cards:
-            card.set_selected(card.hit is target or card.hit.path == target.path)
+            card.set_selected(card.hit is target)
 
     def _on_card_clicked(self, hit: SearchHit) -> None:
         self.select_hit(hit)
         self.card_selected.emit(hit)
+
+    def move_selection(self, step: int) -> None:
+        """Select the visible card `step` positions away from the current one."""
+        cards = self._cards + (self._weaker_cards if self._weaker_expanded else [])
+        if not cards:
+            return
+        current = next((i for i, card in enumerate(cards) if card._is_selected), -1)
+        target = cards[max(0, min(current + step, len(cards) - 1))]
+        self._on_card_clicked(target.hit)
+        self.ensureWidgetVisible(target)
 
     def _toggle_weaker(self) -> None:
         self._weaker_expanded = not self._weaker_expanded
@@ -523,6 +531,7 @@ class SearchWindow(QMainWindow):
         self._current_hits: list[SearchHit] = []
         self._ranked_hits: list[SearchHit] = []
         self._weaker_hits: list[SearchHit] = []
+        self._selected_hit: SearchHit | None = None
         self._active_kind: FileKind | None = None
         self._chip_buttons: dict[FileKind | None, QPushButton] = {}
         self._worker: SearchWorker | None = None
@@ -553,12 +562,17 @@ class SearchWindow(QMainWindow):
         self.search_input.setFixedHeight(40)
         self.search_input.setFont(get_ui_font(14))
         self.search_input.textChanged.connect(self._on_search_text_changed)
+        self.search_input.installEventFilter(self)
 
         self.toggle_preview_btn = QPushButton(tr("Preview"))
         self.toggle_preview_btn.setCheckable(True)
         self.toggle_preview_btn.setChecked(True)
         self.toggle_preview_btn.setFixedHeight(40)
         self.toggle_preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_preview_btn.setStyleSheet(
+            f"QPushButton:checked {{ background-color: rgba(99, 102, 241, 0.16); "
+            f"border-color: {ThemeColors.BRAND_START}; color: {ThemeColors.TEXT_PRIMARY}; }}"
+        )
         self.toggle_preview_btn.toggled.connect(self._toggle_preview_sidebar)
 
         self.settings_btn = QPushButton(tr("⚙ Settings"))
@@ -575,9 +589,10 @@ class SearchWindow(QMainWindow):
         self.chip_group = QButtonGroup(self)
         self.chip_group.setExclusive(True)
 
+        # Qt silently drops border-radius larger than half the widget height, so height and radius are pinned together.
         chip_style = (
             f"QPushButton {{ background-color: {ThemeColors.BG_CARD}; color: {ThemeColors.TEXT_SECONDARY}; "
-            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 15px; padding: 5px 12px; font-size: 12px; }}"
+            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 13px; padding: 0px 12px; font-size: 12px; }}"
             f"QPushButton:hover {{ border-color: {ThemeColors.BRAND_START}; color: {ThemeColors.TEXT_PRIMARY}; }}"
             f"QPushButton:checked {{ background-color: {ThemeColors.BRAND_START}; color: #FFFFFF; "
             f"border-color: {ThemeColors.BRAND_START}; }}"
@@ -588,6 +603,7 @@ class SearchWindow(QMainWindow):
             btn = QPushButton(translated_label)
             btn.setToolTip(f"{translated_label} ({shortcut})")
             btn.setCheckable(True)
+            btn.setFixedHeight(28)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(chip_style)
             if kind is None:
@@ -684,6 +700,7 @@ class SearchWindow(QMainWindow):
         self._current_hits = []
         self._ranked_hits = []
         self._weaker_hits = []
+        self._selected_hit = None
         self.card_grid.set_results([], weaker=[], query="")
         self.code_list.set_results([])
         self.preview_pane.clear()
@@ -767,11 +784,35 @@ class SearchWindow(QMainWindow):
             else:
                 self.status_label.setText(tr("{count} matches", count=len(filtered_ranked)))
         else:
+            self._selected_hit = None
             self.preview_pane.clear()
             self.status_label.setText(tr("No matches") if query_str else tr("Ready"))
 
     def _on_hit_selected(self, hit: SearchHit) -> None:
+        self._selected_hit = hit
         self.preview_pane.load_result(hit, query=self.search_input.text())
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Drive result navigation from the search box: arrows select, Enter opens, Esc clears."""
+        if watched is self.search_input and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                self._move_selection(1 if key == Qt.Key.Key_Down else -1)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._selected_hit is not None:
+                execute_hit_action(self._selected_hit, self.config)
+                return True
+            if key == Qt.Key.Key_Escape and self.search_input.text():
+                self.search_input.clear()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _move_selection(self, step: int) -> None:
+        if self._active_kind == FileKind.CODE:
+            row = self.code_list.currentRow() + step
+            self.code_list.setCurrentRow(max(0, min(row, self.code_list.count() - 1)))
+        else:
+            self.card_grid.move_selection(step)
 
     def _toggle_preview_sidebar(self, checked: bool) -> None:
         self.preview_pane.setVisible(checked)

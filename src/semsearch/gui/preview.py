@@ -42,6 +42,7 @@ from semsearch.gui.theme import (
     get_mono_font,
     get_ui_font,
 )
+from semsearch.gui.widgets import ElidedLabel
 from semsearch.i18n import tr
 from semsearch.services.actions import open_file, open_media_at, reveal_in_file_manager
 
@@ -120,9 +121,8 @@ class MetadataCard(QFrame):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(6)
 
-        self.name_label = QLabel()
+        self.name_label = ElidedLabel()
         self.name_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
-        self.name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.name_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; border: none; background: transparent;")
 
         self.reason_badge = QLabel()
@@ -135,9 +135,8 @@ class MetadataCard(QFrame):
         top_row.addWidget(self.name_label, stretch=1)
         top_row.addWidget(self.reason_badge)
 
-        self.path_label = QLabel()
+        self.path_label = ElidedLabel()
         self.path_label.setFont(get_ui_font(11))
-        self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; border: none; background: transparent;")
 
         info_row = QHBoxLayout()
@@ -189,10 +188,7 @@ class MetadataCard(QFrame):
         """Update displayed metadata fields."""
         self._path = path
         self.name_label.setText(name)
-        self.name_label.setToolTip(name)
-        tilde_path = format_tilde_path(path)
-        self.path_label.setText(tilde_path)
-        self.path_label.setToolTip(path)
+        self.path_label.setText(format_tilde_path(path))
 
         if size_bytes <= 0 and mtime <= 0 and path and Path(path).exists():
             stat = Path(path).stat()
@@ -294,8 +290,7 @@ class ImagePreviewWidget(QWidget):
     def _rescale_pixmap(self) -> None:
         if self._pixmap.isNull():
             return
-        avail = self.image_label.size()
-        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 260))
+        target = self.image_label.size() - QSize(12, 12)
         scaled = self._pixmap.scaled(
             target,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -432,8 +427,7 @@ class PdfPreviewWidget(QWidget):
     def _rescale_page(self) -> None:
         if self._rendered_pixmap.isNull():
             return
-        avail = self.page_label.size()
-        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 240))
+        target = self.page_label.size() - QSize(12, 12)
         scaled = self._rendered_pixmap.scaled(
             target,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -694,8 +688,7 @@ class VideoPreviewWidget(QWidget):
     def _rescale_poster(self) -> None:
         if self._poster_pixmap.isNull():
             return
-        avail = self.poster_label.size()
-        target = QSize(max(avail.width() - 12, 390), max(avail.height() - 12, 220))
+        target = self.poster_label.size() - QSize(12, 12)
         scaled = self._poster_pixmap.scaled(
             target,
             Qt.AspectRatioMode.KeepAspectRatio,
