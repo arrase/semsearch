@@ -59,25 +59,30 @@ ollama pull hf.co/ggml-org/embeddinggemma-2-GGUF:BF16
 
 ### 2. Installation
 
-Clone the repository and install SemSearch inside a virtual environment using `uv` or `pip`:
+You can install SemSearch directly from GitHub as an isolated CLI/desktop application using **`uv`** or **`pipx`**:
 
+#### Using `uv` (recommended)
+```bash
+uv tool install git+https://github.com/arrase/semsearch.git
+```
+
+#### Using `pipx`
+```bash
+pipx install git+https://github.com/arrase/semsearch.git
+```
+
+#### From Source (Local Virtual Environment)
 ```bash
 git clone https://github.com/arrase/semsearch.git
 cd semsearch
-
-# Using uv (recommended)
 uv venv
 uv pip install -e .
-
-# Or using standard venv + pip
-python3 -m venv .venv
-.venv/bin/pip install .
 ```
 
 ### 3. Launch SemSearch
 
 ```bash
-.venv/bin/semsearch
+semsearch
 ```
 
 On your first launch, a 5-step **Onboarding Wizard** will guide you through:
