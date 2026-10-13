@@ -66,7 +66,10 @@ class SemSearchApp(QApplication):
         self.db = db or Database(data_dir / MAIN_DB_FILE)
         self.code_db = (code_db or Database(data_dir / CODE_DB_FILE)) if self.config.code_enabled else None
 
-        self.ollama = ollama_client or OllamaClient(base_url=self.config.ollama_url)
+        self.ollama = ollama_client or OllamaClient(
+            base_url=self.config.ollama_url,
+            num_ctx=self.config.num_ctx,
+        )
         self.search_service = SearchService(
             self.db,
             code_db=self.code_db,
@@ -144,6 +147,7 @@ class SemSearchApp(QApplication):
         self.settings_dialog.retranslate_ui()
 
         self.ollama.base_url = self.config.ollama_url
+        self.ollama.num_ctx = self.config.num_ctx
         self.search_service.model = self.config.model
 
         if self.config.code_enabled and self.code_db is None:

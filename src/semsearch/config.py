@@ -20,6 +20,7 @@ class AppConfig:
     code_editor: str = "auto"
     ollama_url: str = "http://localhost:11434"
     model: str = "embeddinggemma-2"
+    num_ctx: int = 0
     hotkey: str = "ctrl+shift+space"
     language: str = "auto"
     index_on_battery: bool = True

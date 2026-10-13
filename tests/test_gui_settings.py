@@ -260,3 +260,33 @@ def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama, qapp
     assert "Segments: 0" in dialog.storage_tab.stats_label.text()
     assert "8.0 KB" in dialog.storage_tab.stats_label.text()
 
+
+def test_settings_dialog_num_ctx_validation_against_model(
+    tmp_path: Path, mock_ollama, mock_db, qapp: QApplication
+):
+    """Verify context window validation against Ollama model's maximum context_length."""
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+    mock_ollama.get_model_context_length.return_value = 8192
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
+    assert dialog.storage_tab.num_ctx_edit.text() == "0"
+
+    # 1. Invalid non-numeric input is rejected
+    dialog.storage_tab.num_ctx_edit.setText("abc")
+    dialog.save_settings()
+    assert cfg_mgr.config.num_ctx == 0
+    assert "Invalid context window" in dialog.storage_tab.status_label.text()
+
+    # 2. Value exceeding model maximum context_length is rejected
+    dialog.storage_tab.num_ctx_edit.setText("16384")
+    dialog.save_settings()
+    assert cfg_mgr.config.num_ctx == 0
+    assert "exceeds model maximum (8192)" in dialog.storage_tab.status_label.text()
+
+    # 3. Valid value within model maximum is accepted and saved
+    dialog.storage_tab.num_ctx_edit.setText("4096")
+    dialog.save_settings()
+    assert cfg_mgr.config.num_ctx == 4096
+
+

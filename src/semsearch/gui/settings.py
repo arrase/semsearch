@@ -266,13 +266,18 @@ class StorageModelTab(QWidget):
         self.model_combo = QComboBox()
         self.model_combo.setEditable(False)
 
+        self.num_ctx_edit = QLineEdit()
+        self.num_ctx_edit.setPlaceholderText(tr("0 (Model default)"))
+
         self.status_label = QLabel()
         self.status_label.setFont(get_ui_font(11))
 
         self.host_url_label = QLabel(tr("Ollama Host URL:"))
         self.model_label = QLabel(tr("Multimodal Model:"))
+        self.num_ctx_label = QLabel(tr("Context Window (num_ctx):"))
         ollama_layout.addRow(self.host_url_label, url_row)
         ollama_layout.addRow(self.model_label, self.model_combo)
+        ollama_layout.addRow(self.num_ctx_label, self.num_ctx_edit)
         ollama_layout.addRow("", self.status_label)
         layout.addWidget(self.ollama_group)
 
@@ -302,6 +307,8 @@ class StorageModelTab(QWidget):
         self.test_btn.setText(tr("Test Connection"))
         self.host_url_label.setText(tr("Ollama Host URL:"))
         self.model_label.setText(tr("Multimodal Model:"))
+        self.num_ctx_label.setText(tr("Context Window (num_ctx):"))
+        self.num_ctx_edit.setPlaceholderText(tr("0 (Model default)"))
         self.db_group.setTitle(tr("Database && Storage Usage"))
         self.vacuum_btn.setText(tr("Optimize / Vacuum Database"))
         self.reindex_btn.setText(tr("Re-index All Files"))
@@ -310,12 +317,45 @@ class StorageModelTab(QWidget):
     def _on_reindex_clicked(self) -> None:
         self.reindex_requested.emit()
 
+    def validate_num_ctx(self) -> int | None:
+        """Validate user-entered context window size against the model's supported context_length."""
+        raw = self.num_ctx_edit.text().strip()
+        if not raw:
+            return 0
+        if not raw.isdigit():
+            self.status_label.setText(
+                tr("⚠ Invalid context window: enter a positive integer or 0 for default.")
+            )
+            self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
+            return None
+
+        value = int(raw)
+        if value == 0:
+            return 0
+
+        self.ollama.base_url = self.url_edit.text().strip()
+        selected_model = self.model_combo.currentText().strip() or "embeddinggemma-2"
+        max_ctx = self.ollama.get_model_context_length(selected_model)
+        if isinstance(max_ctx, int) and max_ctx > 0 and value > max_ctx:
+            self.status_label.setText(
+                tr(
+                    "⚠ Context window ({num_ctx}) exceeds model maximum ({max_ctx}).",
+                    num_ctx=value,
+                    max_ctx=max_ctx,
+                )
+            )
+            self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
+            return None
+
+        return value
+
     def test_connection(self) -> None:
         """Query Ollama host and restrict model dropdown strictly to verified multimodal models."""
         self.ollama.base_url = self.url_edit.text().strip()
         try:
             models = self.ollama.list_multimodal_models()
             self.populate_multimodal_models(models)
+            self.validate_num_ctx()
         except Exception as e:
             self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
             self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
@@ -534,6 +574,7 @@ class SettingsDialog(QDialog):
         # Tab 3: Storage & Model
         self.storage_tab.url_edit.setText(cfg.ollama_url)
         self.storage_tab.populate_multimodal_models([cfg.model] if cfg.model else ["embeddinggemma-2"])
+        self.storage_tab.num_ctx_edit.setText(str(cfg.num_ctx))
         self.storage_tab.update_database_stats()
 
         # Tab 4: General
@@ -547,6 +588,11 @@ class SettingsDialog(QDialog):
 
     def save_settings(self) -> None:
         """Save settings from tab widgets back to ConfigManager."""
+        validated_ctx = self.storage_tab.validate_num_ctx()
+        if validated_ctx is None:
+            self.tabs.setCurrentWidget(self.storage_tab)
+            return
+
         cfg = self.config_manager.config
 
         # Tab 1: Folders
@@ -584,6 +630,7 @@ class SettingsDialog(QDialog):
         selected_model = self.storage_tab.model_combo.currentText()
         if selected_model:
             cfg.model = selected_model
+        cfg.num_ctx = validated_ctx
 
         # Tab 4: General
         hotkey = self.general_tab.hotkey_edit.text().strip()
