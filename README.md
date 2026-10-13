@@ -36,7 +36,7 @@ Search functions, classes, and implementation logic by concept with line-level p
 ![SemSearch Code Search](docs/screenshots/code-search.png)
 
 ### Multimodal Model & Storage Settings
-Connect to any local or remote Ollama instance, switch between verified multimodal embedding models, and manage your local index:
+Connect to any local or remote Ollama instance, switch between verified multimodal embedding models, configure the context window size (`num_ctx`) validated against your model's maximum capacity, and manage your local index:
 
 ![SemSearch Settings Dialog](docs/screenshots/settings.png)
 
@@ -131,10 +131,11 @@ Press **`Ctrl+Shift+Space`** at any time to toggle the floating panel:
 
 ## 🧠 Multimodal Models & Supported File Types
 
-### Flexible Multimodal Model Support
+### Flexible Multimodal Model Support & Context Window (`num_ctx`)
 By default, SemSearch uses **`embeddinggemma-2`** via Ollama. However, **you are not locked into a single model**—you can use any multimodal embedding model supported by Ollama.
 
-When you click **Test Connection** in **Settings → Storage & Model**, SemSearch queries your Ollama server (`/api/tags` and `/api/show`), inspects model capabilities and projector architectures, and populates the selector with all verified multimodal models installed on your system.
+- **Verified Multimodal Discovery:** When you click **Test Connection** in **Settings → Storage & Model**, SemSearch queries your Ollama server (`/api/tags` and `/api/show`), inspects model capabilities and projector architectures, and populates the selector with all verified multimodal models installed on your system.
+- **Configurable Context Window (`num_ctx`):** You can set a custom context window size (in tokens) in **Settings → Storage & Model** (default `0` uses the model's native default in Ollama). When a custom token limit is entered, SemSearch queries `/api/show` to validate that `num_ctx` does not exceed the selected model's maximum supported `context_length` before saving, and passes `"options": {"num_ctx": ...}` in all `/api/embed` requests.
 
 ### Supported Formats
 

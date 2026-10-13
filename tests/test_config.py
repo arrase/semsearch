@@ -27,6 +27,7 @@ def test_default_config_values():
     assert config.code_editor == "auto"
     assert config.ollama_url == "http://localhost:11434"
     assert config.model == "embeddinggemma-2"
+    assert config.num_ctx == 0
     assert config.hotkey == "ctrl+shift+space"
     assert config.index_on_battery is True
     assert config.index_schedule_enabled is False

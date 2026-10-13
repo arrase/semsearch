@@ -58,12 +58,14 @@ class OllamaClient:
         embed_timeout: float = 120.0,
         max_batch_size: int = 32,
         default_model: str = "embeddinggemma-2",
+        num_ctx: int = 0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.embed_timeout = embed_timeout
         self.max_batch_size = max_batch_size
         self.default_model = default_model
+        self.num_ctx = num_ctx
 
     def _request(
         self,
@@ -105,6 +107,33 @@ class OllamaClient:
             payload={"name": model, "model": model},
             model_name=model,
         )
+
+    def get_model_context_length(self, model: str) -> int | None:
+        """Query the maximum supported context window size (in tokens) for a model from Ollama."""
+        target = self.resolve_model_name(model)
+        try:
+            info = self.show_model(target)
+        except OllamaError:
+            return None
+
+        model_info = info.get("model_info") or {}
+        for key, val in model_info.items():
+            if key.endswith(".context_length") and isinstance(val, int) and val > 0:
+                return val
+
+        details = info.get("details") or {}
+        ctx = details.get("context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            return ctx
+
+        modelfile = str(info.get("modelfile") or "")
+        for line in modelfile.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[0].upper() == "PARAMETER" and parts[1].lower() == "num_ctx":
+                if parts[2].isdigit():
+                    return int(parts[2])
+
+        return None
 
     def _is_info_multimodal(self, info: dict[str, Any], model_name: str = "") -> bool:
         """Check capabilities, details, architecture, and name for multimodal support."""
@@ -191,20 +220,29 @@ class OllamaClient:
         model: str,
         inputs: list[str | dict[str, str]],
         truncate: bool = True,
+        num_ctx: int | None = None,
     ) -> list[list[float]]:
         """Embed a heterogeneous batch of text, image, or audio inputs in chunks up to max_batch_size."""
         if not inputs:
             return []
 
         target_model = self.resolve_model_name(model)
+        effective_ctx = self.num_ctx if num_ctx is None else num_ctx
         all_embeddings: list[list[float]] = []
 
         for i in range(0, len(inputs), self.max_batch_size):
             batch = inputs[i : i + self.max_batch_size]
+            payload: dict[str, Any] = {
+                "model": target_model,
+                "input": batch,
+                "truncate": truncate,
+            }
+            if effective_ctx > 0:
+                payload["options"] = {"num_ctx": effective_ctx}
             data = self._request(
                 "/api/embed",
                 timeout=self.embed_timeout,
-                payload={"model": target_model, "input": batch, "truncate": truncate},
+                payload=payload,
                 model_name=model,
             )
             all_embeddings.extend(data.get("embeddings", []))
