@@ -33,15 +33,16 @@ def mock_db(tmp_path: Path):
 
 
 def test_autostart_toggle(tmp_path: Path, monkeypatch):
-    """Verify autostart desktop file creation and removal."""
+    """Verify autostart desktop file creation with absolute executable path and removal."""
     test_autostart = tmp_path / "autostart" / "semsearch.desktop"
     monkeypatch.setattr("semsearch.gui.settings.AUTOSTART_DIR", test_autostart.parent)
     monkeypatch.setattr("semsearch.gui.settings.AUTOSTART_FILE", test_autostart)
+    monkeypatch.setattr("shutil.which", lambda _: "/home/user/.local/bin/semsearch")
 
     assert not is_autostart_enabled()
     set_autostart_enabled(True)
     assert is_autostart_enabled()
-    assert "Exec=semsearch --daemon" in test_autostart.read_text(encoding="utf-8")
+    assert "Exec=/home/user/.local/bin/semsearch --daemon" in test_autostart.read_text(encoding="utf-8")
 
     set_autostart_enabled(False)
     assert not is_autostart_enabled()

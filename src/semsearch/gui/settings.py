@@ -1,6 +1,7 @@
 """Settings dialog with four configuration tabs and verified multimodal model filtering."""
 
 from pathlib import Path
+import shutil
 from PySide6.QtCore import QTime, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -55,12 +56,16 @@ def set_autostart_enabled(enabled: bool) -> None:
     """Create or remove autostart desktop entry."""
     if enabled:
         AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
+        local_bin = Path.home() / ".local" / "bin" / "semsearch"
+        exec_path = shutil.which("semsearch") or (
+            str(local_bin) if local_bin.is_file() else "semsearch"
+        )
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=SemSearch\n"
             "Comment=Linux desktop semantic search engine\n"
-            "Exec=semsearch --daemon\n"
+            f"Exec={exec_path} --daemon\n"
             "Hidden=false\n"
             "NoDisplay=false\n"
             "X-GNOME-Autostart-enabled=true\n"
