@@ -4,7 +4,6 @@ from enum import Enum
 import os
 from pathlib import Path
 import threading
-import time
 import numpy as np
 
 from semsearch.config import AppConfig
@@ -94,6 +93,8 @@ class IndexService:
         self._lock = threading.Lock()
         self._pause_event = threading.Event()
         self._pause_event.set()
+        self._work_event = threading.Event()
+        self._work_event.set()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
 
@@ -103,6 +104,7 @@ class IndexService:
             return
         self._stop_event.clear()
         self._pause_event.set()
+        self._work_event.set()
         self.status.activity = EngineActivity.STARTING
         self._worker_thread = threading.Thread(target=self._worker_loop, name="IndexerWorkerThread", daemon=True)
         self._worker_thread.start()
@@ -111,6 +113,7 @@ class IndexService:
         """Stop background worker thread."""
         self._stop_event.set()
         self._pause_event.set()
+        self._work_event.set()
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
         self._worker_thread = None
@@ -130,6 +133,7 @@ class IndexService:
             self.status.waiting_for = ""
             self.status.activity = EngineActivity.INDEXING
         self._pause_event.set()
+        self._work_event.set()
 
     def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
         """Enqueue newly modified or created file for immediate or backfill indexing."""
@@ -184,6 +188,9 @@ class IndexService:
                 if item not in self._new_files_queue:
                     self._new_files_queue.append(item)
 
+        self._update_status_counts()
+        self._work_event.set()
+
     def crawl_and_sync(self, roots: list[str] | None = None, is_code: bool = False) -> None:
         """Crawl folders and synchronize database records."""
         if self._stop_event.is_set():
@@ -219,6 +226,7 @@ class IndexService:
                 self.status.activity = EngineActivity.PAUSED
             elif self.status.activity == EngineActivity.SYNCING:
                 self.status.activity = EngineActivity.IDLE
+        self._work_event.set()
 
 
     def _get_next_file(self) -> tuple[FileRecord | None, Database | None, IndexQueueTier | None]:
@@ -369,13 +377,19 @@ class IndexService:
             if self._stop_event.is_set():
                 break
 
+            self._work_event.clear()
             file_rec, target_db, tier = self._get_next_file()
             if file_rec is None or target_db is None:
+                self._update_status_counts()
+                self.db.shrink_memory()
+                if self.code_db is not None:
+                    self.code_db.shrink_memory()
                 with self._lock:
                     if not self.status.paused:
                         self.status.activity = EngineActivity.IDLE
                         self.status.current_file = ""
-                time.sleep(0.2)
+                if not self._stop_event.is_set():
+                    self._work_event.wait()
                 continue
 
             with self._lock:
@@ -407,7 +421,10 @@ class IndexService:
 
     def get_status(self) -> EngineStatus:
         """Return the current engine operational state and counters."""
-        self._update_status_counts()
+        with self._lock:
+            is_idle = self.status.activity == EngineActivity.IDLE
+        if not is_idle:
+            self._update_status_counts()
         with self._lock:
             return EngineStatus(
                 activity=self.status.activity,

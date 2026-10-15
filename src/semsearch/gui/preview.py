@@ -302,6 +302,12 @@ class ImagePreviewWidget(QWidget):
         super().resizeEvent(event)
         self._rescale_pixmap()
 
+    def clear(self) -> None:
+        """Release cached image pixmap and clear labels."""
+        self._pixmap = QPixmap()
+        self.image_label.clear()
+        self.dimensions_label.clear()
+
 
 class PdfPreviewWidget(QWidget):
     """PDF page renderer with PyMuPDF and yellow search term highlights."""
@@ -449,6 +455,17 @@ class PdfPreviewWidget(QWidget):
             self._current_page += 1
             self._render_current_page()
 
+    def clear(self) -> None:
+        """Close open PDF document and release rendered page pixmap."""
+        if self._doc is not None:
+            self._doc.close()
+            self._doc = None
+        self._rendered_pixmap = QPixmap()
+        self.page_label.clear()
+        self._total_pages = 0
+        self._current_page = 0
+        self._query_terms = []
+
 
 class WaveformWidget(QWidget):
     """Synthetic 64-bar audio waveform visualization with scrub position."""
@@ -580,6 +597,11 @@ class AudioPreviewWidget(QWidget):
         cur_min, cur_sec = divmod(int(self._current_pos), 60)
         dur_min, dur_sec = divmod(int(self._duration), 60)
         self.time_label.setText(f"{cur_min}:{cur_sec:02d} / {dur_min}:{dur_sec:02d}")
+
+    def clear(self) -> None:
+        """Reset audio preview state."""
+        self._path = ""
+        self._current_pos = 0.0
 
 
 class VideoPreviewWidget(QWidget):
@@ -713,6 +735,13 @@ class VideoPreviewWidget(QWidget):
         cur_min, cur_sec = divmod(int(self._current_pos), 60)
         dur_min, dur_sec = divmod(int(self._duration), 60)
         self.time_label.setText(f"{cur_min}:{cur_sec:02d} / {dur_min}:{dur_sec:02d}")
+
+    def clear(self) -> None:
+        """Release video poster pixmap and reset state."""
+        self._poster_pixmap = QPixmap()
+        self.poster_label.clear()
+        self._path = ""
+        self._current_pos = 0.0
 
 
 class LineNumberGutter(QWidget):
@@ -881,6 +910,11 @@ class CodePreviewWidget(QWidget):
 
         self.meta_card.update_metadata(name, path, size, mtime, reason)
 
+    def clear(self) -> None:
+        """Clear editor text and extra selections."""
+        self.editor.clear()
+        self.editor.setExtraSelections([])
+
 
 class PreviewPane(QStackedWidget):
     """Stacked multimodal preview pane coordinating all media viewers."""
@@ -950,7 +984,12 @@ class PreviewPane(QStackedWidget):
             self.setCurrentIndex(5)
 
     def clear(self) -> None:
-        """Reset preview pane to empty placeholder view."""
+        """Reset preview pane to empty placeholder view and release buffered resources."""
+        self.image_view.clear()
+        self.pdf_view.clear()
+        self.audio_view.clear()
+        self.video_view.clear()
+        self.code_view.clear()
         self.setCurrentIndex(0)
 
     def retranslate_ui(self) -> None:

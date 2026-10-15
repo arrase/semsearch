@@ -1,0 +1,18 @@
+# Tasks
+
+## 1. Database & Background Services (`database.py`, `indexer.py`, `watcher.py`)
+
+- [x] 1.1 Implement `Database.shrink_memory()` in `src/semsearch/core/database.py` using `PRAGMA shrink_memory;` under `self._lock`, and add unit tests in `tests/test_database.py` verifying thread-safe execution (verify with `.venv/bin/pytest tests/test_database.py`).
+- [x] 1.2 Implement event-driven idle waiting (`_work_event`) and SQLite memory shrinking on transition to `IDLE` in `IndexService._worker_loop`, wake `_work_event` in `start()`, `stop()`, `resume()`, `enqueue_file()`, and `crawl_and_sync()`, and skip `_update_status_counts()` in `get_status()` when `status.activity == EngineActivity.IDLE` in `src/semsearch/services/indexer.py`; add unit tests in `tests/test_indexer.py` covering idle blocking, wakeup signaling, `shrink_memory()` invocation, and cached idle `get_status()` (verify with `.venv/bin/pytest tests/test_indexer.py`).
+- [x] 1.3 Add `DebounceBucket.has_pending()` and event-driven idle waiting (`_wake_event`) in `FileSystemWatcher._debounce_loop` and `SemSearchEventHandler` in `src/semsearch/services/watcher.py` so the debounce thread blocks with zero wakeups when all buckets are empty and wakes immediately on filesystem events or `stop()`; add unit tests in `tests/test_watcher.py` verifying `has_pending()` and idle event blocking/wakeup (verify with `.venv/bin/pytest tests/test_watcher.py`).
+
+## 2. GUI, Memory Release & QThread Lifecycle (`tray.py`, `preview.py`, `panel.py`, `window.py`)
+
+- [x] 2.1 Add `_last_rendered_state` caching in `SystemTrayManager.update_status()` and reset it in `retranslate_ui()` in `src/semsearch/gui/tray.py` so `render_tray_icon()` and D-Bus icon/tooltip updates are skipped when status is unchanged; add unit tests in `tests/test_tray.py` verifying redundant updates are suppressed (verify with `.venv/bin/pytest tests/test_tray.py`).
+- [x] 2.2 Implement `.clear()` on `ImagePreviewWidget`, `PdfPreviewWidget`, `VideoPreviewWidget`, `AudioPreviewWidget`, and `CodePreviewWidget`, and invoke them from `PreviewPane.clear()` in `src/semsearch/gui/preview.py` to close open `pymupdf.Document` instances and release `QPixmap` buffers and editor text; add unit tests in `tests/test_preview.py` verifying resource cleanup on `clear()` (verify with `.venv/bin/pytest tests/test_preview.py`).
+- [x] 2.3 Implement safe `SearchWorker` (`QThread`) lifecycle management via `_active_workers` and `finished` signal cleanup (`_cleanup_worker` + `deleteLater()`) in `SearchPanel`, and update `SearchPanel.hide_panel()` in `src/semsearch/gui/panel.py` to clear inputs/results/preview, collapse geometry, and call `shrink_memory()` on `db` and `code_db`; add unit tests in `tests/test_panel.py` covering slow worker (>500ms) cancellation without `SIGABRT` and memory release on `hide_panel()` (verify with `.venv/bin/pytest tests/test_panel.py`).
+- [x] 2.4 Implement safe `SearchWorker` (`QThread`) lifecycle management via `_active_workers` and `finished` signal cleanup (`_cleanup_worker` + `deleteLater()`) in `SearchWindow`, and update `SearchWindow.closeEvent()` in `src/semsearch/gui/window.py` to clear `search_input`, call `_clear_results()`, and call `shrink_memory()` on `db` and `code_db`; add unit tests in `tests/test_window.py` covering slow worker (>500ms) cancellation without `SIGABRT` and memory release on `closeEvent()` (verify with `.venv/bin/pytest tests/test_window.py`).
+
+## 3. End-to-End Validation
+
+- [x] 3.1 Run the full test suite and verify zero regressions and full compliance with idle resource optimization requirements across all modules (verify with `.venv/bin/pytest`).

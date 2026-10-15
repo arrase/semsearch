@@ -144,6 +144,7 @@ class SearchPanel(QWidget):
         self._current_result_set: ResultSet = ResultSet()
         self._last_query = ""
         self._worker: SearchWorker | None = None
+        self._active_workers: set[SearchWorker] = set()
 
         self._semantic_timer = QTimer(self)
         self._semantic_timer.setSingleShot(True)
@@ -292,11 +293,20 @@ class SearchPanel(QWidget):
             y = geo.y() + int(geo.height() * 0.16)
             self.move(x, y)
 
+    def _cleanup_worker(self, worker: SearchWorker) -> None:
+        self._active_workers.discard(worker)
+        if self._worker is worker:
+            self._worker = None
+        worker.deleteLater()
+
     def _stop_workers(self) -> None:
         self._semantic_timer.stop()
+        for worker in list(self._active_workers):
+            worker.stop()
         if self._worker is not None:
             self._worker.stop()
-            self._worker.wait(500)
+            self._worker.wait(50)
+            self._worker = None
 
     def _on_query_text_changed(self, text: str) -> None:
         stripped = text.strip()
@@ -368,9 +378,12 @@ class SearchPanel(QWidget):
         if not self._last_query:
             return
         self._stop_workers()
-        self._worker = SearchWorker(self.search_service, self._last_query, limit=50)
-        self._worker.results_ready.connect(self._on_semantic_results_ready)
-        self._worker.start()
+        worker = SearchWorker(self.search_service, self._last_query, limit=50)
+        self._active_workers.add(worker)
+        self._worker = worker
+        worker.results_ready.connect(self._on_semantic_results_ready)
+        worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
+        worker.start()
 
     def _on_semantic_results_ready(self, query: str, result_set: ResultSet) -> None:
         """Handle background search results when query matches active query."""
@@ -550,8 +563,21 @@ class SearchPanel(QWidget):
         self.search_input.setFocus()
 
     def hide_panel(self) -> None:
-        """Dismiss search panel."""
+        """Dismiss search panel and release UI/database buffers."""
         self._stop_workers()
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+        self._last_query = ""
+        self._current_result_set = ResultSet()
+        self.status_badge.setText("")
+        self.result_list.clear()
+        self.preview_pane.clear()
+        self._set_geometry_collapsed()
+        if self.search_service.db is not None:
+            self.search_service.db.shrink_memory()
+        if self.search_service.code_db is not None:
+            self.search_service.code_db.shrink_memory()
         self.hide()
 
     def closeEvent(self, event: QCloseEvent) -> None:

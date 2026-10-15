@@ -21,9 +21,15 @@ from semsearch.services.indexer import IndexService
 class DebounceBucket:
     """Tracks filesystem event timestamps for quiet-window and ceiling debouncing."""
 
-    def __init__(self, quiet_window: float, max_ceiling: float | None = None) -> None:
+    def __init__(
+        self,
+        quiet_window: float,
+        max_ceiling: float | None = None,
+        wake_event: threading.Event | None = None,
+    ) -> None:
         self.quiet_window = quiet_window
         self.max_ceiling = max_ceiling
+        self.wake_event = wake_event
         self.first_time: float | None = None
         self.last_time: float | None = None
         self.paths: set[str] = set()
@@ -37,6 +43,13 @@ class DebounceBucket:
                 self.first_time = current
             self.last_time = current
             self.paths.add(path)
+        if self.wake_event is not None:
+            self.wake_event.set()
+
+    def has_pending(self) -> bool:
+        """Return True if the bucket currently holds pending paths."""
+        with self._lock:
+            return bool(self.paths)
 
     def is_ready(self, now: float | None = None) -> bool:
         """Check if debounce timer expired via quiet period or ceiling."""
@@ -172,17 +185,23 @@ class FileSystemWatcher:
         self._observer: Observer | None = None
         self._buckets: dict[str, DebounceBucket] = {}
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._timer_thread: threading.Thread | None = None
 
     def _debounce_loop(self) -> None:
         while not self._stop_event.is_set():
+            self._wake_event.clear()
             now = time.time()
-            for bucket in list(self._buckets.values()):
+            buckets = list(self._buckets.values())
+            for bucket in buckets:
                 if bucket.is_ready(now):
                     flushed = bucket.flush()
                     if flushed:
                         self._sync_paths(flushed)
-            self._stop_event.wait(self.check_interval_sec)
+            if any(b.has_pending() for b in buckets):
+                self._stop_event.wait(self.check_interval_sec)
+            elif not self._stop_event.is_set():
+                self._wake_event.wait()
 
     def _sync_paths(self, paths: set[str]) -> None:
         for p in paths:
@@ -201,7 +220,11 @@ class FileSystemWatcher:
         for folder in folders:
             f_path = str(Path(folder).resolve())
             if os.path.isdir(f_path):
-                bucket = DebounceBucket(quiet_window=quiet_window, max_ceiling=max_ceiling)
+                bucket = DebounceBucket(
+                    quiet_window=quiet_window,
+                    max_ceiling=max_ceiling,
+                    wake_event=self._wake_event,
+                )
                 self._buckets[f_path] = bucket
                 handler = SemSearchEventHandler(
                     root=f_path,
@@ -244,6 +267,7 @@ class FileSystemWatcher:
     def stop(self) -> None:
         """Stop observer and debouncing thread."""
         self._stop_event.set()
+        self._wake_event.set()
         if self._timer_thread is not None and self._timer_thread.is_alive():
             self._timer_thread.join(timeout=1.0)
         self._timer_thread = None

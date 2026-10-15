@@ -39,7 +39,7 @@ The indexing service MUST index initial segments of large multi-part files up to
 - **THEN** indexing resumes from the last indexed page offset and marks the file as fully indexed upon completion
 
 ### Requirement: Dynamic Cost Estimation and Engine Status Tracking
-The indexing service MUST maintain running throughput measurements for segment embedding and database growth, publishing updated remaining duration estimates, storage projections, and engine lifecycle states.
+The indexing service MUST maintain running throughput measurements for segment embedding and database growth, publishing updated remaining duration estimates, storage projections, and engine lifecycle states. While the engine is in the `IDLE` state, `get_status()` MUST return cached status counters without executing redundant `SELECT COUNT(*)` SQLite queries.
 
 #### Scenario: Estimating remaining time and disk consumption
 - **WHEN** files are processed across varying modalities
@@ -49,9 +49,24 @@ The indexing service MUST maintain running throughput measurements for segment e
 - **WHEN** the engine transitions through starting, syncing, indexing, paused, and idle states
 - **THEN** current engine activity, processed file counters, and active filenames are published accurately
 
+#### Scenario: Returning cached status while idle without querying SQLite
+- **WHEN** `get_status()` is polled while the engine activity is `IDLE`
+- **THEN** the service returns the cached `EngineStatus` snapshot without issuing `stats()` queries against the SQLite databases
+
 ### Requirement: Code Repository Root and Relative Title Resolution
 When indexing code files, the indexing service MUST resolve the repository root by walking upward from the file to the nearest `.git` directory or code project root marker before falling back to the configured code root folder, and MUST format segment titles with the repository directory name followed by the relative file path (e.g., `semsearch/src/semsearch/services/searcher.py`).
 
 #### Scenario: Nested git repository inside configured parent directory
 - **WHEN** a code folder such as `~/Develop` contains multiple repositories (e.g., `~/Develop/semsearch/.git`)
 - **THEN** the indexed code segment sets `repo` to `~/Develop/semsearch` and `title` to `semsearch/src/...`
+
+### Requirement: Event-Driven Zero-Wakeup Idle Waiting
+When no pending or partial files remain in any indexing queue, the indexing worker MUST transition to `IDLE`, invoke `shrink_memory()` on active databases, and block indefinitely on an event signal (`_work_event`) with zero periodic polling wakeups until new work is enqueued, synchronized, or the service is stopped.
+
+#### Scenario: Blocking without CPU wakeups when queues are empty
+- **WHEN** the indexing worker finishes processing all queued and partial files
+- **THEN** the worker transitions to `IDLE`, shrinks SQLite memory on the general and code databases, and blocks on `_work_event` without polling
+
+#### Scenario: Immediate wakeup upon file enqueue or folder sync
+- **WHEN** `enqueue_file()`, `crawl_and_sync()`, or `stop()` is called while the worker is idle
+- **THEN** `_work_event` is set and the worker thread wakes immediately to process queued work or terminate

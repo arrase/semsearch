@@ -109,6 +109,7 @@ class SystemTrayManager(QObject):
         self.tray_icon.setIcon(render_tray_icon(0.0, is_indexing=False, is_paused=False))
         self.tray_icon.setToolTip("SemSearch")
 
+        self._last_rendered_state: tuple | None = None
         self._poll_timer: QTimer | None = None
         if self.index_service is not None:
             self._poll_timer = QTimer(self)
@@ -117,6 +118,7 @@ class SystemTrayManager(QObject):
 
     def retranslate_ui(self) -> None:
         """Refresh translated action labels."""
+        self._last_rendered_state = None
         self.panel_action.setText(tr("Quick Search"))
         self.window_action.setText(tr("Search Window"))
         self.settings_action.setText(tr("Settings..."))
@@ -154,6 +156,10 @@ class SystemTrayManager(QObject):
         percent = (status.indexed / status.total * 100.0) if status.total > 0 else 0.0
         is_indexing = status.activity == EngineActivity.INDEXING
         is_paused = status.paused or status.activity == EngineActivity.PAUSED
+        state_key = (status.activity, is_paused, int(percent), status.indexed, status.total)
+        if state_key == self._last_rendered_state:
+            return
+        self._last_rendered_state = state_key
 
         if is_paused:
             status_text = tr("Paused")

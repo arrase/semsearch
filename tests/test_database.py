@@ -466,3 +466,40 @@ def test_fts_malformed_query_and_thread_safety(db: Database):
     assert db.stats()["files"] == 8
 
 
+def test_shrink_memory_thread_safe_execution(db: Database):
+    """Verify shrink_memory executes PRAGMA shrink_memory safely under lock without affecting stored records."""
+    cid = db.insert_file(Candidate("/tmp/shrink.txt", FileKind.DOC, 42, 10.0, 500, 1))
+    db.insert_segment(
+        cid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0.0,
+        1.0,
+        "memory test",
+        np.ones(768, dtype=np.float16).tobytes(),
+        "shrink.txt",
+        "memory test content",
+        "",
+    )
+
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(5):
+                db.shrink_memory()
+                db.stats()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    rec = db.find_by_id(cid)
+    assert rec is not None
+    assert rec.path == "/tmp/shrink.txt"
+    assert len(db.fts_search("memory")) == 1

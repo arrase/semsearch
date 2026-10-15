@@ -574,7 +574,7 @@ def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeyp
         raise RuntimeError("Unexpected extraction crash")
 
     service.process_file = failing_process_file
-    monkeypatch.setattr(time, "sleep", lambda _: service._stop_event.set())
+    monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
 
     file_rec = db.find_by_id(fid)
     assert file_rec is not None
@@ -623,7 +623,7 @@ def test_worker_loop_code_db_process_file_exception_marks_failed(
         raise RuntimeError("Code processing failure")
 
     service.process_file = failing_process_file
-    monkeypatch.setattr(time, "sleep", lambda _: service._stop_event.set())
+    monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
 
     service._worker_loop()
 
@@ -647,4 +647,96 @@ def test_code_place_nested_git_repo(tmp_path: Path):
     repo, title = _code_place(str(file_path), code_folders=[str(develop)])
     assert repo == str(repo_dir.resolve())
     assert title == "src/semsearch/services/searcher.py"
+
+
+def test_worker_loop_shrinks_memory_and_blocks_until_work_arrives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify _worker_loop shrinks memory on db and code_db when transitioning to IDLE and wakes on enqueue_file."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    config = AppConfig(code_enabled=True, code_folders=[str(tmp_path / "code")])
+    service = IndexService(db=db, code_db=code_db, config=config)
+
+    db_shrink_calls = 0
+    code_db_shrink_calls = 0
+    orig_db_shrink = db.shrink_memory
+    orig_code_shrink = code_db.shrink_memory
+
+    def track_db_shrink() -> None:
+        nonlocal db_shrink_calls
+        db_shrink_calls += 1
+        orig_db_shrink()
+
+    def track_code_shrink() -> None:
+        nonlocal code_db_shrink_calls
+        code_db_shrink_calls += 1
+        orig_code_shrink()
+
+    monkeypatch.setattr(db, "shrink_memory", track_db_shrink)
+    monkeypatch.setattr(code_db, "shrink_memory", track_code_shrink)
+
+    service.start()
+    deadline = time.time() + 2.0
+    while service.get_status().activity != EngineActivity.IDLE and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert service.get_status().activity == EngineActivity.IDLE
+    assert db_shrink_calls == 1
+    assert code_db_shrink_calls == 1
+    assert not service._work_event.is_set()
+
+    # Enqueue a new file while idle and verify immediate wakeup and processing
+    doc_path = tmp_path / "wake.md"
+    doc_path.write_text("Wake up the indexer", encoding="utf-8")
+    service.enqueue_file(str(doc_path))
+
+    deadline = time.time() + 2.0
+    while db.find_by_path(str(doc_path.resolve())).state != FileState.DONE and time.time() < deadline:
+        time.sleep(0.01)
+    while service.get_status().activity != EngineActivity.IDLE and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert db.find_by_path(str(doc_path.resolve())).state == FileState.DONE
+    assert db_shrink_calls >= 2
+    assert code_db_shrink_calls >= 2
+
+    service.stop()
+    assert service._worker_thread is None
+
+
+def test_get_status_skips_sqlite_stats_when_idle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Verify get_status() returns cached counters without calling db.stats() while activity is IDLE."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    doc_folder = tmp_path / "docs"
+    doc_folder.mkdir()
+    (doc_folder / "item.txt").write_text("hello", encoding="utf-8")
+
+    service = IndexService(db=db, code_db=code_db, config=AppConfig(folders=[str(doc_folder)], code_enabled=True))
+    service.crawl_and_sync(is_code=False)
+    assert service.get_status().activity == EngineActivity.IDLE
+    assert service.get_status().files == 1
+
+    stats_calls = 0
+    orig_stats = db.stats
+
+    def counting_stats() -> dict[str, int]:
+        nonlocal stats_calls
+        stats_calls += 1
+        return orig_stats()
+
+    monkeypatch.setattr(db, "stats", counting_stats)
+
+    # Repeated polling while IDLE must execute 0 SQLite stats() queries
+    for _ in range(5):
+        status = service.get_status()
+        assert status.activity == EngineActivity.IDLE
+        assert status.files == 1
+
+    assert stats_calls == 0
+
+    # When not IDLE, get_status() updates status counts
+    service.status.activity = EngineActivity.INDEXING
+    status_active = service.get_status()
+    assert status_active.activity == EngineActivity.INDEXING
+    assert stats_calls == 1
 

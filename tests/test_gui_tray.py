@@ -1,6 +1,6 @@
 """Unit tests for SystemTrayManager and dynamic circular progress ring rendering."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from PySide6.QtWidgets import QApplication
 from semsearch.core.types import EngineActivity, EngineStatus
 from semsearch.gui.tray import SystemTrayManager, render_tray_icon
@@ -118,3 +118,45 @@ def test_system_tray_manager_no_indexer(qapp: QApplication):
     manager = SystemTrayManager(index_service=None)
     assert manager._poll_timer is None
     manager._poll_status()
+
+
+def test_system_tray_manager_skips_unchanged_status_updates(qapp: QApplication):
+    """Verify repeated update_status calls with unchanged state skip icon rendering and D-Bus updates."""
+    mock_indexer = MagicMock()
+    idle_status = EngineStatus(
+        activity=EngineActivity.IDLE,
+        indexed=100,
+        total=100,
+        paused=False,
+    )
+    mock_indexer.status = idle_status
+
+    manager = SystemTrayManager(index_service=mock_indexer)
+
+    with (
+        patch("semsearch.gui.tray.render_tray_icon", wraps=render_tray_icon) as mock_render,
+        patch.object(manager.tray_icon, "setIcon") as mock_set_icon,
+        patch.object(manager.tray_icon, "setToolTip") as mock_set_tooltip,
+        patch.object(manager.status_action, "setText") as mock_set_status_text,
+    ):
+        # First update renders and applies
+        manager.update_status(idle_status)
+        assert mock_render.call_count == 1
+        assert mock_set_icon.call_count == 1
+        assert mock_set_tooltip.call_count == 1
+        assert mock_set_status_text.call_count == 1
+
+        # Repeated update with identical state skips rendering and D-Bus calls
+        manager.update_status(idle_status)
+        assert mock_render.call_count == 1
+        assert mock_set_icon.call_count == 1
+        assert mock_set_tooltip.call_count == 1
+        assert mock_set_status_text.call_count == 1
+
+        # retranslate_ui invalidates _last_rendered_state and forces a refresh
+        manager.retranslate_ui()
+        assert mock_render.call_count == 2
+        assert mock_set_icon.call_count == 2
+        assert mock_set_tooltip.call_count == 2
+        assert mock_set_status_text.call_count == 2
+

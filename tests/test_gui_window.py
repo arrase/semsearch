@@ -1,5 +1,7 @@
 """Unit and widget tests for full desktop search window."""
 
+import gc
+import threading
 from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import Qt
@@ -232,6 +234,9 @@ def test_window_code_filter_routing(mock_search_service, qapp: QApplication):
     win.set_kind_filter(FileKind.DOC)
     assert win.search_input.text() == "authentication"
     assert win._active_kind == FileKind.DOC
+    if win._worker is not None:
+        win._worker.wait()
+        qapp.processEvents()
 
 
 def test_window_weaker_matches_folding_and_selection(qapp: QApplication):
@@ -271,4 +276,64 @@ def test_code_list_single_line_formatting(qapp: QApplication):
     assert "«" not in item_text
     assert "src/engine.py:L42" in item_text
     assert "[compute]" in item_text
+
+
+def test_window_slow_worker_lifecycle_no_crash(mock_search_service, qapp: QApplication):
+    """Verify stopping a slow SearchWorker retains it in _active_workers until finished without QThread crash."""
+    started = threading.Event()
+    unblock = threading.Event()
+
+    def slow_search(query: str, limit: int = 100, is_code: bool = False):
+        if query == "slow_query":
+            started.set()
+            unblock.wait(timeout=2.0)
+        return ResultSet(ranked=[], weaker=[])
+
+    mock_search_service.search.side_effect = slow_search
+    win = SearchWindow(mock_search_service, AppConfig())
+
+    win.search_input.setText("slow_query")
+    win._debounce_timer.timeout.emit()
+    assert started.wait(timeout=1.0)
+    assert len(win._active_workers) == 1
+    slow_worker = next(iter(win._active_workers))
+
+    # Replace slow worker with a new query and force garbage collection while slow_worker is still blocked
+    win.search_input.setText("next_query")
+    win._debounce_timer.timeout.emit()
+    gc.collect()
+
+    assert slow_worker.is_stopped
+    assert slow_worker in win._active_workers
+
+    # Unblock the slow worker and allow Qt event loop to process finished signals
+    unblock.set()
+    for worker in list(win._active_workers):
+        worker.wait(1000)
+    qapp.processEvents()
+
+    assert len(win._active_workers) == 0
+
+
+def test_window_close_releases_memory_and_ui_state(mock_search_service, qapp: QApplication):
+    """Verify closeEvent clears search_input, result cards, preview_pane, and calls shrink_memory."""
+    mock_search_service.code_db = MagicMock()
+    win = SearchWindow(mock_search_service, AppConfig())
+    win.show()
+    win.perform_search("query")
+    assert win.search_input.text() == "query"
+    assert len(win._current_hits) == 3
+    assert len(win.card_grid._cards) == 3
+
+    with patch.object(win.preview_pane, "clear", wraps=win.preview_pane.clear) as mock_preview_clear:
+        win.close()
+        mock_preview_clear.assert_called()
+
+    assert win.search_input.text() == ""
+    assert win._current_hits == []
+    assert win.card_grid._cards == []
+    assert win.code_list.count() == 0
+    mock_search_service.db.shrink_memory.assert_called_once()
+    mock_search_service.code_db.shrink_memory.assert_called_once()
+
 

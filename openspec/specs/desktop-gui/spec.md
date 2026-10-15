@@ -17,7 +17,7 @@ The desktop GUI MUST enforce a single running instance per user session via a lo
 - **THEN** the primary instance surfaces the quick search panel to the front and gives it keyboard focus
 
 ### Requirement: System Tray Monitor with Dynamic Progress Ring
-The application MUST maintain an icon in the Linux system tray. While indexing operations are in progress, the tray icon MUST poll `index_service.get_status()` to dynamically render an animated circular progress ring using vector painting reflecting live percentage completion. The tray icon MUST provide a context menu with options to toggle indexing pause/resume, open search panel, open full window, open settings, and quit.
+The application MUST maintain an icon in the Linux system tray. While indexing is in progress, the tray icon MUST poll `index_service.get_status()` to render a circular progress ring reflecting live completion percentage. The tray manager MUST cache `_last_rendered_state` and skip icon painting, tooltip updates, and D-Bus updates when the polled state is unchanged. The tray icon MUST provide a context menu to toggle indexing pause/resume, open search panel or window, open settings, and quit.
 
 #### Scenario: Visual progress ring during indexing
 - **WHEN** the indexing service is actively processing files
@@ -30,6 +30,10 @@ The application MUST maintain an icon in the Linux system tray. While indexing o
 #### Scenario: Pausing indexing from tray context menu
 - **WHEN** the user selects the "Pause Indexing" action in the tray context menu
 - **THEN** active indexing pauses immediately and the context menu item text updates to "Resume Indexing"
+
+#### Scenario: Suppressing redundant tray rendering and D-Bus updates when status is unchanged
+- **WHEN** `update_status()` is called repeatedly with an unchanged `EngineStatus` while waiting in the system tray
+- **THEN** `SystemTrayManager` skips `render_tray_icon()`, `setIcon()`, `setToolTip()`, and menu action text updates until the state changes or `retranslate_ui()` invalidates `_last_rendered_state`
 
 ### Requirement: Multi-Tab Settings Configuration
 The settings interface MUST provide a dialog with four dedicated tabs: Folders, Code, Storage & Model, and General, with properly sized list views and spinbox controls. Saving settings MUST emit a notification that immediately updates the running application's configuration, file watcher descriptors, hotkeys, Ollama model settings, and background indexing queues.
@@ -63,3 +67,17 @@ The application MUST capture the global shortcut Ctrl+Shift+Space across Linux X
 #### Scenario: Toggling search panel via global hotkey
 - **WHEN** the user presses Ctrl+Shift+Space anywhere in the desktop environment
 - **THEN** the quick search panel appears centered with keyboard focus if hidden, or dismisses if currently active
+
+### Requirement: Zero-Resource System Tray Idle Operation
+When the application is waiting in the system tray with no active indexing or search operations, it MUST NOT consume background CPU cycles, thread wakeups, SQLite queries, D-Bus updates, or retained UI preview memory unless strictly necessary.
+
+#### Scenario: Application idling in the system tray
+- **WHEN** both search views are hidden/closed and background indexing and filesystem debounce queues are empty
+- **THEN** worker threads remain blocked on events, no SQLite queries or D-Bus icon updates are emitted on unchanged tray ticks, and preview/result memory buffers are released
+
+### Requirement: Multimodal Preview Resource Release on Clear
+When `PreviewPane.clear()` is invoked, it MUST switch to the empty view and invoke `clear()` on `ImagePreviewWidget`, `PdfPreviewWidget`, `VideoPreviewWidget`, `AudioPreviewWidget`, and `CodePreviewWidget` to close open `pymupdf.Document` instances and release retained `QPixmap` buffers and editor text.
+
+#### Scenario: Releasing open PDF documents and pixmaps on preview clear
+- **WHEN** `PreviewPane.clear()` is called after previewing PDFs, images, videos, audio, or code files
+- **THEN** `PdfPreviewWidget` closes and clears `_doc` and `_rendered_pixmap`, `ImagePreviewWidget` and `VideoPreviewWidget` clear their `QPixmap` buffers, `AudioPreviewWidget` resets its path state, and `CodePreviewWidget` clears its editor text and extra selections

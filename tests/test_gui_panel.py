@@ -1,6 +1,8 @@
 """Unit and widget tests for quick search panel."""
 
+import gc
 from pathlib import Path
+import threading
 from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import QEvent, Qt
@@ -387,6 +389,68 @@ def test_panel_instant_lexical_deduplication_and_double_click(qapp: QApplication
         panel._on_item_double_clicked(hit_item)
         mock_exec.assert_called_once()
         mock_hide.assert_called_once()
+
+
+def test_panel_slow_worker_lifecycle_no_crash(mock_search_service, qapp: QApplication):
+    """Verify stopping a slow SearchWorker retains it in _active_workers until finished without QThread crash."""
+    started = threading.Event()
+    unblock = threading.Event()
+
+    def slow_search(query: str, limit: int = 50, is_code: bool = False):
+        if query == "slow_query":
+            started.set()
+            unblock.wait(timeout=2.0)
+        return ResultSet(ranked=[], weaker=[])
+
+    mock_search_service.search.side_effect = slow_search
+    panel = SearchPanel(mock_search_service, AppConfig())
+
+    panel.search_input.setText("slow_query")
+    panel._semantic_timer.timeout.emit()
+    assert started.wait(timeout=1.0)
+    assert len(panel._active_workers) == 1
+    slow_worker = next(iter(panel._active_workers))
+
+    # Replace slow worker with a new query and force garbage collection while slow_worker is still blocked
+    panel.search_input.setText("next_query")
+    panel._semantic_timer.timeout.emit()
+    gc.collect()
+
+    assert slow_worker.is_stopped
+    assert slow_worker in panel._active_workers
+
+    # Unblock the slow worker and allow Qt event loop to process finished signals
+    unblock.set()
+    for worker in list(panel._active_workers):
+        worker.wait(1000)
+    qapp.processEvents()
+
+    assert len(panel._active_workers) == 0
+
+
+def test_panel_hide_releases_memory_and_ui_state(mock_search_service, qapp: QApplication):
+    """Verify hide_panel clears input, results, preview, collapses geometry, and calls shrink_memory."""
+    mock_search_service.code_db = MagicMock()
+    panel = SearchPanel(mock_search_service, AppConfig())
+    panel.show()
+    panel.search_input.setText("sample")
+    assert panel.is_expanded
+    assert panel.result_list.count() > 0
+
+    with patch.object(panel.preview_pane, "clear", wraps=panel.preview_pane.clear) as mock_preview_clear:
+        panel.hide_panel()
+        mock_preview_clear.assert_called_once()
+
+    assert panel.search_input.text() == ""
+    assert panel._last_query == ""
+    assert panel._current_result_set.ranked == []
+    assert panel._current_result_set.weaker == []
+    assert panel.result_list.count() == 0
+    assert not panel.is_expanded
+    assert panel.height() == ThemeLayout.PANEL_HEIGHT_COLLAPSED
+    mock_search_service.db.shrink_memory.assert_called_once()
+    mock_search_service.code_db.shrink_memory.assert_called_once()
+
 
 
 

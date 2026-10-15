@@ -1,6 +1,8 @@
 """Tests for inotify filesystem watcher and debouncing logic."""
 
 from pathlib import Path
+import threading
+import time
 from watchdog.events import (
     DirDeletedEvent,
     DirMovedEvent,
@@ -315,3 +317,69 @@ def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Pat
     assert dash_rec is not None and dash_rec.id == fid_dash
 
 
+def test_debounce_bucket_has_pending_and_wake_event():
+    wake_event = threading.Event()
+    bucket = DebounceBucket(quiet_window=0.75, wake_event=wake_event)
+
+    assert bucket.has_pending() is False
+    assert wake_event.is_set() is False
+
+    bucket.add("/path/to/file.txt", now=10.0)
+    assert bucket.has_pending() is True
+    assert wake_event.is_set() is True
+
+    flushed = bucket.flush()
+    assert flushed == {"/path/to/file.txt"}
+    assert bucket.has_pending() is False
+
+
+def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event(tmp_path: Path):
+    db = Database(tmp_path / "index.sqlite")
+    indexer = MockIndexService(db=db)
+    watch_dir = tmp_path / "watched"
+    watch_dir.mkdir()
+
+    config = AppConfig(folders=[str(watch_dir)])
+    watcher = FileSystemWatcher(indexer, config, check_interval_sec=0.02)
+
+    bucket = DebounceBucket(quiet_window=0.05, wake_event=watcher._wake_event)
+    watcher._buckets[str(watch_dir.resolve())] = bucket
+
+    stop_wait_calls = 0
+    orig_stop_wait = watcher._stop_event.wait
+
+    def counting_stop_wait(timeout: float | None = None) -> bool:
+        nonlocal stop_wait_calls
+        stop_wait_calls += 1
+        return orig_stop_wait(timeout)
+
+    watcher._stop_event.wait = counting_stop_wait
+
+    thread = threading.Thread(target=watcher._debounce_loop, daemon=True)
+    thread.start()
+
+    # While bucket is empty, _debounce_loop must block on _wake_event with 0 _stop_event.wait polling wakeups
+    time.sleep(0.08)
+    assert stop_wait_calls == 0
+
+    # Add a file to the bucket; wake_event is set and loop polls until quiet window flushes
+    target_file = watch_dir / "note.md"
+    target_file.write_text("hello", encoding="utf-8")
+    bucket.add(str(target_file))
+
+    deadline = time.time() + 1.0
+    while str(target_file) not in indexer.enqueued and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert str(target_file) in indexer.enqueued
+    assert bucket.has_pending() is False
+    calls_after_flush = stop_wait_calls
+    assert calls_after_flush >= 1
+
+    # Once flushed and empty again, no further _stop_event.wait calls occur
+    time.sleep(0.08)
+    assert stop_wait_calls == calls_after_flush
+
+    watcher.stop()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()

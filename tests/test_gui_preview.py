@@ -253,3 +253,63 @@ def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
     assert revealed == [str(txt_path)]
 
 
+def test_preview_pane_clear_releases_resources(tmp_path: Path, qapp: QApplication):
+    """Verify PreviewPane.clear() closes open pymupdf.Document and clears pixmaps and editor buffers."""
+    pane = PreviewPane()
+
+    # Load Image
+    img_path = tmp_path / "clear_test.png"
+    Image.new("RGB", (120, 80), color="red").save(img_path)
+    pane.load_result(SearchHit(path=str(img_path), kind=FileKind.IMAGE, score=1.0))
+    assert not pane.image_view._pixmap.isNull()
+
+    # Load PDF
+    pdf_path = tmp_path / "clear_test.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((50, 50), "Release test page")
+    doc.save(str(pdf_path))
+    doc.close()
+    pane.load_result(SearchHit(path=str(pdf_path), kind=FileKind.PDF, score=1.0, loc=1.0), query="Release")
+    pdf_doc = pane.pdf_view._doc
+    assert pdf_doc is not None
+    assert not pdf_doc.is_closed
+    assert not pane.pdf_view._rendered_pixmap.isNull()
+
+    # Load Audio
+    pane.load_result(SearchHit(path="/tmp/clear_audio.mp3", kind=FileKind.AUDIO, score=1.0, loc=15.0))
+    assert pane.audio_view._path == "/tmp/clear_audio.mp3"
+
+    # Load Video
+    pane.load_result(SearchHit(path="/tmp/clear_video.mp4", kind=FileKind.VIDEO, score=1.0, loc=25.0))
+    assert not pane.video_view._poster_pixmap.isNull()
+    assert pane.video_view._path == "/tmp/clear_video.mp4"
+
+    # Load Code
+    py_path = tmp_path / "clear_code.py"
+    py_path.write_text("def cleanup():\n    return True\n", encoding="utf-8")
+    pane.load_result(SearchHit(path=str(py_path), kind=FileKind.CODE, score=1.0, focus=1.0), query="cleanup")
+    assert pane.code_view.editor.toPlainText() != ""
+    assert len(pane.code_view.editor.extraSelections()) > 0
+
+    # Clear all views
+    pane.clear()
+
+    assert pane.currentIndex() == 0
+    assert pane.image_view._pixmap.isNull()
+    assert pane.image_view.dimensions_label.text() == ""
+    assert pdf_doc.is_closed
+    assert pane.pdf_view._doc is None
+    assert pane.pdf_view._rendered_pixmap.isNull()
+    assert pane.pdf_view._total_pages == 0
+    assert pane.pdf_view._current_page == 0
+    assert pane.pdf_view._query_terms == []
+    assert pane.audio_view._path == ""
+    assert pane.audio_view._current_pos == 0.0
+    assert pane.video_view._poster_pixmap.isNull()
+    assert pane.video_view._path == ""
+    assert pane.video_view._current_pos == 0.0
+    assert pane.code_view.editor.toPlainText() == ""
+    assert pane.code_view.editor.extraSelections() == []
+
+
+

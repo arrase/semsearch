@@ -535,6 +535,7 @@ class SearchWindow(QMainWindow):
         self._active_kind: FileKind | None = None
         self._chip_buttons: dict[FileKind | None, QPushButton] = {}
         self._worker: SearchWorker | None = None
+        self._active_workers: set[SearchWorker] = set()
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
@@ -689,11 +690,20 @@ class SearchWindow(QMainWindow):
             if (kind == FileKind.CODE and old_kind != FileKind.CODE) or (old_kind == FileKind.CODE and kind != FileKind.CODE):
                 self._trigger_async_search()
 
+    def _cleanup_worker(self, worker: SearchWorker) -> None:
+        self._active_workers.discard(worker)
+        if self._worker is worker:
+            self._worker = None
+        worker.deleteLater()
+
     def _stop_workers(self) -> None:
         self._debounce_timer.stop()
+        for worker in list(self._active_workers):
+            worker.stop()
         if self._worker is not None:
             self._worker.stop()
-            self._worker.wait(500)
+            self._worker.wait(50)
+            self._worker = None
 
     def _clear_results(self) -> None:
         self._stop_workers()
@@ -730,9 +740,12 @@ class SearchWindow(QMainWindow):
             return
         self._stop_workers()
         is_code = (self._active_kind == FileKind.CODE) or stripped.lower().startswith("code:")
-        self._worker = SearchWorker(self.search_service, stripped, limit=100, is_code=is_code)
-        self._worker.results_ready.connect(self._on_search_results_ready)
-        self._worker.start()
+        worker = SearchWorker(self.search_service, stripped, limit=100, is_code=is_code)
+        self._active_workers.add(worker)
+        self._worker = worker
+        worker.results_ready.connect(self._on_search_results_ready)
+        worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
+        worker.start()
 
     def _on_search_results_ready(self, query: str, result_set: ResultSet) -> None:
         if query != self.search_input.text().strip():
@@ -835,5 +848,12 @@ class SearchWindow(QMainWindow):
         self._apply_search_results(result_set)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._stop_workers()
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+        self._clear_results()
+        if self.search_service.db is not None:
+            self.search_service.db.shrink_memory()
+        if self.search_service.code_db is not None:
+            self.search_service.code_db.shrink_memory()
         super().closeEvent(event)

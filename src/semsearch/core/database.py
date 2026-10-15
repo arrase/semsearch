@@ -125,6 +125,11 @@ class Database:
         with self._lock:
             self._conn.execute("VACUUM")
 
+    def shrink_memory(self) -> None:
+        """Release non-essential SQLite heap and page cache allocations."""
+        with self._lock:
+            self._conn.execute("PRAGMA shrink_memory;")
+
     def get_meta(self, key: str) -> str | None:
         """Retrieve metadata value by key."""
         with self._lock:
