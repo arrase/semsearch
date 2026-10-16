@@ -66,6 +66,7 @@ class OllamaClient:
         self.max_batch_size = max_batch_size
         self.default_model = default_model
         self.num_ctx = num_ctx
+        self._context_length_cache: dict[tuple[str, str], int] = {}
 
     def _request(
         self,
@@ -110,28 +111,46 @@ class OllamaClient:
 
     def get_model_context_length(self, model: str) -> int | None:
         """Query the maximum supported context window size (in tokens) for a model from Ollama."""
+        direct_key = (self.base_url, model)
+        if direct_key in self._context_length_cache:
+            return self._context_length_cache[direct_key]
+
         target = self.resolve_model_name(model)
+        cache_key = (self.base_url, target)
+        if cache_key in self._context_length_cache:
+            return self._context_length_cache[cache_key]
+
         try:
             info = self.show_model(target)
         except OllamaError:
             return None
 
+        candidates: list[int] = []
         model_info = info.get("model_info") or {}
         for key, val in model_info.items():
             if key.endswith(".context_length") and isinstance(val, int) and val > 0:
-                return val
+                candidates.append(val)
 
         details = info.get("details") or {}
         ctx = details.get("context_length")
         if isinstance(ctx, int) and ctx > 0:
-            return ctx
+            candidates.append(ctx)
+
+        if candidates:
+            max_ctx = max(candidates)
+            self._context_length_cache[cache_key] = max_ctx
+            self._context_length_cache[direct_key] = max_ctx
+            return max_ctx
 
         modelfile = str(info.get("modelfile") or "")
         for line in modelfile.splitlines():
             parts = line.strip().split()
             if len(parts) >= 3 and parts[0].upper() == "PARAMETER" and parts[1].lower() == "num_ctx":
                 if parts[2].isdigit():
-                    return int(parts[2])
+                    max_ctx = int(parts[2])
+                    self._context_length_cache[cache_key] = max_ctx
+                    self._context_length_cache[direct_key] = max_ctx
+                    return max_ctx
 
         return None
 
@@ -228,6 +247,10 @@ class OllamaClient:
 
         target_model = self.resolve_model_name(model)
         effective_ctx = self.num_ctx if num_ctx is None else num_ctx
+        if effective_ctx == 0:
+            max_ctx = self.get_model_context_length(target_model)
+            if max_ctx is not None:
+                effective_ctx = max_ctx
         all_embeddings: list[list[float]] = []
 
         for i in range(0, len(inputs), self.max_batch_size):
