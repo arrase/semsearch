@@ -2,7 +2,8 @@
 
 **SemSearch** is a fast, 100% local, keyboard-driven **multimodal semantic search engine** for the Linux desktop. Find documents, PDFs, screenshots, photos, audio, videos, and source code by meaning—not just by filename.
 
-![SemSearch Full Desktop Window](docs/screenshots/search-window.png)
+[demo.webm](https://github.com/user-attachments/assets/6f0ef0c3-f695-48be-b4ef-ff70ed56e365)
+
 
 > [!WARNING]
 > **Ollama v0.40.4 or higher is required.** SemSearch relies on Ollama's native multimodal `/api/embed` capabilities introduced in `v0.40.4+` to generate unified embeddings across text, images, and audio. Please make sure your local Ollama installation is updated before running SemSearch.
