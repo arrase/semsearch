@@ -846,7 +846,7 @@ class CodePreviewWidget(QWidget):
         self,
         path: str,
         name: str,
-        line: int = 1,
+        line: int = 0,
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
@@ -870,23 +870,25 @@ class CodePreviewWidget(QWidget):
             content = target_path.read_text(encoding="utf-8", errors="replace")
         self.editor.setPlainText(content)
 
-        target_line = max(1, line)
         doc = self.editor.document()
-        block = doc.findBlockByNumber(target_line - 1)
-        cursor = QTextCursor(block) if block.isValid() else self.editor.textCursor()
-
+        cursor = QTextCursor(doc)
         selections: list[QTextEdit.ExtraSelection] = []
-        line_selection = QTextEdit.ExtraSelection()
-        line_selection.format.setBackground(QColor(250, 204, 21, 90))
-        line_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
-        line_selection.cursor = cursor
-        selections.append(line_selection)
 
+        if line > 0:
+            block = doc.findBlockByNumber(line - 1)
+            if block.isValid():
+                cursor = QTextCursor(block)
+            line_selection = QTextEdit.ExtraSelection()
+            line_selection.format.setBackground(QColor(250, 204, 21, 90))
+            line_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            line_selection.cursor = cursor
+            selections.append(line_selection)
+
+        first_match_cursor: QTextCursor | None = None
         if query:
             terms = extract_terms(query)
             if not terms:
                 terms = [t for t in query.lower().split() if len(t) > 1]
-            first_match_cursor: QTextCursor | None = None
             for term in terms:
                 match_cursor = QTextCursor(doc)
                 while True:
@@ -901,8 +903,16 @@ class CodePreviewWidget(QWidget):
                     term_sel.cursor = match_cursor
                     selections.append(term_sel)
 
-            if line <= 1 and first_match_cursor is not None:
+        if line <= 0:
+            if first_match_cursor is not None:
                 cursor = first_match_cursor
+            elif excerpt:
+                clean_excerpt = excerpt.replace("«", "").replace("»", "").replace("…", "").strip()
+                first_line_snip = clean_excerpt.splitlines()[0].strip()[:60] if clean_excerpt else ""
+                if first_line_snip:
+                    ex_cursor = doc.find(first_line_snip)
+                    if not ex_cursor.isNull():
+                        cursor = ex_cursor
 
         self.editor.setExtraSelections(selections)
         self.editor.setTextCursor(cursor)
@@ -970,8 +980,11 @@ class PreviewPane(QStackedWidget):
         elif kind == FileKind.VIDEO or suffix in (".mp4", ".mkv", ".webm", ".avi", ".mov"):
             self.video_view.load_video(path, name, loc, size, mtime, reason)
             self.setCurrentIndex(4)
-        elif kind == FileKind.CODE or suffix in (
-            ".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh"
+        elif kind == FileKind.CODE or (
+            kind != FileKind.DOC
+            and suffix in (
+                ".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh"
+            )
         ):
             self.code_view.load_code(
                 path, name, focus, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=False
@@ -979,7 +992,7 @@ class PreviewPane(QStackedWidget):
             self.setCurrentIndex(5)
         else:
             self.code_view.load_code(
-                path, name, 1, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=True
+                path, name, 0, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=True
             )
             self.setCurrentIndex(5)
 

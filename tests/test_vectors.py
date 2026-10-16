@@ -111,7 +111,7 @@ def test_z_score_normalize_large_modality_uses_modality_mean():
     z = z_score_normalize(cosines, modalities)
     assert len(z) == 50
     # Because each group was centered by its own mean (0.8 - 0.8 = 0, 0.4 - 0.4 = 0),
-    # all centered values are 0.0, sigma will be clamped to minimum 0.02
+    # all centered values are 0.0, sigma will be clamped to minimum 0.045
     assert np.allclose(z, 0.0)
 
 
@@ -139,4 +139,33 @@ def test_z_score_normalize_sets_scale_excludes_deep_segments():
     z = z_score_normalize(cosines, modalities, sets_scale=sets_scale)
     assert np.isclose(np.mean(z[:20]), 0.0, atol=1e-4)
     assert np.all(z[20:] > 5.0)
+
+
+def test_z_score_normalize_clamps_low_variance_noise_to_sigma_floor():
+    """Verify low-variance noise queries with std < 0.045 are clamped by the 0.045 sigma floor."""
+    # 10 items around 0.56 with one slight noise outlier at 0.64
+    cosines = np.array([0.56] * 9 + [0.64], dtype=np.float32)
+    modalities = [Modality.TEXT] * 10
+
+    z = z_score_normalize(cosines, modalities)
+    # Symmetric 10% trimmed mean is 0.56; centered outlier is 0.08; divided by 0.045 floor -> 1.778 (< 2.2 gate)
+    assert np.isclose(z[-1], 0.08 / 0.045, atol=1e-3)
+    assert z[-1] < 2.2
+
+
+def test_z_score_normalize_multi_hit_outlier_resistance():
+    """Verify two strong matches in a 20-item corpus both pass z >= 2.2 without top-hit sigma masking."""
+    bg = np.array(
+        [0.55, 0.56, 0.57, 0.58, 0.59, 0.54, 0.56, 0.57, 0.58, 0.60,
+         0.55, 0.57, 0.58, 0.59, 0.56, 0.57, 0.58, 0.59],
+        dtype=np.float32,
+    )
+    hits = np.array([0.689, 0.743], dtype=np.float32)
+    cosines = np.concatenate([bg, hits])
+    modalities = [Modality.IMAGE] * 20
+
+    z = z_score_normalize(cosines, modalities)
+    assert z[-1] >= 3.0
+    assert z[-2] >= 2.2
+    assert np.all(z[:-2] < 2.2)
 

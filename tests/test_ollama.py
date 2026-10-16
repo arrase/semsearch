@@ -151,6 +151,8 @@ def test_embed_batching_and_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     recorded_batches: list[list] = []
 
     def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+        if url.endswith("/api/show"):
+            return httpx.Response(200, json={"details": {"context_length": 262144}})
         assert timeout == 120.0
         batch = json["input"]
         recorded_batches.append(batch)
@@ -266,16 +268,24 @@ def test_is_multimodal_fallback_to_show_model(monkeypatch: pytest.MonkeyPatch) -
 
 def test_get_model_context_length(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
+    show_calls: list[str] = []
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
         return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
 
     def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
-        name = json.get("name")
+        name = json.get("name", "")
+        show_calls.append(name)
         if name == "embeddinggemma-2:latest":
             return httpx.Response(
                 200,
-                json={"model_info": {"gemma-embedding2.context_length": 262144}},
+                json={
+                    "model_info": {
+                        "clip.context_length": 4096,
+                        "gemma-embedding2.context_length": 262144,
+                    },
+                    "details": {"context_length": 8192},
+                },
             )
         if name == "details-model":
             return httpx.Response(
@@ -293,6 +303,8 @@ def test_get_model_context_length(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "post", mock_post)
 
     assert client.get_model_context_length("embeddinggemma-2") == 262144
+    assert client.get_model_context_length("embeddinggemma-2") == 262144
+    assert show_calls.count("embeddinggemma-2:latest") == 1
     assert client.get_model_context_length("details-model") == 8192
     assert client.get_model_context_length("modelfile-model") == 16384
     assert client.get_model_context_length("missing-model") is None
@@ -305,6 +317,13 @@ def test_embed_passes_num_ctx_options(monkeypatch: pytest.MonkeyPatch) -> None:
         return httpx.Response(200, json={"models": []})
 
     def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+        if url.endswith("/api/show"):
+            if json.get("name") == "unknown-ctx":
+                return httpx.Response(200, json={})
+            return httpx.Response(
+                200,
+                json={"model_info": {"gemma-embedding2.context_length": 262144}},
+            )
         recorded_payloads.append(json)
         return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
 
@@ -314,6 +333,9 @@ def test_embed_passes_num_ctx_options(monkeypatch: pytest.MonkeyPatch) -> None:
     client_default = OllamaClient()
     assert client_default.num_ctx == 0
     client_default.embed("embeddinggemma-2", ["hello"])
+    assert recorded_payloads[-1]["options"] == {"num_ctx": 262144}
+
+    client_default.embed("unknown-ctx", ["hello"])
     assert "options" not in recorded_payloads[-1]
 
     client_ctx = OllamaClient(num_ctx=8192)
