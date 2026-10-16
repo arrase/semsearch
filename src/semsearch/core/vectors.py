@@ -44,6 +44,17 @@ def bytes_to_float16(data: bytes) -> np.ndarray:
     return np.frombuffer(data, dtype=np.float16)
 
 
+def _trimmed_mean(values: np.ndarray) -> float:
+    """Compute symmetric 10% trimmed mean when at least 10 items exist."""
+    m = len(values)
+    if m == 0:
+        return 0.0
+    if m >= 10:
+        k = m // 10
+        return float(np.mean(np.sort(values)[k : m - k]))
+    return float(np.mean(values))
+
+
 def z_score_normalize(
     cosines: np.ndarray,
     modalities: list[Modality],
@@ -62,32 +73,33 @@ def z_score_normalize(
         if not np.any(scale_mask):
             scale_mask = np.ones(n, dtype=bool)
 
-    sums: dict[Modality, float] = {}
-    counts: dict[Modality, int] = {}
-    global_sum = 0.0
-    global_n = 0
+    global_mean = _trimmed_mean(scores[scale_mask])
 
+    mod_buckets: dict[Modality, list[float]] = {}
     for idx in range(n):
         if scale_mask[idx]:
-            mod = modalities[idx]
-            val = float(scores[idx])
-            sums[mod] = sums.get(mod, 0.0) + val
-            counts[mod] = counts.get(mod, 0) + 1
-            global_sum += val
-            global_n += 1
+            mod_buckets.setdefault(modalities[idx], []).append(float(scores[idx]))
 
-    global_mean = global_sum / global_n if global_n > 0 else 0.0
     means: dict[Modality, float] = {}
     for mod in set(modalities):
-        cnt = counts.get(mod, 0)
-        means[mod] = sums[mod] / cnt if cnt >= 20 else global_mean
+        bucket = mod_buckets.get(mod, [])
+        means[mod] = (
+            _trimmed_mean(np.asarray(bucket, dtype=np.float64))
+            if len(bucket) >= 20
+            else global_mean
+        )
 
     centered = np.array(
         [scores[idx] - means[modalities[idx]] for idx in range(n)],
         dtype=np.float64,
     )
     scale_centered = centered[scale_mask]
-    variance = float(np.mean(scale_centered * scale_centered)) if len(scale_centered) > 0 else 0.0
-    sigma = max(float(np.sqrt(variance)), 0.02)
+    if len(scale_centered) >= 10:
+        k_top = max(1, int(len(scale_centered) * 0.15))
+        bg_centered = np.sort(scale_centered)[:-k_top]
+    else:
+        bg_centered = scale_centered
+    variance = float(np.mean(bg_centered * bg_centered)) if len(bg_centered) > 0 else 0.0
+    sigma = max(float(np.sqrt(variance)), 0.045)
     return (centered / sigma).astype(np.float32)
 

@@ -26,6 +26,7 @@ from semsearch.core.search_text import (
     make_fts_patterns,
 )
 from semsearch.core.types import (
+    SEMANTIC_Z_GATE,
     FileKind,
     FileRecord,
     SearchHit,
@@ -234,7 +235,7 @@ class SearchService:
         }
 
         # 3. Quality Gating & Score Fusion
-        z_gate = 2.0
+        z_gate = SEMANTIC_Z_GATE
         word_weight = 1.0 if is_code else 2.0
         meaning_weight, words_weight = (0.5, word_weight * 2.0) if is_lookup else (1.0, word_weight)
 

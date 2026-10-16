@@ -105,6 +105,9 @@ class ExtractedSegment:
     focus: float = 0.0
 
 
+SEMANTIC_Z_GATE = 2.2
+
+
 @dataclass
 class SearchHit:
     """Scored search result hit from engine."""
@@ -128,7 +131,7 @@ class SearchHit:
     @property
     def reason(self) -> str:
         """Human-readable explanation for why this hit matched."""
-        if self.z >= 2.0:
+        if self.z >= SEMANTIC_Z_GATE:
             return tr("Matches meaning")
         if self.keyword_rank > 0:
             return tr("Matches words")

@@ -7,7 +7,8 @@ from docx import Document
 from PIL import Image
 import pymupdf
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QTextFormat
+from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import (
@@ -217,7 +218,7 @@ def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication
 
 
 def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
-    """Verify PreviewPane routes document files to code/text preview with extracted text."""
+    """Verify PreviewPane routes document files to code/text preview with extracted text and only term highlights."""
     docx_path = tmp_path / "report.docx"
     doc = Document()
     doc.add_paragraph("Annual report content.")
@@ -229,7 +230,42 @@ def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
     pane.load_result(hit, query="Annual")
     assert pane.currentIndex() == 5
     assert "Annual report content." in pane.code_view.editor.toPlainText()
-    assert len(pane.code_view.editor.extraSelections()) >= 2
+    selections = pane.code_view.editor.extraSelections()
+    assert len(selections) == 1
+    assert not selections[0].format.boolProperty(QTextFormat.Property.FullWidthSelection)
+    assert pane.code_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+
+
+def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApplication):
+    """Verify FileKind.DOC (.md) omits full-width yellow line highlight while FileKind.CODE with line > 0 retains it."""
+    md_path = tmp_path / "Bienvenido.md"
+    md_path.write_text("Esta es su nueva *bóveda*.\n\nSegunda línea con contenido sobre un pozo profundo.\n", encoding="utf-8")
+
+    pane = PreviewPane()
+
+    # Semantic match on .md where query term 'agujero' is not present literally
+    hit_md = SearchHit(
+        path=str(md_path),
+        kind=FileKind.DOC,
+        score=0.8,
+        excerpt="Segunda línea con contenido sobre un pozo profundo.",
+    )
+    pane.load_result(hit_md, query="agujero")
+    assert pane.currentIndex() == 5
+    assert pane.code_view.editor.extraSelections() == []
+    assert pane.code_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+    assert pane.code_view.editor.textCursor().blockNumber() == 2
+
+    # Code match with focus line > 0 retains full-width yellow line highlight and NoWrap
+    py_path = tmp_path / "engine.py"
+    py_path.write_text("import os\n\ndef compute_score():\n    return 1.0\n", encoding="utf-8")
+    hit_code = SearchHit(path=str(py_path), kind=FileKind.CODE, score=0.9, focus=3.0)
+    pane.load_result(hit_code, query="compute")
+    code_selections = pane.code_view.editor.extraSelections()
+    assert len(code_selections) == 2
+    assert code_selections[0].format.boolProperty(QTextFormat.Property.FullWidthSelection)
+    assert not code_selections[1].format.boolProperty(QTextFormat.Property.FullWidthSelection)
+    assert pane.code_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.NoWrap
 
 
 def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):

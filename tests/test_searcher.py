@@ -364,3 +364,58 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
     assert res.ranked[0].path == str(def_path)
     assert res.ranked[0].focus == 2.0
 
+
+def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
+    """Verify semantic candidates with z < 2.2 and no lexical match are pruned while z >= 2.2 passes."""
+    db, _ = mock_dbs
+    rng = np.random.default_rng(7)
+    base_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
+    ortho_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
+    ortho_vec = l2_normalize(ortho_vec - np.dot(ortho_vec, base_vec) * base_vec)
+
+    def make_vec_with_cos(c: float) -> bytes:
+        v = c * base_vec + np.sqrt(max(0.0, 1.0 - c * c)) * ortho_vec
+        return float16_to_bytes(l2_normalize(v.astype(np.float32)))
+
+    # 17 background files with cos ~ 0.58
+    for i in range(17):
+        fid = db.insert_file(Candidate(f"/docs/bg_{i}.txt", FileKind.DOC, 100, 1.0, i + 1, 1))
+        db.insert_segment(
+            fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, "unrelated text",
+            make_vec_with_cos(0.58), f"bg_{i}.txt", "unrelated text", ""
+        )
+
+    # Weak semantic candidate (cos ~ 0.66 -> z < 2.2)
+    fid_weak = db.insert_file(Candidate("/docs/Bienvenido.md", FileKind.DOC, 200, 2.0, 100, 1))
+    db.insert_segment(
+        fid_weak, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, "Esta es su nueva boveda",
+        make_vec_with_cos(0.66), "Bienvenido.md", "Esta es su nueva boveda", ""
+    )
+
+    class QueryMockOllama(OllamaClient):
+        def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
+            return [base_vec.tolist()]
+
+    searcher = SearchService(db=db, ollama=QueryMockOllama())
+    # With only background + weak candidate (z < 2.2), no false positives are returned
+    res_noise = searcher.search("agujero")
+    assert len(res_noise.ranked) == 0
+
+    # Add two genuine semantic matches (two black hole images: cos ~ 0.743 and cos ~ 0.689)
+    fid_bh1 = db.insert_file(Candidate("/pics/descarga.png", FileKind.IMAGE, 500, 3.0, 101, 1))
+    db.insert_segment(
+        fid_bh1, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "",
+        make_vec_with_cos(0.743), "descarga.png", "", ""
+    )
+    fid_bh2 = db.insert_file(Candidate("/pics/captura_black_hole.png", FileKind.SCREENSHOT, 600, 4.0, 102, 1))
+    db.insert_segment(
+        fid_bh2, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "",
+        make_vec_with_cos(0.689), "captura_black_hole.png", "", ""
+    )
+
+    res_strong = searcher.search("agujero negro")
+    assert len(res_strong.ranked) == 2
+    assert [h.path for h in res_strong.ranked] == ["/pics/descarga.png", "/pics/captura_black_hole.png"]
+    assert all(h.z >= 2.2 for h in res_strong.ranked)
+    assert all(h.reason == "Matches meaning" for h in res_strong.ranked)
+
