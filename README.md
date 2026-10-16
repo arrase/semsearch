@@ -29,17 +29,17 @@
 ### Floating Quick Search Panel (`Ctrl+Shift+Space`)
 Instant pop-up launcher with grouped results and side-by-side live preview:
 
-![SemSearch Quick Search Panel](docs/screenshots/quick-panel.png)
+![SemSearch Quick Search Panel](gh-pages/screenshots/quick-panel.png)
 
 ### Semantic Source Code Search (`code:`)
 Search functions, classes, and implementation logic by concept with line-level preview and one-click IDE opening:
 
-![SemSearch Code Search](docs/screenshots/code-search.png)
+![SemSearch Code Search](gh-pages/screenshots/code-search.png)
 
 ### Multimodal Model & Storage Settings
 Connect to any local or remote Ollama instance, switch between verified multimodal embedding models, configure the context window size (`num_ctx`) validated against your model's maximum capacity, and manage your local index:
 
-![SemSearch Settings Dialog](docs/screenshots/settings.png)
+![SemSearch Settings Dialog](gh-pages/screenshots/settings.png)
 
 ---
 
