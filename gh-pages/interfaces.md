@@ -1,6 +1,6 @@
 # Desktop UI, Quick Panel & Shortcuts
 
-SemSearch provides three desktop interaction surfaces built with **PySide6**: a dynamic **System Tray Icon**, a Spotlight-style **Floating Quick Search Panel**, and a **Full Desktop Search Window** with rich interactive previews and deep-link opening.
+SemSearch provides a streamlined, keyboard-first desktop experience built with **PySide6**: a dynamic **System Tray Icon**, a Spotlight-style **Floating Quick Search Panel** with grouped results, an **Interactive Multimodal Preview Pane**, and **Deep-Link Desktop Actions**.
 
 ---
 
@@ -14,12 +14,13 @@ SemSearch provides three desktop interaction surfaces built with **PySide6**: a 
 | **Indexing** | Circular dark track with animated green progress arc (`0%`–`100%`) and center dot | `SemSearch - Indexing: {percent}% ({indexed}/{total})` |
 | **Paused** | Amber circle with dual vertical pause bars | `SemSearch - Paused` |
 
+To minimize background CPU and SQLite overhead while idle, `SystemTrayManager` caches the last rendered state tuple (`_last_rendered_state`) and `IndexService.get_status()` skips database `COUNT(*)` queries when `EngineActivity.IDLE` is active.
+
 ### Tray Interactions
-* **Left-Click**: Immediately toggles the floating **Quick Search Panel**.
+* **Left-Click**: Immediately opens and focuses the floating **Quick Search Panel**.
 * **Right-Click Context Menu**:
   * Status indicator line *(read-only)*
-  * **Quick Search**: Opens the floating search bar.
-  * **Search Window**: Opens the full desktop search window.
+  * **Quick Search**: Opens the floating search panel.
   * **Pause Indexing / Resume Indexing**: Manually pauses or resumes background indexing.
   * **Settings...**: Opens the 4-tab Settings dialog.
   * **Quit**: Stops background threads cleanly and exits SemSearch.
@@ -28,53 +29,49 @@ SemSearch provides three desktop interaction surfaces built with **PySide6**: a 
 
 ## 2. Floating Quick Search Panel (`gui/panel.py`)
 
-Pressing <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> (or running `semsearch --panel`) summons a frameless, centered floating search bar with live debounced search (`SearchWorker` thread) and a side-by-side preview pane.
+Pressing <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> (or running `semsearch --panel`) summons a frameless, centered floating search bar (`900px` wide) that expands smoothly into a two-column view with grouped search results on the left (`340px`) and a live multimodal preview pane on the right (`560px`).
 
 ![SemSearch Quick Search Panel](screenshots/quick-panel.png)
+
+### Two-Stage Instant + Semantic Retrieval
+1. **Instant Lexical Pass (`_execute_instant_lexical`)**: As you type, SemSearch immediately queries the SQLite FTS5 index (with automatic prefix fallback) so exact keyword and filename matches appear with zero latency.
+2. **Debounced Hybrid Semantic Pass (`SearchWorker`)**: After a **120 ms** typing pause, a background `QThread` worker runs the full hybrid vector + lexical ranking pipeline (`SearchService.search`) and updates the grouped results and match counter (`{count} matches`).
+
+### Grouped Results & Location Badges
+* **Category Grouping**: Primary ranked results (`result_set.ranked`) are organized under uppercase category headers (`DOCUMENTS`, `PDF DOCUMENTS`, `SCREENSHOTS`, `PICTURES`, `AUDIO`, `MEDIA`, `CODE`).
+* **Compact Location Badges (`format_hit_place_badge`)**: Each result row (`ResultItemWidget`) displays a file type icon, an elided filename (`ElidedLabel`), an elided tilde-formatted parent path (`~/...`), and a context-specific location badge:
+  * **PDFs**: `p. {page}` (matched page number)
+  * **Audio / Video**: `M:SS` (matched timestamp)
+  * **Source Code**: `L{line}` (matched symbol definition or focus line)
+* **Folded Weaker Matches**: Lower-scoring hits (`score < 0.5 * top_score`) are neatly folded into an expandable `{arrow} {count} weaker matches` row at the bottom of the list, toggleable via mouse click or <kbd>Enter</kbd>.
+* **Automatic Focus & Memory Reclamation**: Clicking outside the panel (`WindowDeactivate`) or triggering an action automatically dismisses the panel, releases cached preview pixmaps/documents, and calls `Database.shrink_memory()` on `index.sqlite` and `code.sqlite`.
 
 ### Quick Search Panel Keyboard Shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | Toggle the Quick Search Panel from anywhere on the desktop |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Navigate up and down through ranked search results |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Navigate up and down through ranked search results (and weaker matches toggle) |
 | <kbd>Enter</kbd> (`↵`) | Open selected result at the exact PDF page, media timestamp, or code line |
-| <kbd>Shift</kbd> + <kbd>Enter</kbd> (`⇧↵`) | Reveal and highlight the file in your system file manager |
+| <kbd>Shift</kbd> + <kbd>Enter</kbd> (`⇧↵`) / <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Reveal and highlight the file in your system file manager |
 | <kbd>Ctrl</kbd> + <kbd>C</kbd> (`⌃C`) | Copy the file (`file://` URI) to the system clipboard |
-| <kbd>Ctrl</kbd> + <kbd>O</kbd> (`⌃O`) | Transfer current query to the **Full Search Window** |
-| <kbd>Esc</kbd> | Clear the search input or dismiss the panel |
+| <kbd>Esc</kbd> | Clear the search input (collapsing the panel) or dismiss the panel if empty |
 
 ---
 
-## 3. Full Desktop Search Window (`gui/window.py`)
+## 3. Interactive Multimodal Preview Pane (`gui/preview.py`)
 
-Running `semsearch` (or `semsearch --window`) opens the full desktop interface featuring category filter tabs, a responsive thumbnail card grid (`ResultCard`), and an interactive right-hand inspection panel (`PreviewPane`).
+Selecting any result in the Quick Search Panel populates the right-hand `PreviewPane` with a specialized viewer tailored to the file's modality, paired with a bottom `MetadataCard` showing the filename, match reason badge (`Matches meaning`, `Matches words`, or `Matches name`), file size, modification timestamp, and quick **Open** / **Show in Files** action buttons.
 
 ![SemSearch Code Search](screenshots/code-search.png)
 
-### Category Filter Tabs & Shortcuts
-Use mouse clicks or <kbd>Ctrl</kbd>+<kbd>1</kbd> through <kbd>Ctrl</kbd>+<kbd>8</kbd> to filter results by file kind:
-
-| Shortcut | Category Tab | Included `FileKind` |
-| :--- | :--- | :--- |
-| <kbd>Ctrl</kbd> + <kbd>F</kbd> | *Focus Search Input* | Selects the search query box |
-| <kbd>Ctrl</kbd> + <kbd>1</kbd> | **All** | All general indexed files |
-| <kbd>Ctrl</kbd> + <kbd>2</kbd> | **PDF** | `FileKind.PDF` |
-| <kbd>Ctrl</kbd> + <kbd>3</kbd> | **Images** | `FileKind.IMAGE` |
-| <kbd>Ctrl</kbd> + <kbd>4</kbd> | **Screenshots** | `FileKind.SCREENSHOT` |
-| <kbd>Ctrl</kbd> + <kbd>5</kbd> | **Audio** | `FileKind.AUDIO` |
-| <kbd>Ctrl</kbd> + <kbd>6</kbd> | **Video** | `FileKind.VIDEO` |
-| <kbd>Ctrl</kbd> + <kbd>7</kbd> | **Code** | Queries `code.sqlite` (`FileKind.CODE`) |
-| <kbd>Ctrl</kbd> + <kbd>8</kbd> | **Docs** | `FileKind.DOC` |
-
-### Interactive Previews (`gui/preview.py`) & Drag-and-Drop
-Selecting any result card populates the right-hand preview pane tailored to the file's modality:
-
-* **PDF Preview**: Renders the matched page (`hit.loc`) using PyMuPDF with yellow highlight overlays over matching query terms, plus previous/next page navigation controls.
-* **Image & Screenshot Preview**: High-DPI scaled preview with image dimensions, file size, and relative modification date.
-* **Audio & Video Preview**: Displays media duration, matched timestamp range (`loc`–`loc_end`), video frame thumbnail at the matched timestamp, and an interactive waveform/scrubber preview.
-* **Source Code Preview**: Displays the matched code stretch with line numbers, syntax-highlighted focus line indicator (`hit.focus`), and repository badge.
-* **OS Drag & Drop**: Drag any `ResultCard` directly out of SemSearch into a browser, email client, chat app, or file manager using standard `QMimeData` `text/uri-list` URLs.
+* **PDF Preview (`PdfPreviewWidget`)**: Renders the matched page (`hit.loc`) at `1.6x` zoom using PyMuPDF (`pymupdf`) with translucent yellow highlight rectangles (`page.search_for(term)`) drawn over matching query terms, plus **◀ Prev** and **Next ▶** page navigation controls.
+* **Image & Screenshot Preview (`ImagePreviewWidget`)**: High-DPI, aspect-ratio-preserving preview with smooth scaling and pixel dimension readout (`width × height px`).
+* **Audio Preview (`AudioPreviewWidget`)**: Displays a 64-bar deterministic waveform visualization (`WaveformWidget`) seeded by the file path, positioned at the matched timestamp (`hit.loc`), with an interactive scrub slider and a **▶ Play** button that launches playback at the exact scrubbed second.
+* **Video Preview (`VideoPreviewWidget`)**: Extracts the actual video frame at the matched timestamp (`hit.loc`) on the fly via `ffmpeg` (`_extract_video_frame`), overlays a play badge, and provides a scrub bar and **▶ Open at Moment** button.
+* **Source Code & Document Preview (`CodePreviewWidget`)**:
+  * **Source Code**: Renders in a read-only `CodeEditor` with a dynamic line-number gutter (`LineNumberGutter`), nowrap formatting, a full-width yellow highlight on the target symbol/focus line (`hit.focus` or `hit.loc`), and yellow highlights on all occurrences of the query terms.
+  * **Text & Rich Documents (`.docx`, `.odt`, `.rtf`, `.html`, `.txt`, `.md`)**: Extracts clean text (via `read_doc_text`), enables word wrapping, highlights all query terms in yellow, and automatically scrolls and centers the viewport on the first query match or matched segment excerpt.
 
 ---
 

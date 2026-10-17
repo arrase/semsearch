@@ -119,16 +119,14 @@ Run tests using the virtual environment:
 Once installed, the `semsearch` entry point launches the application or forwards commands over local Unix domain socket IPC (`semsearch_ipc_<uid>`) if an instance is already running:
 
 ```bash
-semsearch [--panel | --window | --settings | --daemon]
+semsearch [--panel | --settings | --daemon]
 ```
 
 | Command | IPC Action | Description |
 | :--- | :--- | :--- |
-| `semsearch` | `SHOW_WINDOW` | Starts SemSearch (if not running) and opens the Full Desktop Search Window. |
-| `semsearch --window` | `SHOW_WINDOW` | Brings the Full Desktop Search Window to the foreground. |
-| `semsearch --panel` | `SHOW_PANEL` | Opens or focuses the Floating Quick Search Panel (ideal for custom WM keybindings). |
+| `semsearch` or `semsearch --daemon` | `DAEMON` | Starts SemSearch anchored in the system tray and listens for the global hotkey (runs the Onboarding Wizard on first launch). |
+| `semsearch --panel` | `SHOW_PANEL` | Opens or focuses the Floating Quick Search Panel (ideal for custom WM/Wayland keybindings). |
 | `semsearch --settings` | `SHOW_SETTINGS` | Opens the 4-tab Settings Dialog directly. |
-| `semsearch --daemon` | `DAEMON` | Starts SemSearch silently in the background (system tray icon and global hotkey listener only). |
 
 ### Binding `semsearch --panel` in Window Managers / Wayland Compositors
 

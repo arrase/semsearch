@@ -44,15 +44,15 @@
   </div>
 
   <div class="feature-card">
-    <i class="fa-solid fa-table-cells-large feature-icon"></i>
-    <h3>Full Desktop Search Window</h3>
-    <p>Browse visual results in a responsive thumbnail card grid, filter by category, inspect interactive PDF/media/code previews, and drag-and-drop cards into other desktop apps.</p>
+    <i class="fa-solid fa-eye feature-icon"></i>
+    <h3>Interactive Multimodal Previews</h3>
+    <p>Inspect PDF pages with yellow query highlights, high-DPI images, FFmpeg video keyframes, audio waveform scrubbers, and line/keyword-highlighted source code &amp; documents right inside the panel.</p>
   </div>
 
   <div class="feature-card">
     <i class="fa-solid fa-code feature-icon"></i>
     <h3>Developer Source Code Search</h3>
-    <p>Prefix any query with <code>code:</code> (or switch to the <strong>Code</strong> tab) for symbol-aware retrieval across 60+ languages and jump straight to the matching line in VS Code, Cursor, Zed, Sublime, or JetBrains IDEs.</p>
+    <p>Prefix any query with <code>code:</code> for symbol-aware retrieval across 60+ languages and jump straight to the matching line in VS Code, Cursor, Zed, Sublime, or JetBrains IDEs.</p>
   </div>
 
   <div class="feature-card">
@@ -119,7 +119,7 @@ Connect to any local or remote Ollama instance, switch between verified multimod
   <a href="interfaces.md" class="feature-card">
     <i class="fa-solid fa-desktop feature-icon"></i>
     <h3>Desktop UI &amp; Shortcuts</h3>
-    <p>Guide to the Quick Search Panel, Full Search Window, dynamic system tray icon, interactive previews, drag-and-drop, and deep-link desktop actions.</p>
+    <p>Guide to the Floating Quick Search Panel, dynamic system tray icon, interactive multimodal previews, and deep-link desktop actions.</p>
   </a>
 
   <a href="configuration.md" class="feature-card">

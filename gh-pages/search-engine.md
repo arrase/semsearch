@@ -9,7 +9,7 @@ SemSearch implements a hybrid retrieval and ranking pipeline in `SearchService` 
 Every query is first inspected for target index routing:
 
 * **General Search (`index.sqlite`)**: Default mode for documents, PDFs, images, screenshots, audio, and video.
-* **Source Code Search (`code.sqlite`)**: Activated automatically when the query begins with the `code:` prefix (e.g., `code: z_score_normalize`) or when the **Code** category tab is active in the Search Window.
+* **Source Code Search (`code.sqlite`)**: Activated automatically when the query begins with the `code:` prefix (e.g., `code: z_score_normalize`).
 
 To align with asymmetric retrieval models like `embeddinggemma-2`, SemSearch formats text inputs with task-specific prefixes before calling Ollama's `/api/embed` endpoint:
 
@@ -29,9 +29,9 @@ SemSearch solves this in `semsearch.core.vectors.z_score_normalize()` by calibra
 
 1. **Cosine Similarity**: All stored `float16` segment vectors are loaded into a contiguous matrix and compared against the query vector in `float32`:
    $$\cos(\mathbf{q}, \mathbf{d}_i) = \frac{\mathbf{q} \cdot \mathbf{d}_i}{\|\mathbf{q}\|_2 \|\mathbf{d}_i\|_2}$$
-2. **Modality Centering (10% Trimmed Mean)**: Scale-eligible segments (`SegmentKind != NAME`) are grouped by modality. If a modality bucket has at least 20 segments, its baseline mean $\mu_m$ is computed using a symmetric 10% trimmed mean (fallback: global trimmed mean across all scale-eligible segments):
+2. **Modality Centering (10% Trimmed Mean)**: Scale-eligible segments (`sets_scale = True`, i.e., `SegmentKind != NAME`) are grouped by modality. If a modality bucket has at least 20 scale-eligible segments, its baseline mean $\mu_m$ is computed using a symmetric 10% trimmed mean (fallback: global trimmed mean across all scale-eligible segments):
    $$c_i = \cos(\mathbf{q}, \mathbf{d}_i) - \mu_{m(i)}$$
-3. **Background Dispersion ($\sigma$)**: To prevent genuine top hits from inflating the standard deviation, the top 15% highest centered scores are excluded when computing the background variance, with a minimum floor of $\sigma \ge 0.045$:
+3. **Background Dispersion ($\sigma$)**: To prevent genuine top hits from inflating the standard deviation, the top 15% highest centered scale-eligible scores are excluded when computing the background variance (when $\ge 10$ scale-eligible segments exist), with a minimum floor of $\sigma \ge 0.045$:
    $$z_i = \frac{c_i}{\max\left(\sqrt{\frac{1}{|B|}\sum_{j \in B} c_j^2},\; 0.045\right)}$$
 4. **File-Level Aggregation**: Each file retains the maximum $z$-score and corresponding best segment across all of its indexed segments.
 
@@ -53,7 +53,7 @@ In parallel with vector search, `semsearch.core.search_text` parses the query fo
 
 A file is admitted to the candidate set if and only if it passes at least one quality gate:
 
-* **Semantic Gate**: Best segment Z-score $z \ge 1.5$ (`SEMANTIC_Z_GATE`), **or**
+* **Semantic Gate**: Best segment Z-score $z \ge 2.2$ (`SEMANTIC_Z_GATE`), **or**
 * **Lexical Gate**: Query term coverage $\text{cov} \ge 0.5$ (at least half of the query terms appear in the file), **or**
 * **Pure Kind Query**: The user searched purely for a file category (e.g., `"pdfs"`).
 

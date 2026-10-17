@@ -18,7 +18,7 @@ When `onboarded` is `false` in `config.json`, launching SemSearch opens `Onboard
 
 ## 2. Four-Tab Settings Dialog (`gui/settings.py`)
 
-Open Settings from the system tray menu, the gear button in the Search Window, or via `semsearch --settings`:
+Open Settings from the system tray menu or via `semsearch --settings`:
 
 ![SemSearch Settings Dialog](screenshots/settings.png)
 
@@ -41,7 +41,7 @@ Open Settings from the system tray menu, the gear button in the Search Window, o
   * **Ollama Host URL**: Local or LAN Ollama endpoint (default: `http://localhost:11434`).
   * **Test Connection**: Queries `/api/tags` and `/api/show` to filter the dropdown strictly to verified multimodal embedding models.
   * **Multimodal Model**: Select the active embedding model (default: `embeddinggemma-2`).
-  * **Context Window (`num_ctx`)**: Custom token context window passed in `/api/embed` `"options": {"num_ctx": ...}` (`0` uses the model's maximum supported `context_length` reported by Ollama). Validated against the model's maximum capacity before saving.
+  * **Context Window (`num_ctx`)**: Custom token context window passed in `/api/embed` `"options": {"num_ctx": ...}` (`0` automatically queries `/api/show` and uses the model's maximum supported `context_length` reported by Ollama). Validated against the model's maximum capacity before saving.
 * **Database & Storage Usage**:
   * Displays live metrics across `index.sqlite` and `code.sqlite`: **Indexed Files**, **Segments**, **Vectors**, and total **Disk Size**.
   * **Optimize / Vacuum Database**: Runs `VACUUM` on both SQLite databases to reclaim disk space.
@@ -49,8 +49,8 @@ Open Settings from the system tray menu, the gear button in the Search Window, o
 
 ### Tab 4: General
 * **Global Shortcut**: Configure the desktop-wide hotkey for toggling the Quick Search Panel (default: `ctrl+shift+space`).
-* **Interface Language**: Choose `Auto-detect` (follows `LC_ALL` / `LC_MESSAGES` / `LANGUAGE` / `LANG`) or explicitly select any of the 23 supported languages. Changes take effect immediately across all open windows (`retranslate_ui()`).
-* **System Startup**: Toggle *"Start SemSearch automatically on desktop login"* to manage `~/.config/autostart/semsearch.desktop` (`Exec=semsearch --daemon`).
+* **Interface Language**: Choose `Auto-detect` (follows `LC_ALL` / `LC_MESSAGES` / `LANGUAGE` / `LANG`) or explicitly select any of the 23 supported languages. Changes take effect immediately across all UI surfaces (`retranslate_ui()`).
+* **System Startup**: Toggle *"Start SemSearch automatically on desktop login"* to manage `~/.config/autostart/semsearch.desktop` (automatically resolves the full `semsearch` executable path for `Exec=<path> --daemon`).
 
 ---
 

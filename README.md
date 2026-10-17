@@ -2,9 +2,6 @@
 
 **SemSearch** is a fast, 100% local, keyboard-driven **multimodal semantic search engine** for the Linux desktop. Find documents, PDFs, screenshots, photos, audio, videos, and source code by meaning—not just by filename.
 
-[demo.webm](https://github.com/user-attachments/assets/6f0ef0c3-f695-48be-b4ef-ff70ed56e365)
-
-
 > [!WARNING]
 > **Ollama v0.40.4 or higher is required.** SemSearch relies on Ollama's native multimodal `/api/embed` capabilities introduced in `v0.40.4+` to generate unified embeddings across text, images, and audio. Please make sure your local Ollama installation is updated before running SemSearch.
 
@@ -114,7 +111,7 @@ Press **`Ctrl+Shift+Space`** at any time to toggle the floating panel:
 | :--- | :--- |
 | `↑` / `↓` | Navigate through search results |
 | `Enter` (`↵`) | Open selected file (at the exact PDF page, media timestamp, or code line) |
-| `Shift + Enter` (`⇧↵`) | Reveal file in your system file manager |
+| `Shift + Enter` (`⇧↵`) / `Ctrl + Enter` | Reveal file in your system file manager |
 | `Ctrl + C` (`⌃C`) | Copy file to clipboard |
 | `Esc` | Clear search input or dismiss the panel |
 
@@ -126,7 +123,7 @@ Press **`Ctrl+Shift+Space`** at any time to toggle the floating panel:
 By default, SemSearch uses **`embeddinggemma-2`** via Ollama. However, **you are not locked into a single model**—you can use any multimodal embedding model supported by Ollama.
 
 - **Verified Multimodal Discovery:** When you click **Test Connection** in **Settings → Storage & Model**, SemSearch queries your Ollama server (`/api/tags` and `/api/show`), inspects model capabilities and projector architectures, and populates the selector with all verified multimodal models installed on your system.
-- **Configurable Context Window (`num_ctx`):** You can set a custom context window size (in tokens) in **Settings → Storage & Model** (default `0` uses the model's native default in Ollama). When a custom token limit is entered, SemSearch queries `/api/show` to validate that `num_ctx` does not exceed the selected model's maximum supported `context_length` before saving, and passes `"options": {"num_ctx": ...}` in all `/api/embed` requests.
+- **Configurable Context Window (`num_ctx`):** You can set a custom context window size (in tokens) in **Settings → Storage & Model** (default `0` automatically queries `/api/show` and uses the model's maximum supported `context_length` in Ollama). When a custom token limit is entered, SemSearch validates that `num_ctx` does not exceed the selected model's maximum supported `context_length` before saving, and passes `"options": {"num_ctx": ...}` in all `/api/embed` requests.
 
 ### Supported Formats
 
