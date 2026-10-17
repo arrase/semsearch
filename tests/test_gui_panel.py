@@ -19,7 +19,7 @@ from semsearch.core.types import (
     SegmentKind,
 )
 from semsearch.gui.panel import SearchPanel
-from semsearch.gui.theme import ThemeLayout
+from semsearch.gui.theme import ThemeColors, ThemeLayout
 from semsearch.services.searcher import ResultSet
 
 
@@ -45,7 +45,7 @@ def mock_search_service():
 
 
 def test_panel_geometry_and_flags(mock_search_service, qapp: QApplication):
-    """Verify window flags and initial collapsed geometry."""
+    """Verify window flags, initial collapsed geometry, and contrast styling."""
     panel = SearchPanel(mock_search_service, AppConfig())
     flags = panel.windowFlags()
     assert flags & Qt.WindowType.FramelessWindowHint
@@ -53,6 +53,12 @@ def test_panel_geometry_and_flags(mock_search_service, qapp: QApplication):
     assert panel.width() == ThemeLayout.PANEL_WIDTH
     assert panel.height() == ThemeLayout.PANEL_HEIGHT_COLLAPSED
     assert not panel.is_expanded
+    assert f"background-color: {ThemeColors.BG_PANEL};" in panel.container.styleSheet()
+    assert f"border: 1.5px solid {ThemeColors.BRAND_START};" in panel.container.styleSheet()
+    assert f"border-radius: {ThemeLayout.PANEL_RADIUS}px;" in panel.container.styleSheet()
+    assert ThemeColors.TEXT_SECONDARY in panel.search_icon.styleSheet()
+    assert f"placeholder-text-color: {ThemeColors.TEXT_SECONDARY};" in panel.search_input.styleSheet()
+    assert ThemeColors.TEXT_SECONDARY in panel.status_badge.styleSheet()
 
 
 def test_panel_expansion_on_query(mock_search_service, qapp: QApplication):
@@ -114,8 +120,9 @@ def test_weaker_matches_folding_toggle(mock_search_service, qapp: QApplication):
 
 
 def test_keyboard_navigation_and_actions(mock_search_service, qapp: QApplication):
-    """Verify arrow navigation, Enter activation, Shift+Enter reveal, Ctrl+C copy, Ctrl+O jump, and Escape."""
+    """Verify arrow navigation, Enter activation, Shift+Enter reveal, Ctrl+C copy, and Escape."""
     panel = SearchPanel(mock_search_service, AppConfig())
+    assert panel.footer_hint.text() == "↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"
     panel.search_input.setText("doc")
     panel._semantic_timer.timeout.emit()
     assert panel._worker is not None
@@ -155,15 +162,6 @@ def test_keyboard_navigation_and_actions(mock_search_service, qapp: QApplication
         event_ctrl_c = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
         panel.eventFilter(panel.search_input, event_ctrl_c)
         mock_copy.assert_called_once_with("/tmp/doc.pdf")
-
-    # 4. Ctrl+O (open_window_requested)
-    with patch.object(panel, "hide_panel") as mock_hide:
-        open_window_spy = MagicMock()
-        panel.open_window_requested.connect(open_window_spy)
-        event_ctrl_o = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
-        panel.eventFilter(panel.search_input, event_ctrl_o)
-        mock_hide.assert_called_once()
-        open_window_spy.assert_called_once()
 
     # Escape with text clears input
     event_esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
@@ -452,5 +450,62 @@ def test_panel_hide_releases_memory_and_ui_state(mock_search_service, qapp: QApp
     mock_search_service.code_db.shrink_memory.assert_called_once()
 
 
+def test_panel_dismisses_on_window_deactivate(mock_search_service, qapp: QApplication):
+    """Verify SearchPanel automatically hides and releases resources on WindowDeactivate."""
+    panel = SearchPanel(mock_search_service, AppConfig())
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert panel.isVisible()
+    assert panel.is_expanded
 
+    QApplication.sendEvent(panel, QEvent(QEvent.Type.WindowDeactivate))
+
+    assert not panel.isVisible()
+    assert panel.search_input.text() == ""
+    assert not panel.is_expanded
+    mock_search_service.db.shrink_memory.assert_called_once()
+
+
+def test_panel_stays_visible_on_internal_child_focus(mock_search_service, qapp: QApplication):
+    """Verify moving focus between child widgets inside SearchPanel keeps the panel visible."""
+    panel = SearchPanel(mock_search_service, AppConfig())
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert panel.isVisible()
+
+    panel.result_list.setFocus()
+    qapp.processEvents()
+    assert panel.isVisible()
+    assert panel.is_expanded
+
+    panel.preview_pane.setFocus()
+    qapp.processEvents()
+    assert panel.isVisible()
+    assert panel.is_expanded
+
+
+def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QApplication, monkeypatch):
+    """Verify clicking Open or Show in Files inside the preview pane dismisses the panel."""
+    opened = []
+    revealed = []
+    monkeypatch.setattr("semsearch.gui.preview.open_file", lambda p: opened.append(p))
+    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", lambda p: revealed.append(p))
+    mock_search_service.db.fts_search.return_value[0]["rank"] = -1.0
+
+    panel = SearchPanel(mock_search_service, AppConfig())
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert panel.isVisible()
+
+    panel.preview_pane.code_view.meta_card.open_btn.click()
+    assert opened == ["/tmp/sample.py"]
+    assert not panel.isVisible()
+
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert panel.isVisible()
+
+    panel.preview_pane.code_view.meta_card.reveal_btn.click()
+    assert revealed == ["/tmp/sample.py"]
+    assert not panel.isVisible()
 

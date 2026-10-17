@@ -6,11 +6,11 @@ Provides a fast, borderless, keyboard-driven floating quick search panel with in
 ## Requirements
 
 ### Requirement: Floating Borderless Geometry and Dynamic Expansion
-The quick search panel MUST render as a frameless, borderless floating window with 18px rounded corners centered in the upper third of the active screen. The panel MUST size its width and margins so that the search header, two-column body (result list + divider + preview pane), and shortcut footer fit without horizontal or vertical clipping when expanded.
+The quick search panel MUST render as a frameless floating window with 18px rounded corners centered in the upper third of the active screen, styled with a fully opaque elevated dark surface and a prominent brand-colored border to contrast against dark desktop backgrounds without content bleed-through. The panel MUST size its width and margins so the search header, two-column body, and shortcut footer fit without horizontal or vertical clipping when expanded.
 
 #### Scenario: Displaying collapsed input bar on invocation
 - **WHEN** the search panel is invoked without an active search query
-- **THEN** it displays centered with an 18px rounded borderless frame at its collapsed height focusing the search input without clipping the input borders
+- **THEN** it displays centered with an 18px rounded frame, an opaque elevated surface background, a visible brand-accent border, and a high-contrast search prompt at its collapsed height focusing the search input without clipping or background bleed-through
 
 #### Scenario: Expanding panel when results are present
 - **WHEN** a search query yields one or more matching results
@@ -47,7 +47,7 @@ The search panel result list MUST organize primary search results grouped under 
 - **THEN** the weaker matches expand in place and become selectable in the result list navigation
 
 ### Requirement: Full Keyboard Navigation and Action Shortcuts
-The search panel MUST support complete keyboard navigation. Up and Down arrow keys MUST navigate between result items; Enter MUST open the selected item using its default desktop action; Shift+Enter or Ctrl+Enter MUST reveal the selected file in the system file manager; and Escape MUST clear the input if non-empty, or hide the panel if input is already empty.
+The search panel MUST support complete keyboard navigation. Up and Down arrow keys MUST navigate between result items; Enter MUST open the selected item using its default desktop action; Shift+Enter or Ctrl+Enter MUST reveal the selected file in the file manager; Ctrl+C MUST copy the file to the clipboard; and Escape MUST clear the input if non-empty, or hide the panel if empty. The shortcut footer MUST display `↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss`.
 
 #### Scenario: Navigating items with arrow keys
 - **WHEN** the user presses Down or Up arrow keys in the search input or list
@@ -101,3 +101,18 @@ When `hide_panel()` dismisses the search panel back to the system tray, the pane
 #### Scenario: Dismissing search panel releases UI and database memory
 - **WHEN** `hide_panel()` is called to hide the quick search panel
 - **THEN** the panel clears `result_list`, resets `_current_result_set`, calls `preview_pane.clear()`, collapses to its compact height, and calls `shrink_memory()` on `db` and `code_db`
+
+### Requirement: Automatic Panel Dismissal on Window Focus Loss and Preview Actions
+The quick search panel MUST automatically dismiss itself when the panel window loses active window status to another window or desktop element, or when the user activates the Open or Show in Files buttons in the preview pane. Moving focus between child widgets within the search panel MUST NOT dismiss the panel.
+
+#### Scenario: Dismissing panel when external window takes focus
+- **WHEN** the quick search panel is visible and another window or desktop element takes focus
+- **THEN** the search panel automatically hides and releases its UI and database buffers
+
+#### Scenario: Preserving panel visibility on internal widget interaction
+- **WHEN** the user clicks or moves focus to the result list or preview pane within the quick search panel
+- **THEN** the search panel remains visible and active
+
+#### Scenario: Dismissing panel when preview action buttons are clicked
+- **WHEN** the user clicks the Open or Show in Files button inside the quick search panel's preview pane
+- **THEN** the file action executes and the search panel automatically hides

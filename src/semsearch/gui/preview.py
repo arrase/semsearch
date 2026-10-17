@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 import pymupdf
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -104,6 +104,8 @@ def _extract_video_frame(path: str, timestamp: float) -> QPixmap:
 
 class MetadataCard(QFrame):
     """Compact metadata display showing file details, timestamp, match reason, and file actions."""
+
+    action_triggered = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -209,10 +211,12 @@ class MetadataCard(QFrame):
     def _on_open_clicked(self) -> None:
         if self._path:
             open_file(self._path)
+            self.action_triggered.emit()
 
     def _on_reveal_clicked(self) -> None:
         if self._path:
             reveal_in_file_manager(self._path)
+            self.action_triggered.emit()
 
 
 class EmptyPreviewWidget(QWidget):
@@ -929,6 +933,8 @@ class CodePreviewWidget(QWidget):
 class PreviewPane(QStackedWidget):
     """Stacked multimodal preview pane coordinating all media viewers."""
 
+    action_triggered = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumWidth(360)
@@ -940,6 +946,15 @@ class PreviewPane(QStackedWidget):
         self.audio_view = AudioPreviewWidget()
         self.video_view = VideoPreviewWidget()
         self.code_view = CodePreviewWidget()
+
+        for view in (
+            self.image_view,
+            self.pdf_view,
+            self.audio_view,
+            self.video_view,
+            self.code_view,
+        ):
+            view.meta_card.action_triggered.connect(self.action_triggered)
 
         self.addWidget(self.empty_view)  # 0
         self.addWidget(self.image_view)  # 1

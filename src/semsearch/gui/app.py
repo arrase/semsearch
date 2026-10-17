@@ -15,7 +15,6 @@ from semsearch.gui.onboarding import OnboardingWizard
 from semsearch.gui.panel import SearchPanel
 from semsearch.gui.settings import SettingsDialog
 from semsearch.gui.tray import SystemTrayManager
-from semsearch.gui.window import SearchWindow
 from semsearch.i18n import is_rtl, set_language
 from semsearch.services.indexer import IndexService
 from semsearch.services.scheduler import PowerScheduler
@@ -88,7 +87,6 @@ class SemSearchApp(QApplication):
         # UI Components
         self.tray = SystemTrayManager(self.index_service)
         self.panel = SearchPanel(self.search_service, self.config)
-        self.window = SearchWindow(self.search_service, self.config)
         self.settings_dialog = SettingsDialog(
             self.config_manager, self.ollama, self.db, code_db=self.code_db
         )
@@ -128,12 +126,9 @@ class SemSearchApp(QApplication):
 
     def _wire_signals(self) -> None:
         self.tray.open_panel_requested.connect(self.show_panel)
-        self.tray.open_window_requested.connect(self.show_window)
         self.tray.open_settings_requested.connect(self.show_settings)
         self.tray.quit_requested.connect(self.shutdown)
 
-        self.panel.open_window_requested.connect(self.show_window)
-        self.window.settings_requested.connect(self.show_settings)
         self.settings_dialog.reindex_requested.connect(self._trigger_reindex)
         self.settings_dialog.settings_saved.connect(self._on_settings_saved)
 
@@ -143,7 +138,6 @@ class SemSearchApp(QApplication):
         self._apply_language()
         self.tray.retranslate_ui()
         self.panel.retranslate_ui()
-        self.window.retranslate_ui()
         self.settings_dialog.retranslate_ui()
 
         self.ollama.base_url = self.config.ollama_url
@@ -177,8 +171,6 @@ class SemSearchApp(QApplication):
         cmd = action.upper().replace("--", "")
         if cmd in ("PANEL", "SHOW_PANEL"):
             self.show_panel()
-        elif cmd in ("WINDOW", "SHOW_WINDOW"):
-            self.show_window()
         elif cmd in ("SETTINGS", "SHOW_SETTINGS"):
             self.show_settings()
         elif cmd in ("DAEMON", ""):
@@ -186,7 +178,7 @@ class SemSearchApp(QApplication):
 
     def toggle_panel(self) -> None:
         """Toggle quick search panel visibility."""
-        if self.panel.isVisible() and self.panel.isActiveWindow():
+        if self.panel.isVisible():
             self.panel.hide_panel()
         else:
             self.show_panel()
@@ -194,12 +186,6 @@ class SemSearchApp(QApplication):
     def show_panel(self) -> None:
         """Bring quick search panel to foreground."""
         self.panel.show_panel()
-
-    def show_window(self) -> None:
-        """Bring full search window to foreground."""
-        self.window.show()
-        self.window.raise_()
-        self.window.activateWindow()
 
     def show_settings(self) -> None:
         """Open settings dialog."""

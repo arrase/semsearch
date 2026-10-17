@@ -6,18 +6,22 @@ Provides desktop integration services including single-instance application lock
 ## Requirements
 
 ### Requirement: Single Instance Application Lock and IPC Invocation
-The desktop GUI MUST enforce a single running instance per user session via a local domain socket server. Launching `semsearch` without flags MUST open the main search window (`SHOW_WINDOW`), while `--daemon` runs in the background and `--panel` opens the quick search panel. Secondary processes MUST forward their command over the socket and exit with code zero, bringing the requested view to the foreground.
+The desktop GUI MUST enforce a single running instance per user session via a local domain socket server. Launching `semsearch` without flags or with `--daemon` MUST anchor the application in the system tray and start background services without opening the quick search panel (unless onboarding is incomplete, which runs the wizard first), while `--panel` opens the search panel and `--settings` opens settings. Secondary processes MUST forward their command over the socket and exit with code zero.
+
+#### Scenario: Primary instance starts anchored in system tray without opening search panel
+- **WHEN** `semsearch` is launched without flags on an already onboarded installation
+- **THEN** the application displays the system tray icon, starts background indexing and the global hotkey listener, and keeps the quick search panel hidden until requested by the user
 
 #### Scenario: Second instance activates running instance
-- **WHEN** a user executes `semsearch` or `semsearch --window` while an instance is already running
-- **THEN** the second instance transmits the window show command to the primary instance over the local socket and exits immediately
+- **WHEN** a user executes `semsearch --panel` or `semsearch --settings` while an instance is already running
+- **THEN** the second instance transmits the command to the primary instance over the local socket and exits immediately
 
 #### Scenario: Primary instance activates search panel
 - **WHEN** the primary instance receives an IPC invocation message requesting the search panel
 - **THEN** the primary instance surfaces the quick search panel to the front and gives it keyboard focus
 
 ### Requirement: System Tray Monitor with Dynamic Progress Ring
-The application MUST maintain an icon in the Linux system tray. While indexing is in progress, the tray icon MUST poll `index_service.get_status()` to render a circular progress ring reflecting live completion percentage. The tray manager MUST cache `_last_rendered_state` and skip icon painting, tooltip updates, and D-Bus updates when the polled state is unchanged. The tray icon MUST provide a context menu to toggle indexing pause/resume, open search panel or window, open settings, and quit.
+The application MUST maintain an icon in the Linux system tray. While indexing is in progress, the tray icon MUST poll `index_service.get_status()` to render a circular progress ring reflecting live completion percentage. The tray manager MUST cache `_last_rendered_state` and skip icon painting, tooltip updates, and D-Bus updates when the polled state is unchanged. The tray icon MUST provide a context menu to toggle indexing pause/resume, open the quick search panel, open settings, and quit.
 
 #### Scenario: Visual progress ring during indexing
 - **WHEN** the indexing service is actively processing files
@@ -72,7 +76,7 @@ The application MUST capture the global shortcut Ctrl+Shift+Space across Linux X
 When the application is waiting in the system tray with no active indexing or search operations, it MUST NOT consume background CPU cycles, thread wakeups, SQLite queries, D-Bus updates, or retained UI preview memory unless strictly necessary.
 
 #### Scenario: Application idling in the system tray
-- **WHEN** both search views are hidden/closed and background indexing and filesystem debounce queues are empty
+- **WHEN** the quick search panel is hidden and background indexing and filesystem debounce queues are empty
 - **THEN** worker threads remain blocked on events, no SQLite queries or D-Bus icon updates are emitted on unchanged tray ticks, and preview/result memory buffers are released
 
 ### Requirement: Multimodal Preview Resource Release on Clear

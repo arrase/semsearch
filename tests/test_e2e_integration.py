@@ -321,6 +321,5 @@ def test_cli_flags_e2e() -> None:
 
     # Flags validation
     assert parser.parse_args(["--panel"]).panel is True
-    assert parser.parse_args(["--window"]).window is True
     assert parser.parse_args(["--settings"]).settings is True
     assert parser.parse_args(["--daemon"]).daemon is True

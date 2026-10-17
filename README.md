@@ -16,8 +16,7 @@
 - **Powered by Ollama & Multimodal Embeddings:** Uses **`embeddinggemma-2`** by default via [Ollama](https://ollama.com), and supports **any other multimodal embedding model** available on your Ollama server. SemSearch automatically inspects and verifies installed models for multimodal embedding support.
 - **Hybrid Lexical + Semantic Ranking:** Combines instant SQLite FTS5 keyword search with vector cosine similarity and modality-aware score normalization so exact keyword hits and conceptual matches both rank naturally.
 - **Spotlight-Style Quick Search Panel:** Summon a floating search bar from anywhere on your desktop with `Ctrl+Shift+Space` (or `semsearch --panel`) for instant keyboard-first navigation and live previews.
-- **Full Desktop Search Window:** Browse visual results in a responsive thumbnail card grid, filter by file category (`All`, `PDF`, `Images`, `Screenshots`, `Audio`, `Video`, `Code`, `Docs`), inspect rich interactive previews, and **drag and drop** any result card directly into other desktop applications.
-- **Developer-Ready Source Code Search:** Prefix any query with `code:` (or switch to the **Code** tab) to search across your repositories with symbol-aware extraction and jump straight to the matching line in **VS Code**, **Cursor**, **Zed**, **Sublime Text**, or **JetBrains** IDEs.
+- **Developer-Ready Source Code Search:** Prefix any query with `code:` to search across your repositories with symbol-aware extraction and jump straight to the matching line in **VS Code**, **Cursor**, **Zed**, **Sublime Text**, or **JetBrains** IDEs.
 - **100% Private & Offline:** Every file extraction, embedding vector, and database index stays strictly on your machine (`~/.local/share/semsearch/`). Sensitive files (`.env`, SSH keys, `.pem`, `.kdbx`, credentials) and heavy dependency directories (`node_modules`, `.venv`, `target`, `dist`) are automatically skipped.
 - **Smart Background Indexing:** Real-time filesystem watcher keeps your index up to date automatically, with optional battery-saver policies and scheduled indexing windows.
 - **23 Languages Supported:** Built-in localization for 23 languages (including full Right-to-Left layout support for Arabic, Persian, and Hebrew).
@@ -91,6 +90,8 @@ On your first launch, a 5-step **Onboarding Wizard** will guide you through:
 2. Verifying your **Ollama** connection and selecting your **multimodal embedding model** (`embeddinggemma-2` by default).
 3. Optionally enabling **Source Code Search** and picking your preferred code editor.
 
+Once onboarded, launching `semsearch` docks silently to your system tray and listens for `Ctrl+Shift+Space`.
+
 ---
 
 ## 🖥️ Usage & Keyboard Shortcuts
@@ -101,10 +102,9 @@ SemSearch runs as a single-instance desktop application with a system tray icon.
 
 | Command | Description |
 | :--- | :--- |
-| `semsearch` or `semsearch --window` | Open the full desktop search window |
-| `semsearch --panel` | Toggle the floating quick search panel |
+| `semsearch` or `semsearch --daemon` | Start anchored in the system tray (runs Onboarding Wizard on first launch) |
+| `semsearch --panel` | Open the floating quick search panel |
 | `semsearch --settings` | Open the settings dialog directly |
-| `semsearch --daemon` | Start silently in the background (system tray & global hotkey only) |
 
 ### Quick Search Panel Shortcuts
 
@@ -116,17 +116,7 @@ Press **`Ctrl+Shift+Space`** at any time to toggle the floating panel:
 | `Enter` (`↵`) | Open selected file (at the exact PDF page, media timestamp, or code line) |
 | `Shift + Enter` (`⇧↵`) | Reveal file in your system file manager |
 | `Ctrl + C` (`⌃C`) | Copy file to clipboard |
-| `Ctrl + O` (`⌃O`) | Switch to the Full Search Window |
 | `Esc` | Clear search input or dismiss the panel |
-
-### Full Search Window Shortcuts
-
-| Shortcut | Action |
-| :--- | :--- |
-| `Ctrl + F` | Focus the search bar |
-| `Ctrl + 1` … `Ctrl + 8` | Filter by category (`All`, `PDF`, `Images`, `Screenshots`, `Audio`, `Video`, `Code`, `Docs`) |
-| `Double-Click` | Open result in default application or configured code editor |
-| `Drag & Drop` | Drag any result card or code match directly into another app, browser, or email |
 
 ---
 

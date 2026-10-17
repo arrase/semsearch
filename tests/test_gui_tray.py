@@ -24,20 +24,15 @@ def test_system_tray_manager_menu_actions(qapp: QApplication):
     manager = SystemTrayManager()
 
     panel_spy = MagicMock()
-    window_spy = MagicMock()
     settings_spy = MagicMock()
     quit_spy = MagicMock()
 
     manager.open_panel_requested.connect(panel_spy)
-    manager.open_window_requested.connect(window_spy)
     manager.open_settings_requested.connect(settings_spy)
     manager.quit_requested.connect(quit_spy)
 
     manager.panel_action.trigger()
     panel_spy.assert_called_once()
-
-    manager.window_action.trigger()
-    window_spy.assert_called_once()
 
     manager.settings_action.trigger()
     settings_spy.assert_called_once()
