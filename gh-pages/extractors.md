@@ -18,6 +18,7 @@ Supports `.txt`, `.text`, `.md`, `.markdown`, `.rst`, `.rtf`, `.docx`, `.doc`, `
   * Snaps chunk boundaries cleanly to whitespace so words are never split mid-token.
   * Filters out chunks that lack alphabetic/numeric words (`has_words()`).
   * Produces `SegmentKind.CHUNK` segments with `Modality.TEXT`.
+  * **Multi-Stage Batching for Large Documents**: Documents yielding $> 40$ chunks are processed in **40-chunk batches** (`info["last_chunk"]`) and placed in `FileState.PARTIAL` (`LONG_FILES` tier) between passes so smaller files are never blocked.
 
 ---
 
@@ -30,7 +31,7 @@ PDF extraction (`extract_pdf`) uses **PyMuPDF (`fitz`)** to handle both digital-
   * **Visual Page (`SegmentKind.PAGE_IMAGE`, `Modality.IMAGE`)**: If a page has fewer than 200 characters (e.g., scanned pages, diagrams, charts, or presentation slides), PyMuPDF renders the page at **150 DPI** (capped at a maximum side of **1,400 px**), encodes it as JPEG base64, and embeds it visually via Ollama.
 * **Multi-Stage Batching for Large PDFs**:
   * To prevent huge PDF books from blocking the indexing queue, `extract_pdf()` processes **30 pages per pass** (`max_pages = 30`).
-  * After the first 30 pages are indexed, the file is moved to the `LONG_FILES` tier (`detail = "pages_done:30"`) so newly created files and shorter documents are indexed first before the remaining page batches complete.
+  * After the first 30 pages are indexed, the file is saved as `FileState.PARTIAL` (`info["last_page"]`) and scheduled in the `LONG_FILES` tier so newly created files and shorter documents are indexed first before the remaining page batches complete.
 
 ---
 

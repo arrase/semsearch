@@ -13,7 +13,8 @@ from semsearch.gui.theme import (
 
 def test_theme_colors_constants():
     """Verify ThemeColors token values."""
-    assert ThemeColors.BG_PANEL.startswith("rgba")
+    assert ThemeColors.BG_PANEL == "rgba(36, 41, 54, 1.0)"
+    assert ThemeColors.BG_PANEL.endswith(", 1.0)")
     assert ThemeColors.BRAND_START == "#6366F1"
     assert ThemeColors.BRAND_END == "#8B5CF6"
     assert ThemeColors.LEAF == "#10B981"
@@ -29,8 +30,8 @@ def test_theme_layout_constants():
     assert ThemeLayout.PANEL_RADIUS == 18
     assert ThemeLayout.LIST_WIDTH == 330
     assert ThemeLayout.PREVIEW_WIDTH == 418
-    assert ThemeLayout.WINDOW_WIDTH == 1040
-    assert ThemeLayout.WINDOW_HEIGHT == 700
+    assert not hasattr(ThemeLayout, "WINDOW_WIDTH")
+    assert not hasattr(ThemeLayout, "WINDOW_HEIGHT")
 
 
 def test_typography_helpers():

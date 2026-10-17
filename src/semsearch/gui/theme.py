@@ -13,7 +13,7 @@ CHECK_ICON = ICONS_DIR / "check.svg"
 class ThemeColors:
     """Design tokens matching DigUp dark palette and accents."""
 
-    BG_PANEL = "rgba(22, 24, 29, 0.94)"
+    BG_PANEL = "rgba(36, 41, 54, 1.0)"
     BG_CARD = "rgba(32, 35, 43, 0.85)"
     BG_CARD_HOVER = "rgba(45, 50, 62, 0.85)"
     BG_CARD_ACTIVE = "rgba(60, 66, 82, 0.90)"
@@ -40,11 +40,6 @@ class ThemeLayout:
 
     LIST_WIDTH = 330
     PREVIEW_WIDTH = 418
-
-    WINDOW_WIDTH = 1040
-    WINDOW_HEIGHT = 700
-    WINDOW_MIN_WIDTH = 800
-    WINDOW_MIN_HEIGHT = 500
 
 
 FONT_FAMILY_UI = "Inter, Noto Sans, Ubuntu, sans-serif"
@@ -192,7 +187,7 @@ def build_qss() -> str:
         outline: none;
     }}
 
-    QListWidget#panelResultList, QListWidget#codeResultList {{
+    QListWidget#panelResultList {{
         background-color: transparent;
         border: none;
         border-radius: 0px;
@@ -205,7 +200,7 @@ def build_qss() -> str:
         border: none;
     }}
 
-    QListWidget#panelResultList::item, QListWidget#codeResultList::item {{
+    QListWidget#panelResultList::item {{
         padding: 0px;
         margin: 1px 6px;
         border-radius: 8px;

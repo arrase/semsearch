@@ -13,7 +13,6 @@ from semsearch.gui.panel import SearchPanel
 from semsearch.gui.preview import PreviewPane
 from semsearch.gui.settings import SettingsDialog
 from semsearch.gui.tray import SystemTrayManager
-from semsearch.gui.window import SearchWindow
 from semsearch.i18n import (
     DEFAULT_LANGUAGE,
     SUPPORTED_LANGUAGES,
@@ -105,7 +104,7 @@ def test_unsupported_language_fallback_to_english(monkeypatch: pytest.MonkeyPatc
         assert normalize_language_code(unsupported) == "en"
         assert set_language(unsupported) == "en"
         assert get_language() == "en"
-        assert tr("Search Window") == "Search Window"
+        assert tr("Quick Search") == "Quick Search"
 
     monkeypatch.setenv("LC_ALL", "sw_KE.UTF-8")
     monkeypatch.setenv("LANG", "sw_KE.UTF-8")
@@ -122,7 +121,7 @@ def test_system_locale_detection_and_aliases(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("LANG", "es_ES.UTF-8")
     assert detect_system_language() == "es"
     assert set_language("auto") == "es"
-    assert tr("Ready") != "Ready"
+    assert tr("Quick Search") != "Quick Search"
 
     monkeypatch.setenv("LC_ALL", "ru_RU.UTF-8")
     assert detect_system_language() == "ru"
@@ -157,13 +156,12 @@ def test_gui_live_retranslation_and_components(tmp_path: Path, qapp: QApplicatio
     set_language("es")
     tray = SystemTrayManager()
     panel = SearchPanel(mock_search, AppConfig())
-    window = SearchWindow(mock_search, AppConfig())
     preview = PreviewPane()
     settings = SettingsDialog(cfg_mgr, mock_ollama)
     wizard = OnboardingWizard(cfg_mgr, mock_ollama)
 
     assert tray.quit_action.text() == TRANSLATIONS["es"]["Quit"]
-    assert window.status_label.text() == TRANSLATIONS["es"]["Ready"]
+    assert panel.footer_hint.text() == TRANSLATIONS["es"]["↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"]
     assert settings.windowTitle() == TRANSLATIONS["es"]["SemSearch Settings"]
     assert wizard.welcome_page.title() == TRANSLATIONS["es"]["Welcome to SemSearch"]
 
@@ -171,12 +169,11 @@ def test_gui_live_retranslation_and_components(tmp_path: Path, qapp: QApplicatio
     set_language("ru")
     tray.retranslate_ui()
     panel.retranslate_ui()
-    window.retranslate_ui()
     preview.retranslate_ui()
     settings.retranslate_ui()
 
     assert tray.quit_action.text() == TRANSLATIONS["ru"]["Quit"]
-    assert window.status_label.text() == TRANSLATIONS["ru"]["Ready"]
+    assert panel.footer_hint.text() == TRANSLATIONS["ru"]["↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"]
     assert preview.empty_view.text_label.text() == TRANSLATIONS["ru"]["Select an item to preview"]
     assert settings.windowTitle() == TRANSLATIONS["ru"]["SemSearch Settings"]
 

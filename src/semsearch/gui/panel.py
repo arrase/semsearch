@@ -1,7 +1,7 @@
 """Quick search floating panel with instant lexical FTS5, debounced semantic ranking, and preview."""
 
 from pathlib import Path
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -120,8 +120,6 @@ class ResultItemWidget(QWidget):
 class SearchPanel(QWidget):
     """Floating borderless quick search panel matching DigUp desktop design."""
 
-    open_window_requested = Signal()
-
     def __init__(
         self,
         search_service: SearchService,
@@ -165,7 +163,7 @@ class SearchPanel(QWidget):
         self.container.setStyleSheet(
             f"QFrame#panelContainer {{"
             f"  background-color: {ThemeColors.BG_PANEL};"
-            f"  border: 1px solid rgba(255, 255, 255, 0.12);"
+            f"  border: 1.5px solid {ThemeColors.BRAND_START};"
             f"  border-radius: {ThemeLayout.PANEL_RADIUS}px;"
             f"}}"
         )
@@ -180,7 +178,7 @@ class SearchPanel(QWidget):
 
         self.search_icon = QLabel("🔍")
         self.search_icon.setFont(get_ui_font(14))
-        self.search_icon.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+        self.search_icon.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; background: transparent; border: none;")
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(
@@ -189,14 +187,15 @@ class SearchPanel(QWidget):
         self.search_input.setFixedHeight(38)
         self.search_input.setFont(get_ui_font(14))
         self.search_input.setStyleSheet(
-            f"QLineEdit {{ background: transparent; border: none; color: {ThemeColors.TEXT_PRIMARY}; padding: 0px 4px; }}"
+            f"QLineEdit {{ background: transparent; border: none; color: {ThemeColors.TEXT_PRIMARY}; "
+            f"placeholder-text-color: {ThemeColors.TEXT_SECONDARY}; padding: 0px 4px; }}"
         )
         self.search_input.textChanged.connect(self._on_query_text_changed)
         self.search_input.installEventFilter(self)
 
         self.status_badge = QLabel("")
         self.status_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
-        self.status_badge.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+        self.status_badge.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; background: transparent; border: none;")
 
         header_layout.addWidget(self.search_icon)
         header_layout.addWidget(self.search_input, stretch=1)
@@ -232,6 +231,7 @@ class SearchPanel(QWidget):
 
         self.preview_pane = PreviewPane()
         self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH - 2)
+        self.preview_pane.action_triggered.connect(self.hide_panel)
 
         content_layout.addWidget(self.result_list)
         content_layout.addWidget(self.preview_pane, stretch=1)
@@ -247,7 +247,7 @@ class SearchPanel(QWidget):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(12, 0, 12, 0)
         self.footer_hint = QLabel(
-            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    ⌃O Full Window    Esc Dismiss")
+            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss")
         )
         self.footer_hint.setFont(get_ui_font(10))
         self.footer_hint.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
@@ -267,7 +267,7 @@ class SearchPanel(QWidget):
             tr("Search files, documents, code, media... (prefix 'code:' for source)")
         )
         self.footer_hint.setText(
-            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    ⌃O Full Window    Esc Dismiss")
+            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss")
         )
         self.preview_pane.retranslate_ui()
         if self._current_result_set.ranked or self._current_result_set.weaker:
@@ -500,10 +500,6 @@ class SearchPanel(QWidget):
             elif key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
                 self._copy_selected_path()
                 return True
-            elif key == Qt.Key.Key_O and (modifiers & Qt.KeyboardModifier.ControlModifier):
-                self.hide_panel()
-                self.open_window_requested.emit()
-                return True
 
         return super().eventFilter(watched, event)
 
@@ -579,6 +575,11 @@ class SearchPanel(QWidget):
         if self.search_service.code_db is not None:
             self.search_service.code_db.shrink_memory()
         self.hide()
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.WindowDeactivate and self.isVisible():
+            self.hide_panel()
+        return super().event(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._stop_workers()

@@ -13,7 +13,6 @@ from semsearch.gui.onboarding import OnboardingWizard
 from semsearch.gui.panel import SearchPanel
 from semsearch.gui.settings import SettingsDialog
 from semsearch.gui.tray import SystemTrayManager
-from semsearch.gui.window import SearchWindow
 
 BANNED_OCR_LIBRARIES = {
     "pytesseract",
@@ -94,20 +93,12 @@ def test_gui_component_parity(qapp: QApplication, tmp_path: Path) -> None:
     assert panel.result_list is not None
     assert panel.preview_pane is not None
 
-    # 2. SearchWindow standalone full search window
-    window = SearchWindow(search_service=mock_search, app_config=cfg)
-    assert window is not None
-    assert window.search_input is not None
-    assert window.content_stack is not None
-    assert window.card_grid is not None
-    assert window.preview_pane is not None
-
-    # 3. SystemTrayManager
+    # 2. SystemTrayManager
     tray = SystemTrayManager()
     assert tray is not None
     assert tray.tray_icon is not None
 
-    # 4. SettingsDialog
+    # 3. SettingsDialog
     mock_ollama = MagicMock()
     mock_ollama.list_multimodal_models.return_value = ["embeddinggemma-2"]
     db = Database(tmp_path / "settings_test.db")
@@ -121,7 +112,7 @@ def test_gui_component_parity(qapp: QApplication, tmp_path: Path) -> None:
     assert "Storage & Model" in tab_names
     assert "General" in tab_names
 
-    # 5. OnboardingWizard
+    # 4. OnboardingWizard
     wizard = OnboardingWizard(cfg_mgr, mock_ollama)
     assert wizard is not None
     assert wizard.pageIds() == [0, 1, 2, 3, 4]

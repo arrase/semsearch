@@ -61,7 +61,6 @@ class SystemTrayManager(QObject):
     """Coordinates system tray icon state, progress ring, and context menu."""
 
     open_panel_requested = Signal()
-    open_window_requested = Signal()
     open_settings_requested = Signal()
     toggle_pause_requested = Signal()
     quit_requested = Signal()
@@ -85,10 +84,6 @@ class SystemTrayManager(QObject):
         self.panel_action = QAction(tr("Quick Search"), self)
         self.panel_action.triggered.connect(self.open_panel_requested.emit)
         self.menu.addAction(self.panel_action)
-
-        self.window_action = QAction(tr("Search Window"), self)
-        self.window_action.triggered.connect(self.open_window_requested.emit)
-        self.menu.addAction(self.window_action)
 
         self.pause_action = QAction(tr("Pause Indexing"), self)
         self.pause_action.triggered.connect(self._handle_toggle_pause)
@@ -120,7 +115,6 @@ class SystemTrayManager(QObject):
         """Refresh translated action labels."""
         self._last_rendered_state = None
         self.panel_action.setText(tr("Quick Search"))
-        self.window_action.setText(tr("Search Window"))
         self.settings_action.setText(tr("Settings..."))
         self.quit_action.setText(tr("Quit"))
         if self.index_service is not None:

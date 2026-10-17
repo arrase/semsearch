@@ -269,9 +269,11 @@ def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApp
 
 
 def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
-    """Verify MetadataCard Open and Show in Files action buttons."""
+    """Verify MetadataCard Open and Show in Files action buttons and action_triggered signals."""
     opened = []
     revealed = []
+    card_triggers = []
+    pane_triggers = []
     monkeypatch.setattr("semsearch.gui.preview.open_file", lambda p: opened.append(p))
     monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", lambda p: revealed.append(p))
 
@@ -279,6 +281,8 @@ def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
     txt_path.write_text("Hello world", encoding="utf-8")
 
     pane = PreviewPane()
+    pane.code_view.meta_card.action_triggered.connect(lambda: card_triggers.append(True))
+    pane.action_triggered.connect(lambda: pane_triggers.append(True))
     hit = SearchHit(path=str(txt_path), kind=FileKind.DOC, score=1.0)
     pane.load_result(hit)
 
@@ -287,6 +291,8 @@ def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
 
     assert opened == [str(txt_path)]
     assert revealed == [str(txt_path)]
+    assert len(card_triggers) == 2
+    assert len(pane_triggers) == 2
 
 
 def test_preview_pane_clear_releases_resources(tmp_path: Path, qapp: QApplication):

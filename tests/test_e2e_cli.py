@@ -19,13 +19,11 @@ def test_cli_flags_parsing() -> None:
     # Default invocation without flags
     args_default = parser.parse_args([])
     assert args_default.panel is False
-    assert args_default.window is False
     assert args_default.settings is False
     assert args_default.daemon is False
 
     # Individual flags
     assert parser.parse_args(["--panel"]).panel is True
-    assert parser.parse_args(["--window"]).window is True
     assert parser.parse_args(["--settings"]).settings is True
     assert parser.parse_args(["--daemon"]).daemon is True
 
@@ -70,12 +68,12 @@ def test_ipc_command_forwarding_actions(qapp: QApplication) -> None:
     server.newConnection.connect(on_new_connection)
 
     # Test forwarding each supported action command
-    for action in ("SHOW_PANEL", "SHOW_WINDOW", "SHOW_SETTINGS", "DAEMON"):
+    for action in ("SHOW_PANEL", "SHOW_SETTINGS", "DAEMON"):
         forwarded = forward_ipc_command(action)
         assert forwarded is True
         qapp.processEvents()
 
-    assert actions_received == ["SHOW_PANEL", "SHOW_WINDOW", "SHOW_SETTINGS", "DAEMON"]
+    assert actions_received == ["SHOW_PANEL", "SHOW_SETTINGS", "DAEMON"]
 
     server.close()
     QLocalServer.removeServer(server_name)
@@ -89,14 +87,10 @@ def test_app_action_dispatch_on_ipc_messages() -> None:
     app_stub.handle_cli_action("SHOW_PANEL")
     app_stub.show_panel.assert_called_once()
 
-    app_stub.handle_cli_action("SHOW_WINDOW")
-    app_stub.show_window.assert_called_once()
-
     app_stub.handle_cli_action("SHOW_SETTINGS")
     app_stub.show_settings.assert_called_once()
 
     app_stub.handle_cli_action("DAEMON")
     # Daemon runs silently without popping open dialogs
     assert app_stub.show_panel.call_count == 1
-    assert app_stub.show_window.call_count == 1
     assert app_stub.show_settings.call_count == 1

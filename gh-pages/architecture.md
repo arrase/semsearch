@@ -9,7 +9,7 @@ SemSearch is architected as a single-instance Linux desktop daemon built with **
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                   CLI / Global Hotkey Trigger                        │
-│     `semsearch [--window | --panel | --settings | --daemon]`         │
+│        `semsearch [--panel | --settings | --daemon]`                 │
 │                  or Global Hotkey (Ctrl+Shift+Space)                 │
 └───────────────────────────────────┬──────────────────────────────────┘
                                     │ QLocalSocket (`semsearch_ipc_<uid>`)
@@ -17,21 +17,21 @@ SemSearch is architected as a single-instance Linux desktop daemon built with **
 ┌──────────────────────────────────────────────────────────────────────┐
 │                SemSearchApp (PySide6 Main Event Loop)                │
 │                                                                      │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────┐  │
-│  │ SystemTrayManager│  │   SearchPanel    │  │    SearchWindow    │  │
-│  │ (Dynamic QIcon)  │  │ (Quick Launcher) │  │ (Grid + Previews)  │  │
-│  └────────┬─────────┘  └────────┬─────────┘  └─────────┬──────────┘  │
-└───────────┼─────────────────────┼──────────────────────┼─────────────┘
-            │                     │                      │
-            ▼                     └──────────┬───────────┘
-┌───────────────────────────┐                ▼
-│   Background Services     │     ┌────────────────────────────────────┐
-│ - IndexService (4-Tier)   │     │           SearchService            │
-│ - FileSystemWatcher       │     │ - Dual routing (`index` vs `code`) │
-│ - PowerScheduler (sysfs)  │     │ - Modality Z-Score + FTS5 Fusion   │
-└─────────────┬─────────────┘     └──────────────────┬─────────────────┘
-              │                                      │
-              ├───────────────────┬──────────────────┘
+│  ┌──────────────────┐  ┌────────────────────┐  ┌──────────────────┐  │
+│  │ SystemTrayManager│  │    SearchPanel     │  │  SettingsDialog  │  │
+│  │ (Dynamic QIcon)  │  │ (Launcher+Preview) │  │    (4 Tabs)      │  │
+│  └────────┬─────────┘  └─────────┬──────────┘  └────────┬─────────┘  │
+└───────────┼──────────────────────┼──────────────────────┼────────────┘
+            │                      │                      │
+            ▼                      ▼                      │
+┌───────────────────────────┐ ┌────────────────────────────────────────┐
+│   Background Services     │ │             SearchService              │
+│ - IndexService (4-Tier)   │ │ - Dual routing (`index` vs `code`)     │
+│ - FileSystemWatcher       │ │ - Modality Z-Score + FTS5 Fusion       │
+│ - PowerScheduler (sysfs)  │ └───────────────────┬────────────────────┘
+└─────────────┬─────────────┘                     │
+              │                                   │
+              ├───────────────────┬───────────────┘
               ▼                   ▼
 ┌───────────────────────┐ ┌────────────────────────────────────────────┐
 │  OllamaClient (HTTPX) │ │      Dual SQLite WAL + FTS5 Databases      │
@@ -50,9 +50,9 @@ SemSearch runs as a persistent desktop process (`app.setQuitOnLastWindowClosed(F
 ### Named Unix Socket (`semsearch_ipc_<uid>`)
 When `semsearch` is invoked from a terminal, application launcher, or desktop shortcut (`semsearch.main:main`):
 
-1. It parses CLI flags (`--window`, `--panel`, `--settings`, `--daemon`) into an IPC command string (`SHOW_WINDOW`, `SHOW_PANEL`, `SHOW_SETTINGS`, or `DAEMON`).
+1. It parses CLI flags (`--panel`, `--settings`, `--daemon`) into an IPC command string (`SHOW_PANEL`, `SHOW_SETTINGS`, or `DAEMON`, defaulting to `DAEMON`).
 2. `forward_ipc_command()` attempts to connect to the user-scoped Unix domain socket `semsearch_ipc_<uid>` via `QLocalSocket` with a 200 ms timeout.
-3. **If an instance is already running:** The command string is written to the socket and the CLI process exits immediately with code `0`. The running daemon's `QLocalServer` reads the command and raises the requested window or toggles the quick search panel.
+3. **If an instance is already running:** The command string is written to the socket and the CLI process exits immediately with code `0`. The running daemon's `QLocalServer` reads the command and opens the requested dialog or shows the floating quick search panel.
 4. **If no instance is running:** `SemSearchApp` initializes the SQLite databases, background indexer, `inotify` watcher, power scheduler, global hotkey listener, and UI surfaces.
 
 ---
@@ -77,12 +77,14 @@ PRAGMA busy_timeout = 5000;
 PRAGMA user_version = 5;
 ```
 
+When background indexing finishes or when the Quick Search Panel is dismissed, SemSearch invokes `Database.shrink_memory()` (`PRAGMA shrink_memory;`) on both databases to release cached SQLite page buffers and keep idle memory footprint minimal.
+
 ### Core Schema (`SCHEMA_VERSION = 5`)
 Each database maintains four coordinated structures:
 
 1. **`meta`**: Key-value store tracking active model name and index metadata.
-2. **`files`**: Tracks discovered files by `path`, `kind`, `size`, `mtime`, `inode`, `device`, `state` (`pending`, `indexed`, `skipped`, `failed`), and `indexed_at`. Indexed on `(device, inode)` for fast move/rename detection and `(state, kind)` for priority queue scheduling.
-3. **`segments`**: Stores individual file segments (`name`, `chunk`, `page`, `page_image`, `image`, `audio`, `frame`, `lines`, `cells`) with their `modality` (`text`, `image`, `audio`), location offsets (`loc`, `loc_end`), preview `excerpt`, and raw `float16` embedding vector (`vec BLOB`, 1,536 bytes for 768-dim vectors).
+2. **`files`**: Tracks discovered files by `path`, `kind`, `size`, `mtime`, `inode`, `device`, `state` (`pending`, `done`, `partial`, `skipped`, `failed`), `detail`, `info`, and `indexed_at`. Indexed on `(device, inode)` for fast move/rename detection and `(state, kind)` for priority queue scheduling.
+3. **`segments`**: Stores individual file segments (`name`, `chunk`, `page`, `page_image`, `image`, `audio`, `frame`, `lines`, `cells`) with their `modality` (`text`, `image`, `audio`, `none`), location offsets (`loc`, `loc_end`), preview `excerpt`, and raw `float16` embedding vector (`vec BLOB`, 1,536 bytes for 768-dim vectors).
 4. **`fts`**: An `fts5` virtual table (`name`, `body`, `original UNINDEXED`) configured with `tokenize = "porter unicode61 remove_diacritics 2 categories 'L* N* Co M*'"` for stemmed, diacritic-insensitive lexical search.
 
 ---
@@ -96,7 +98,9 @@ Each database maintains four coordinated structures:
 | **1. `NEW_FILES`** | Highest | Recently created or modified files pushed by the real-time `inotify` watcher (up to 50 immediate items). |
 | **2. `BACKFILL`** | High | Pending general documents, images, screenshots, audio, and standard PDFs in `index.sqlite`. |
 | **3. `CODE`** | Normal | Pending source code files and notebooks in `code.sqlite`. |
-| **4. `LONG_FILES`** | Low | Multi-stage large PDFs (> 30 pages) that have already had their first 30 pages indexed and are awaiting remaining page batches. |
+| **4. `LONG_FILES`** | Low | Multi-stage large PDFs (> 30 pages per batch) and large documents (> 40 chunks per batch) in `FileState.PARTIAL` awaiting remaining batches. |
+
+When all queues are empty, `IndexerWorkerThread` shrinks SQLite memory caches, transitions `EngineStatus` to `IDLE`, and blocks on an event (`_work_event.wait()`) with zero CPU polling until woken by new filesystem events or a manual re-index.
 
 ### Immediate Filename Searchability
 When `crawl_folder()` and `sync_candidates()` discover a file on disk, `Database.insert_file()` immediately inserts a `SegmentKind.NAME` segment and populates the `fts` index with the normalized filename and parent folder path. This makes newly discovered files **immediately searchable by filename** even before Ollama finishes generating their multimodal vectors.
@@ -111,6 +115,7 @@ Using `watchdog` (`inotify` on Linux), SemSearch monitors configured folders rec
 * **General Folders (`index.sqlite`)**: Quiet window of **0.75 seconds**.
 * **Code Repositories (`code.sqlite`)**: Quiet window of **60 seconds** with a maximum ceiling of **600 seconds (10 minutes)**.
 * **Move & Rename Tracking**: Moving a file or directory updates the existing `files` path and `fts` entry in-place (`db.move_file()`) without re-extracting or re-embedding unchanged content.
+* **Event-Driven Idle Sleep**: When no `DebounceBucket` has pending paths, `WatcherDebounceThread` blocks on `_wake_event.wait()` rather than spinning on a timer loop.
 
 ### Battery & Schedule Policies (`PowerScheduler`)
 `PowerScheduler` polls every 10 seconds in a background thread:
@@ -125,15 +130,14 @@ Using `watchdog` (`inotify` on Linux), SemSearch monitors configured folders rec
 ```mermaid
 flowchart TB
     subgraph Trigger ["User / Desktop Entry Points"]
-        T1["CLI (`semsearch --panel | --window | --settings`)"]
+        T1["CLI (`semsearch --panel | --settings | --daemon`)"]
         T2["Global Hotkey (`Ctrl+Shift+Space`)"]
         T3["System Tray Icon Click / Menu"]
     end
 
     subgraph App ["SemSearchApp (Main Qt Thread)"]
         IPC["QLocalServer (`semsearch_ipc_<uid>`)"]
-        UI_Panel["SearchPanel (Floating Quick Launcher)"]
-        UI_Win["SearchWindow (Grid + Category Tabs + Preview)"]
+        UI_Panel["SearchPanel (Floating Quick Launcher + PreviewPane)"]
         UI_Set["SettingsDialog (4 Tabs)"]
     end
 
@@ -145,11 +149,11 @@ flowchart TB
     end
 
     subgraph SearchPipeline ["Hybrid Search Engine (SearchService)"]
-        Route{"Query starts with `code:`\nor Code Tab active?"}
+        Route{"Query starts with `code:`?"}
         Vec["Ollama Query Embedding + Cosine Similarity"]
         ZNorm["Modality-Aware Z-Score Normalization"]
         FTS["SQLite FTS5 BM25 + Term Coverage"]
-        Fuse["Score Fusion, Gating (Z >= 1.5 or Cov >= 0.5) & ResultSet Folding"]
+        Fuse["Score Fusion, Gating (Z >= 2.2 or Cov >= 0.5) & ResultSet Folding"]
     end
 
     subgraph Storage ["Local Storage & Inference"]
@@ -162,7 +166,6 @@ flowchart TB
     T2 --> UI_Panel
     T3 --> UI_Panel
     IPC --> UI_Panel
-    IPC --> UI_Win
     IPC --> UI_Set
 
     Watch -->|"Enqueue changed paths"| Idx
@@ -173,7 +176,6 @@ flowchart TB
     Ollama -->|"float32 -> L2 norm -> float16"| DB_Code
 
     UI_Panel --> Route
-    UI_Win --> Route
     Route -->|No| DB_Main
     Route -->|Yes| DB_Code
     Route --> Vec

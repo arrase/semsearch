@@ -49,10 +49,6 @@ def test_cli_parser_flags():
 
     args_panel = parser.parse_args(["--panel"])
     assert args_panel.panel is True
-    assert args_panel.window is False
-
-    args_window = parser.parse_args(["--window"])
-    assert args_window.window is True
 
     args_settings = parser.parse_args(["--settings"])
     assert args_settings.settings is True
@@ -98,7 +94,7 @@ def test_real_semsearch_app_initialization(tmp_path: Path):
     assert app.scheduler.index_service is app.index_service
     assert app.scheduler.config is app.config
     assert app.panel is not None
-    assert app.window is not None
+    assert not hasattr(app, "window")
     assert app.tray is not None
     assert app.settings_dialog is not None
     assert app.settings_dialog.db is app.db
@@ -125,7 +121,6 @@ class DummyApp:
         self.scheduler = MagicMock()
         self.hotkey_listener = MagicMock()
         self.panel = MagicMock()
-        self.window = MagicMock()
         self.settings_dialog = MagicMock()
         self.tray = MagicMock()
         self.ipc_server = None
@@ -134,7 +129,6 @@ class DummyApp:
 
     handle_cli_action = SemSearchApp.handle_cli_action
     show_panel = SemSearchApp.show_panel
-    show_window = SemSearchApp.show_window
     show_settings = SemSearchApp.show_settings
     _start_indexing = SemSearchApp._start_indexing
     _trigger_reindex = SemSearchApp._trigger_reindex
@@ -143,16 +137,17 @@ class DummyApp:
 
 
 def test_app_cli_action_routing(qapp: QApplication):
-    """Verify action routing to panel, window, and settings dialogs."""
+    """Verify action routing to panel, settings dialog, and tray daemon."""
     dummy = DummyApp()
     dummy.handle_cli_action("SHOW_PANEL")
     dummy.panel.show_panel.assert_called_once()
 
-    dummy.handle_cli_action("SHOW_WINDOW")
-    dummy.window.show.assert_called_once()
-
     dummy.handle_cli_action("SHOW_SETTINGS")
     dummy.settings_dialog.load_settings.assert_called_once()
+
+    dummy.handle_cli_action("DAEMON")
+    dummy.tray.show.assert_called_once()
+    assert dummy.panel.show_panel.call_count == 1
 
 
 def test_ipc_forwarding_mechanism(tmp_path: Path, qapp: QApplication):
