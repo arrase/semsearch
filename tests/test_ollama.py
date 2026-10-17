@@ -345,3 +345,92 @@ def test_embed_passes_num_ctx_options(monkeypatch: pytest.MonkeyPatch) -> None:
     client_ctx.embed("embeddinggemma-2", ["hello"], num_ctx=4096)
     assert recorded_payloads[-1]["options"] == {"num_ctx": 4096}
 
+
+def test_resolve_model_name_caches_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OllamaClient()
+    tags_calls = 0
+
+    def mock_get(url: str, timeout: float) -> httpx.Response:
+        nonlocal tags_calls
+        tags_calls += 1
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
+
+    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+        if url.endswith("/api/show"):
+            return httpx.Response(200, json={"details": {"context_length": 8192}})
+        return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+    monkeypatch.setattr(httpx, "post", mock_post)
+
+    assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
+    assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
+    client.embed("embeddinggemma-2", ["first"])
+    client.embed("embeddinggemma-2", ["second"])
+    assert tags_calls == 1
+
+
+def test_resolve_model_name_skips_cache_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OllamaClient()
+    tags_calls = 0
+
+    def mock_get(url: str, timeout: float) -> httpx.Response:
+        nonlocal tags_calls
+        tags_calls += 1
+        if tags_calls == 1:
+            raise httpx.ConnectError("Connection refused")
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+
+    assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2"
+    assert ("http://localhost:11434", "embeddinggemma-2") not in client._resolved_model_cache
+    assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
+    assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
+    assert tags_calls == 2
+
+
+def test_preload_sends_empty_input_with_resolved_and_explicit_num_ctx(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded_payloads: list[dict] = []
+
+    def mock_get(url: str, timeout: float) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
+
+    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+        if url.endswith("/api/show"):
+            if json.get("name") == "unknown-ctx":
+                return httpx.Response(200, json={})
+            return httpx.Response(
+                200,
+                json={"model_info": {"gemma-embedding2.context_length": 262144}},
+            )
+        assert url == "http://localhost:11434/api/embed"
+        assert timeout == 120.0
+        recorded_payloads.append(json)
+        return httpx.Response(200, json={"embeddings": []})
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+    monkeypatch.setattr(httpx, "post", mock_post)
+
+    client = OllamaClient()
+    client.preload("embeddinggemma-2")
+    assert recorded_payloads[-1] == {
+        "model": "embeddinggemma-2:latest",
+        "input": [],
+        "options": {"num_ctx": 262144},
+    }
+    assert "keep_alive" not in recorded_payloads[-1]
+
+    client.preload("embeddinggemma-2", num_ctx=8192)
+    assert recorded_payloads[-1] == {
+        "model": "embeddinggemma-2:latest",
+        "input": [],
+        "options": {"num_ctx": 8192},
+    }
+
+    client.preload("unknown-ctx")
+    assert recorded_payloads[-1] == {
+        "model": "unknown-ctx",
+        "input": [],
+    }
+

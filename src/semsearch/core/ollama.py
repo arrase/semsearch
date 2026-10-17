@@ -67,6 +67,7 @@ class OllamaClient:
         self.default_model = default_model
         self.num_ctx = num_ctx
         self._context_length_cache: dict[tuple[str, str], int] = {}
+        self._resolved_model_cache: dict[tuple[str, str], str] = {}
 
     def _request(
         self,
@@ -200,6 +201,10 @@ class OllamaClient:
 
     def resolve_model_name(self, preferred: str) -> str:
         """Resolve model name, falling back to installed multimodal model if preferred is not found."""
+        cache_key = (self.base_url, preferred)
+        if cache_key in self._resolved_model_cache:
+            return self._resolved_model_cache[cache_key]
+
         try:
             tags = self.get_tags()
         except OllamaError:
@@ -207,14 +212,18 @@ class OllamaClient:
 
         names = [item.get("name") or item.get("model", "") for item in tags]
         if preferred in names:
+            self._resolved_model_cache[cache_key] = preferred
             return preferred
 
         clean_pref = preferred.lower().replace("-", "").replace("_", "")
         for n in names:
             clean_n = n.lower().replace("-", "").replace("_", "")
             if clean_pref in clean_n or clean_n in clean_pref:
+                self._resolved_model_cache[cache_key] = n
+                self._resolved_model_cache[(self.base_url, n)] = n
                 return n
 
+        self._resolved_model_cache[cache_key] = preferred
         return preferred
 
     def validate_model(self, model: str) -> bool:
@@ -234,6 +243,31 @@ class OllamaClient:
                 result.append(name)
         return result
 
+    def _resolve_target_and_ctx(self, model: str, num_ctx: int | None) -> tuple[str, int]:
+        target_model = self.resolve_model_name(model)
+        effective_ctx = self.num_ctx if num_ctx is None else num_ctx
+        if effective_ctx == 0:
+            max_ctx = self.get_model_context_length(target_model)
+            if max_ctx is not None:
+                effective_ctx = max_ctx
+        return target_model, effective_ctx
+
+    def preload(self, model: str, num_ctx: int | None = None) -> None:
+        """Preload embedding model into VRAM without computing token embeddings."""
+        target_model, effective_ctx = self._resolve_target_and_ctx(model, num_ctx)
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "input": [],
+        }
+        if effective_ctx > 0:
+            payload["options"] = {"num_ctx": effective_ctx}
+        self._request(
+            "/api/embed",
+            timeout=self.embed_timeout,
+            payload=payload,
+            model_name=model,
+        )
+
     def embed(
         self,
         model: str,
@@ -245,12 +279,7 @@ class OllamaClient:
         if not inputs:
             return []
 
-        target_model = self.resolve_model_name(model)
-        effective_ctx = self.num_ctx if num_ctx is None else num_ctx
-        if effective_ctx == 0:
-            max_ctx = self.get_model_context_length(target_model)
-            if max_ctx is not None:
-                effective_ctx = max_ctx
+        target_model, effective_ctx = self._resolve_target_and_ctx(model, num_ctx)
         all_embeddings: list[list[float]] = []
 
         for i in range(0, len(inputs), self.max_batch_size):

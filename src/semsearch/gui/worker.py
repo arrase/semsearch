@@ -1,5 +1,6 @@
 """Background worker thread for asynchronous search queries."""
 
+import threading
 from PySide6.QtCore import QThread, Signal
 
 from semsearch.services.searcher import SearchService
@@ -9,6 +10,7 @@ class SearchWorker(QThread):
     """Worker thread executing search service query off the main Qt UI thread."""
 
     results_ready = Signal(str, object)  # query, ResultSet
+    _search_lock = threading.Lock()
 
     def __init__(
         self,
@@ -37,6 +39,9 @@ class SearchWorker(QThread):
     def run(self) -> None:
         if self.is_stopped:
             return
-        results = self.search_service.search(self.query, limit=self.limit, is_code=self.is_code)
+        with self._search_lock:
+            if self.is_stopped:
+                return
+            results = self.search_service.search(self.query, limit=self.limit, is_code=self.is_code)
         if not self.is_stopped:
             self.results_ready.emit(self.query, results)

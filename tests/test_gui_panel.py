@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
+from semsearch.core.ollama import OllamaConnectionError
 from semsearch.core.types import (
     Candidate,
     FileKind,
@@ -508,4 +509,107 @@ def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QA
     panel.preview_pane.code_view.meta_card.reveal_btn.click()
     assert revealed == ["/tmp/sample.py"]
     assert not panel.isVisible()
+
+
+def test_panel_skips_obsolete_intermediate_workers_during_slow_search(
+    mock_search_service, qapp: QApplication
+):
+    """Verify intermediate debounced workers stopped while waiting on _search_lock skip search()."""
+    first_started = threading.Event()
+    unblock_first = threading.Event()
+    executed_queries: list[str] = []
+
+    def slow_search(query: str, limit: int, is_code: bool):
+        executed_queries.append(query)
+        if query == "query_1":
+            first_started.set()
+            unblock_first.wait(timeout=2.0)
+        return ResultSet(ranked=[], weaker=[])
+
+    mock_search_service.search.side_effect = slow_search
+    panel = SearchPanel(mock_search_service, AppConfig())
+
+    panel.search_input.setText("query_1")
+    panel._semantic_timer.timeout.emit()
+    assert first_started.wait(timeout=1.0)
+
+    # Trigger intermediate query_2 and then final query_3 while query_1 holds the lock
+    panel.search_input.setText("query_2")
+    panel._semantic_timer.timeout.emit()
+
+    panel.search_input.setText("query_3")
+    panel._semantic_timer.timeout.emit()
+
+    unblock_first.set()
+    for worker in list(panel._active_workers):
+        worker.wait(1000)
+    qapp.processEvents()
+
+    assert executed_queries == ["query_1", "query_3"]
+
+
+def test_panel_show_triggers_background_model_preload(mock_search_service, qapp: QApplication):
+    """Verify show_panel() launches a daemon thread to preload the configured embedding model."""
+    mock_search_service.model = "embeddinggemma-2"
+    panel = SearchPanel(mock_search_service, AppConfig())
+
+    panel.show_panel()
+    assert panel._preload_thread is not None
+    assert panel._preload_thread.daemon is True
+    panel._preload_thread.join(timeout=1.0)
+
+    mock_search_service.ollama.preload.assert_called_once_with("embeddinggemma-2")
+
+
+def test_panel_show_deduplicates_active_preload_thread(mock_search_service, qapp: QApplication):
+    """Verify calling show_panel() while a preload thread is alive does not spawn a second thread."""
+    preload_started = threading.Event()
+    unblock_preload = threading.Event()
+    mock_search_service.model = "embeddinggemma-2"
+
+    def slow_preload(model: str) -> None:
+        preload_started.set()
+        unblock_preload.wait(timeout=2.0)
+
+    mock_search_service.ollama.preload.side_effect = slow_preload
+    panel = SearchPanel(mock_search_service, AppConfig())
+
+    panel.show_panel()
+    assert preload_started.wait(timeout=1.0)
+    first_thread = panel._preload_thread
+    assert first_thread is not None and first_thread.is_alive()
+
+    panel.show_panel()
+    assert panel._preload_thread is first_thread
+    assert mock_search_service.ollama.preload.call_count == 1
+
+    unblock_preload.set()
+    first_thread.join(timeout=1.0)
+
+
+def test_panel_show_preload_ignores_ollama_error(mock_search_service, qapp: QApplication):
+    """Verify OllamaError during background preload is ignored without crashing."""
+    mock_search_service.model = "embeddinggemma-2"
+    mock_search_service.ollama.preload.side_effect = OllamaConnectionError("Offline")
+    panel = SearchPanel(mock_search_service, AppConfig())
+
+    panel.show_panel()
+    assert panel._preload_thread is not None
+    panel._preload_thread.join(timeout=1.0)
+    assert not panel._preload_thread.is_alive()
+    mock_search_service.ollama.preload.assert_called_once_with("embeddinggemma-2")
+
+
+def test_panel_hide_does_not_unload_model(mock_search_service, qapp: QApplication):
+    """Verify hide_panel() does not send an unload request to Ollama."""
+    mock_search_service.model = "embeddinggemma-2"
+    panel = SearchPanel(mock_search_service, AppConfig())
+    panel.show_panel()
+    assert panel._preload_thread is not None
+    panel._preload_thread.join(timeout=1.0)
+
+    mock_search_service.ollama.reset_mock()
+    panel.hide_panel()
+
+    assert mock_search_service.ollama.method_calls == []
 
