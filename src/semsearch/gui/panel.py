@@ -1,6 +1,7 @@
 """Quick search floating panel with instant lexical FTS5, debounced semantic ranking, and preview."""
 
 from pathlib import Path
+import threading
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from semsearch.config import AppConfig
+from semsearch.core.ollama import OllamaError
 from semsearch.core.search_text import extract_terms, make_fts_patterns
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import PreviewPane, format_tilde_path
@@ -143,6 +145,7 @@ class SearchPanel(QWidget):
         self._last_query = ""
         self._worker: SearchWorker | None = None
         self._active_workers: set[SearchWorker] = set()
+        self._preload_thread: threading.Thread | None = None
 
         self._semantic_timer = QTimer(self)
         self._semantic_timer.setSingleShot(True)
@@ -546,6 +549,12 @@ class SearchPanel(QWidget):
         """Trigger search programmatically."""
         self.search_input.setText(query)
 
+    def _preload_model(self) -> None:
+        try:
+            self.search_service.ollama.preload(self.search_service.model)
+        except OllamaError:
+            pass
+
     def show_panel(self) -> None:
         """Present search panel with focus."""
         self._stop_workers()
@@ -557,6 +566,11 @@ class SearchPanel(QWidget):
         self.raise_()
         self.activateWindow()
         self.search_input.setFocus()
+        if self.search_service.ollama is not None and (
+            self._preload_thread is None or not self._preload_thread.is_alive()
+        ):
+            self._preload_thread = threading.Thread(target=self._preload_model, daemon=True)
+            self._preload_thread.start()
 
     def hide_panel(self) -> None:
         """Dismiss search panel and release UI/database buffers."""
