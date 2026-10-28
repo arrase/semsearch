@@ -33,9 +33,9 @@ def _reset_default_language() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="session")
-def qapp() -> Generator[QApplication, None, None]:
+def qapp() -> QApplication:
     """Provide a singleton QApplication for offscreen widget testing."""
     app = QApplication.instance()
     if app is None:
         app = QApplication(["-platform", "offscreen"])
-    yield app
+    return app

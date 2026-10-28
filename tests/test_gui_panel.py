@@ -579,7 +579,8 @@ def test_panel_show_deduplicates_active_preload_thread(mock_search_service, qapp
     panel.show_panel()
     assert preload_started.wait(timeout=1.0)
     first_thread = panel._preload_thread
-    assert first_thread is not None and first_thread.is_alive()
+    assert first_thread is not None
+    assert first_thread.is_alive()
 
     panel.show_panel()
     assert panel._preload_thread is first_thread

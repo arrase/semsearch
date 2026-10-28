@@ -11,9 +11,9 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     """Compute L2 normalized representation for 1D vector or 2D matrix."""
     if vec.ndim == 1:
         norm = float(np.linalg.norm(vec))
-        return vec if norm == 0.0 else vec / norm
+        return vec if norm <= 0.0 else vec / norm
     norms = np.linalg.norm(vec, axis=-1, keepdims=True)
-    norms = np.where(norms == 0.0, 1.0, norms)
+    norms = np.where(norms <= 0.0, 1.0, norms)
     return vec / norms
 
 
@@ -30,7 +30,7 @@ def cosine_similarity(query_vec: np.ndarray, doc_matrix: np.ndarray) -> np.ndarr
 
     dots = np.dot(docs, query)
     denom = q_norm * d_norms
-    denom = np.where(denom == 0.0, 1.0, denom)
+    denom = np.where(denom <= 0.0, 1.0, denom)
     return (dots / denom).astype(np.float32)
 
 

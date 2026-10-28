@@ -91,15 +91,18 @@ class SemSearchEventHandler(FileSystemEventHandler):
         self.db = db
         self.config = config
 
+    @staticmethod
+    def _has_ignored_part(p: Path) -> bool:
+        return any(
+            (part.startswith(".") and part not in {".", ".."})
+            or part in SKIPPED_FOLDER_NAMES
+            or part.endswith(".noindex")
+            for part in p.parts
+        )
+
     def _should_filter(self, path_str: str) -> bool:
         p = Path(path_str)
-        for part in p.parts:
-            if part.startswith(".") and part not in {".", ".."}:
-                return True
-            if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
-                return True
-
-        if is_path_excluded(path_str, self.config.excluded_folders):
+        if self._has_ignored_part(p) or is_path_excluded(path_str, self.config.excluded_folders):
             return True
 
         ext = p.suffix.lstrip(".").lower()
@@ -114,10 +117,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
                 excluded_folders=self.config.excluded_folders,
                 excluded_types=None if self.is_code else self.config.excluded_types,
             )
-            if skip:
-                return True
-            if classify_file(path_str, is_code_mode=self.is_code) is None:
-                return True
+            return skip or classify_file(path_str, is_code_mode=self.is_code) is None
 
         return False
 
@@ -128,10 +128,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
         self.bucket.add(src_path)
 
     def on_modified(self, event: FileSystemEvent) -> None:
-        src_path = os.fsdecode(event.src_path)
-        if event.is_directory or self._should_filter(src_path):
-            return
-        self.bucket.add(src_path)
+        self.on_created(event)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         src_path = os.fsdecode(event.src_path)

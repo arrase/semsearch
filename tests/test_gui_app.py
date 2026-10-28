@@ -256,7 +256,8 @@ def test_app_trigger_reindex_rapid_clicks_skips_duplicate():
 
     app._trigger_reindex()
     t1 = app._crawl_thread
-    assert t1 is not None and t1.is_alive()
+    assert t1 is not None
+    assert t1.is_alive()
 
     # Second trigger while thread is still active must skip creating a new thread
     app._trigger_reindex()
@@ -272,6 +273,7 @@ def test_app_trigger_reindex_rapid_clicks_skips_duplicate():
     app.index_service.crawl_and_sync.side_effect = None
     app._trigger_reindex()
     t2 = app._crawl_thread
-    assert t2 is not None and t2 is not t1
+    assert t2 is not None
+    assert t2 is not t1
     t2.join(timeout=2.0)
     assert not t2.is_alive()

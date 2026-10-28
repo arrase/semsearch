@@ -377,14 +377,14 @@ def is_lookup_query(query: str, terms: list[str] | None = None) -> bool:
         return False
     if terms and is_lookup(terms):
         return True
-    if re.search(r"[a-z][A-Z]", q) or re.search(r"[a-zA-Z0-9]+_[a-zA-Z0-9]+", q):
+    if re.search(r"[a-z][A-Z]", q) or re.search(r"[a-zA-Z0-9]_[a-zA-Z0-9]", q):
         return True
-    if "/" in q or "\\" in q or "::" in q or re.search(r"\w+\.\w+", q):
+    if "/" in q or "\\" in q or "::" in q or re.search(r"\w\.\w", q):
         return True
     if re.search(r"\b[A-Za-z0-9]+-[A-Za-z0-9]+\b", q) or re.search(r"\b0x[0-9a-fA-F]+\b", q):
         return True
     words = re.findall(r"\w+", q)
-    return any(re.search(r"[0-9]", w) and re.search(r"[a-zA-Z]", w) for w in words)
+    return any(re.search(r"\d", w) and re.search(r"[a-zA-Z]", w) for w in words)
 
 
 def extract_kind_hints(text: str) -> set[FileKind]:
@@ -407,6 +407,17 @@ def _fold_latin_diacritics(text: str) -> str:
     """Normalize text and strip Latin combining diacritical marks (0x0300..0x036F)."""
     norm = normalize_search_text(text).lower()
     return "".join(ch for ch in unicodedata.normalize("NFD", norm) if not (0x0300 <= ord(ch) <= 0x036F))
+
+
+def _resolve_match_bounds(text: str, orig_start: int, orig_end: int, prefix: bool) -> tuple[int, int] | None:
+    if orig_start > 0 and _is_word_char(text[orig_start - 1]):
+        return None
+    if orig_end < len(text) and _is_word_char(text[orig_end]):
+        if not prefix:
+            return None
+        while orig_end < len(text) and _is_word_char(text[orig_end]):
+            orig_end += 1
+    return orig_start, orig_end
 
 
 def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
@@ -433,19 +444,22 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
         cursor = hit_end
         if not origin or hit_end > len(origin):
             continue
-        orig_start = origin[pos]
-        orig_end = origin[hit_end - 1] + 1
-
-        if orig_start > 0 and _is_word_char(text[orig_start - 1]):
-            continue
-        if orig_end < len(text) and _is_word_char(text[orig_end]):
-            if not prefix:
-                continue
-            while orig_end < len(text) and _is_word_char(text[orig_end]):
-                orig_end += 1
-
-        found.append((orig_start, orig_end))
+        bounds = _resolve_match_bounds(text, origin[pos], origin[hit_end - 1] + 1, prefix)
+        if bounds is not None:
+            found.append(bounds)
     return found
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for r in ranges:
+        if not merged or r[0] >= merged[-1][1]:
+            merged.append(r)
+        else:
+            last = merged[-1]
+            merged[-1] = (last[0], max(last[1], r[1]))
+    return merged
 
 
 def extract_snippet(text: str, terms: list[str], max_words: int = 12) -> str | None:
@@ -464,28 +478,16 @@ def extract_snippet(text: str, terms: list[str], max_words: int = 12) -> str | N
     if not all_ranges:
         return None
 
-    all_ranges.sort()
-    merged: list[tuple[int, int]] = []
-    for r in all_ranges:
-        if not merged:
-            merged.append(r)
-        else:
-            last = merged[-1]
-            if r[0] < last[1]:
-                merged[-1] = (last[0], max(last[1], r[1]))
-            else:
-                merged.append(r)
-
+    merged = _merge_ranges(all_ranges)
     first_start, _ = merged[0]
     words = list(re.finditer(r"\S+", text))
     if not words:
         return None
 
-    target_idx = 0
-    for idx, w in enumerate(words):
-        if w.start() <= first_start < w.end() or w.start() >= first_start:
-            target_idx = idx
-            break
+    target_idx = next(
+        (idx for idx, w in enumerate(words) if w.start() <= first_start < w.end() or w.start() >= first_start),
+        0,
+    )
 
     start_word_idx = max(0, target_idx - max_words // 3)
     end_word_idx = min(len(words), start_word_idx + max_words)
@@ -500,14 +502,10 @@ def extract_snippet(text: str, terms: list[str], max_words: int = 12) -> str | N
     cursor = snippet_start
     for r_start, r_end in merged:
         if r_start >= snippet_start and r_end <= snippet_end and r_start >= cursor:
-            out_parts.append(text[cursor:r_start])
-            out_parts.append("«")
-            out_parts.append(text[r_start:r_end])
-            out_parts.append("»")
+            out_parts.extend((text[cursor:r_start], "«", text[r_start:r_end], "»"))
             cursor = r_end
 
-    out_parts.append(text[cursor:snippet_end])
-    out_parts.append(suffix)
+    out_parts.extend((text[cursor:snippet_end], suffix))
 
     raw_snippet = "".join(out_parts)
     return re.sub(r"\s+", " ", raw_snippet).strip()

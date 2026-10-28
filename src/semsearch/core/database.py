@@ -372,7 +372,7 @@ class Database:
             segment_id = int(cursor.lastrowid or 0)
             norm_name = normalize_search_text(name) if name else ""
             norm_body = normalize_search_text(body) if body else ""
-            orig_val = original if original else (body if norm_body != body else "")
+            orig_val = original or (body if norm_body != body else "")
 
             if norm_name or norm_body or orig_val:
                 cursor.execute(
@@ -533,18 +533,19 @@ class Database:
             matrix = np.vstack([np.frombuffer(r[3], dtype=np.float16).astype(np.float32) for r in rows])
             return segment_ids, file_ids, modalities, matrix, sets_scale
 
+    @staticmethod
+    def _build_fts_match_expr(stripped: str) -> str:
+        if '"' in stripped or "*" in stripped or " OR " in stripped:
+            return stripped
+        words = [w for w in re.findall(r"\w+", stripped) if len(w) >= 2] or [stripped]
+        return " OR ".join(f'"{w}"*' for w in words)
+
     def fts_search(self, query: str, limit: int = 100, terms: list[str] | None = None) -> list[dict]:
         """Perform full-text search using BM25 ranking with boosted filename weight."""
         stripped = query.strip()
         if not stripped:
             return []
-        if '"' in stripped or "*" in stripped or " OR " in stripped:
-            match_expr = stripped
-        else:
-            words = [w for w in re.findall(r"\w+", stripped) if len(w) >= 2]
-            if not words:
-                words = [stripped]
-            match_expr = " OR ".join(f'"{w}"*' for w in words)
+        match_expr = self._build_fts_match_expr(stripped)
 
         with self._lock:
             cursor = self._conn.cursor()

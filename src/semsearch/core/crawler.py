@@ -26,6 +26,63 @@ class SyncReport:
     unchanged: int = 0
 
 
+def _should_recurse_dir(entry: os.DirEntry, excluded_folders: list[str] | set[str] | None) -> bool:
+    return (
+        entry.name not in SKIPPED_FOLDER_NAMES
+        and not entry.name.startswith(".")
+        and not entry.name.endswith(".noindex")
+        and not is_path_excluded(entry.path, excluded_folders)
+    )
+
+
+def _scan_dir_entries(
+    current_dir: Path,
+    excluded_folders: list[str] | set[str] | None,
+) -> tuple[list[Path], list[os.DirEntry]]:
+    subdirs: list[Path] = []
+    dir_files: list[os.DirEntry] = []
+    try:
+        with os.scandir(current_dir) as it:
+            for entry in it:
+                if entry.is_dir(follow_symlinks=False):
+                    if _should_recurse_dir(entry, excluded_folders):
+                        subdirs.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    dir_files.append(entry)
+    except OSError:
+        return [], []
+    return subdirs, dir_files
+
+
+def _build_candidate(
+    entry: os.DirEntry,
+    is_code: bool,
+    excluded_folders: list[str] | set[str] | None,
+    excluded_types: list[str] | set[str] | None,
+) -> Candidate | None:
+    skip, _ = should_skip(
+        entry.path,
+        is_code_mode=is_code,
+        excluded_folders=excluded_folders,
+        excluded_types=excluded_types,
+    )
+    kind = classify_file(entry.path, is_code_mode=is_code)
+    if skip or kind is None:
+        return None
+    try:
+        stat = entry.stat(follow_symlinks=False)
+    except OSError:
+        return None
+    return Candidate(
+        path=str(Path(entry.path).resolve()),
+        kind=kind,
+        size=stat.st_size,
+        mtime=stat.st_mtime,
+        inode=stat.st_ino,
+        device=stat.st_dev,
+    )
+
+
 def crawl_folder(
     root: str,
     is_code: bool = False,
@@ -34,9 +91,7 @@ def crawl_folder(
 ) -> list[Candidate]:
     """Recursively scan files under root using os.scandir, skipping ignored folders, secrets, and datasets."""
     root_path = Path(root).resolve()
-    if not root_path.exists() or not root_path.is_dir():
-        return []
-    if is_path_excluded(str(root_path), excluded_folders):
+    if not root_path.exists() or not root_path.is_dir() or is_path_excluded(str(root_path), excluded_folders):
         return []
 
     candidates: list[Candidate] = []
@@ -44,25 +99,7 @@ def crawl_folder(
 
     while dir_stack:
         current_dir = dir_stack.pop()
-        subdirs: list[Path] = []
-        dir_files: list[os.DirEntry] = []
-
-        try:
-            with os.scandir(current_dir) as it:
-                for entry in it:
-                    if entry.is_dir(follow_symlinks=False):
-                        if (
-                            entry.name not in SKIPPED_FOLDER_NAMES
-                            and not entry.name.startswith(".")
-                            and not entry.name.endswith(".noindex")
-                            and not is_path_excluded(entry.path, excluded_folders)
-                        ):
-                            subdirs.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False):
-                        dir_files.append(entry)
-        except OSError:
-            continue
-
+        subdirs, dir_files = _scan_dir_entries(current_dir, excluded_folders)
         dir_stack.extend(subdirs)
 
         if current_dir != root_path and not is_code and is_dataset_folder([e.path for e in dir_files]):
@@ -73,31 +110,9 @@ def crawl_folder(
             ]
 
         for entry in dir_files:
-            skip, _ = should_skip(
-                entry.path,
-                is_code_mode=is_code,
-                excluded_folders=excluded_folders,
-                excluded_types=excluded_types,
-            )
-            kind = classify_file(entry.path, is_code_mode=is_code)
-            if skip or kind is None:
-                continue
-
-            try:
-                stat = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-
-            candidates.append(
-                Candidate(
-                    path=str(Path(entry.path).resolve()),
-                    kind=kind,
-                    size=stat.st_size,
-                    mtime=stat.st_mtime,
-                    inode=stat.st_ino,
-                    device=stat.st_dev,
-                )
-            )
+            candidate = _build_candidate(entry, is_code, excluded_folders, excluded_types)
+            if candidate is not None:
+                candidates.append(candidate)
 
     return candidates
 
@@ -105,6 +120,55 @@ def crawl_folder(
 def _is_under_root(path: str, root: str) -> bool:
     prefix = root if root.endswith("/") else f"{root}/"
     return path == root or path.startswith(prefix)
+
+
+def _sync_existing_path(db: Database, existing, candidate: Candidate, report: SyncReport) -> None:
+    if existing.size != candidate.size or abs(existing.mtime - candidate.mtime) > 0.001:
+        db.requeue_file(existing.id, candidate)
+        report.changed += 1
+    elif existing.kind != candidate.kind:
+        if existing.state == FileState.DONE:
+            db.update_file_kind(existing.id, candidate.kind)
+        else:
+            db.requeue_file(existing.id, candidate)
+        report.changed += 1
+    else:
+        report.unchanged += 1
+
+
+def _sync_existing_inode(
+    db: Database,
+    existing,
+    candidate: Candidate,
+    seen_paths: set[str],
+    moved_from: set[str],
+    report: SyncReport,
+) -> None:
+    if existing.path not in seen_paths and existing.path not in moved_from and not Path(existing.path).exists():
+        db.move_file(existing.id, candidate.path)
+        moved_from.add(existing.path)
+        if (
+            existing.size != candidate.size
+            or abs(existing.mtime - candidate.mtime) > 0.001
+            or existing.kind != candidate.kind
+        ):
+            db.requeue_file(existing.id, candidate)
+            report.changed += 1
+        else:
+            report.moved += 1
+    else:
+        db.insert_file(candidate)
+        report.added += 1
+
+
+def _should_delete_unseen(
+    path: str,
+    roots: list[str] | None,
+    vanished_roots: set[str],
+) -> bool:
+    if roots is not None:
+        return not any(_is_under_root(path, vr) for vr in vanished_roots)
+    return not Path(path).exists()
 
 
 def sync_candidates(
@@ -132,48 +196,27 @@ def sync_candidates(
 
     for candidate in candidates:
         if candidate.path in by_path:
-            existing = by_path[candidate.path]
-            size_or_mtime_changed = existing.size != candidate.size or abs(existing.mtime - candidate.mtime) > 0.001
-            if size_or_mtime_changed:
-                db.requeue_file(existing.id, candidate)
-                report.changed += 1
-            elif existing.kind != candidate.kind:
-                if existing.state == FileState.DONE:
-                    db.update_file_kind(existing.id, candidate.kind)
-                else:
-                    db.requeue_file(existing.id, candidate)
-                report.changed += 1
-            else:
-                report.unchanged += 1
+            _sync_existing_path(db, by_path[candidate.path], candidate, report)
         elif (candidate.device, candidate.inode) in by_inode:
-            existing = by_inode[(candidate.device, candidate.inode)]
-            if existing.path not in seen_paths and existing.path not in moved_from and not Path(existing.path).exists():
-                db.move_file(existing.id, candidate.path)
-                moved_from.add(existing.path)
-                if (
-                    existing.size != candidate.size
-                    or abs(existing.mtime - candidate.mtime) > 0.001
-                    or existing.kind != candidate.kind
-                ):
-                    db.requeue_file(existing.id, candidate)
-                    report.changed += 1
-                else:
-                    report.moved += 1
-            else:
-                db.insert_file(candidate)
-                report.added += 1
+            _sync_existing_inode(
+                db,
+                by_inode[(candidate.device, candidate.inode)],
+                candidate,
+                seen_paths,
+                moved_from,
+                report,
+            )
         else:
             db.insert_file(candidate)
             report.added += 1
 
     for existing in existing_files:
-        if existing.path not in seen_paths and existing.path not in moved_from:
-            if roots is not None:
-                if not any(_is_under_root(existing.path, vr) for vr in vanished_roots):
-                    db.delete_file(existing.id)
-                    report.deleted += 1
-            elif not Path(existing.path).exists():
-                db.delete_file(existing.id)
-                report.deleted += 1
+        if (
+            existing.path not in seen_paths
+            and existing.path not in moved_from
+            and _should_delete_unseen(existing.path, roots, vanished_roots)
+        ):
+            db.delete_file(existing.id)
+            report.deleted += 1
 
     return report

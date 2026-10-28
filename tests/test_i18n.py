@@ -88,9 +88,8 @@ def test_translation_catalog_completeness_and_placeholders(lang_code: str) -> No
     assert not extra_keys, f"Language '{lang_code}' has unexpected keys: {extra_keys}"
 
     for source_key, translated_val in catalog.items():
-        assert isinstance(translated_val, str) and translated_val.strip(), (
-            f"Empty translation for key '{source_key}' in '{lang_code}'"
-        )
+        assert isinstance(translated_val, str)
+        assert translated_val.strip(), f"Empty translation for key '{source_key}' in '{lang_code}'"
         en_placeholders = set(PLACEHOLDER_RE.findall(source_key))
         tr_placeholders = set(PLACEHOLDER_RE.findall(translated_val))
         assert en_placeholders == tr_placeholders, (

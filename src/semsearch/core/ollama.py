@@ -111,6 +111,33 @@ class OllamaClient:
             model_name=model,
         )
 
+    @staticmethod
+    def _extract_context_length(info: dict[str, Any]) -> int | None:
+        model_info = info.get("model_info") or {}
+        candidates = [
+            val
+            for key, val in model_info.items()
+            if key.endswith(".context_length") and isinstance(val, int) and val > 0
+        ]
+        details = info.get("details") or {}
+        ctx = details.get("context_length")
+        if isinstance(ctx, int) and ctx > 0:
+            candidates.append(ctx)
+        if candidates:
+            return max(candidates)
+
+        modelfile = str(info.get("modelfile") or "")
+        for line in modelfile.splitlines():
+            parts = line.strip().split()
+            if (
+                len(parts) >= 3
+                and parts[0].upper() == "PARAMETER"
+                and parts[1].lower() == "num_ctx"
+                and parts[2].isdigit()
+            ):
+                return int(parts[2])
+        return None
+
     def get_model_context_length(self, model: str) -> int | None:
         """Query the maximum supported context window size (in tokens) for a model from Ollama."""
         direct_key = (self.base_url, model)
@@ -127,38 +154,11 @@ class OllamaClient:
         except OllamaError:
             return None
 
-        candidates: list[int] = []
-        model_info = info.get("model_info") or {}
-        for key, val in model_info.items():
-            if key.endswith(".context_length") and isinstance(val, int) and val > 0:
-                candidates.append(val)
-
-        details = info.get("details") or {}
-        ctx = details.get("context_length")
-        if isinstance(ctx, int) and ctx > 0:
-            candidates.append(ctx)
-
-        if candidates:
-            max_ctx = max(candidates)
+        max_ctx = self._extract_context_length(info)
+        if max_ctx is not None:
             self._context_length_cache[cache_key] = max_ctx
             self._context_length_cache[direct_key] = max_ctx
-            return max_ctx
-
-        modelfile = str(info.get("modelfile") or "")
-        for line in modelfile.splitlines():
-            parts = line.strip().split()
-            if (
-                len(parts) >= 3
-                and parts[0].upper() == "PARAMETER"
-                and parts[1].lower() == "num_ctx"
-                and parts[2].isdigit()
-            ):
-                max_ctx = int(parts[2])
-                self._context_length_cache[cache_key] = max_ctx
-                self._context_length_cache[direct_key] = max_ctx
-                return max_ctx
-
-        return None
+        return max_ctx
 
     def _is_info_multimodal(self, info: dict[str, Any], model_name: str = "") -> bool:
         """Check capabilities, details, architecture, and name for multimodal support."""

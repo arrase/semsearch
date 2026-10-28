@@ -142,10 +142,11 @@ def test_search_evaluation_harness_live_ollama():
         if not models:
             pytest.skip("embeddinggemma-2 model not installed in local Ollama")
         res = client.embed(models[0], ["test semantic evaluation query"])
-        assert len(res) == 1
-        assert len(res[0]) > 0
     except Exception as exc:
         pytest.skip(f"Live Ollama instance not available: {exc}")
+
+    assert len(res) == 1
+    assert len(res[0]) > 0
 
 
 # Section 4: Lexical BM25 & Lookup Serial Search Verification

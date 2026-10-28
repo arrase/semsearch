@@ -41,7 +41,7 @@ def _strip_rtf(rtf_text: str) -> str:
         rtf_text = pattern.sub("", rtf_text)
     rtf_text = re.sub(r"\\(?:par|line)\b", "\n", rtf_text)
     rtf_text = re.sub(r"\\\'([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), rtf_text)
-    rtf_text = re.sub(r"\\[a-zA-Z]+-?[0-9]*[ ]?", "", rtf_text)
+    rtf_text = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", rtf_text)
     rtf_text = re.sub(r"[{}]", "", rtf_text)
     lines = [line.strip() for line in rtf_text.splitlines()]
     return "\n".join(line for line in lines if line)
@@ -54,11 +54,37 @@ def _read_odt(path: str) -> str:
     tree = ET.fromstring(content_xml)
     paragraphs: list[str] = []
     for elem in tree.iter():
-        if elem.tag.endswith("}p") or elem.tag.endswith("}h"):
+        if elem.tag.endswith(("}p", "}h")):
             text = "".join(elem.itertext()).strip()
             if text:
                 paragraphs.append(text)
     return "\n\n".join(paragraphs)
+
+
+def _extract_docx_table_rows(table) -> list[str]:
+    seen_cells = set()
+    rows: list[str] = []
+    for row in table.rows:
+        row_parts: list[str] = []
+        for cell in row.cells:
+            if cell._tc in seen_cells:
+                continue
+            seen_cells.add(cell._tc)
+            text = cell.text.strip()
+            if text:
+                row_parts.append(text)
+        if row_parts:
+            rows.append("\t".join(row_parts))
+    return rows
+
+
+def _read_docx(path: str) -> str:
+    """Extract paragraph and table cell text from Word (.docx) document."""
+    doc = Document(path)
+    parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        parts.extend(_extract_docx_table_rows(table))
+    return "\n\n".join(parts)
 
 
 def read_doc_text(path: str) -> str:
@@ -72,22 +98,7 @@ def read_doc_text(path: str) -> str:
         raw_html = p.read_text(encoding="utf-8", errors="replace")
         return strip_html(raw_html)
     if suffix == ".docx":
-        doc = Document(path)
-        parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        for table in doc.tables:
-            seen_cells = set()
-            for row in table.rows:
-                row_parts = []
-                for cell in row.cells:
-                    if cell._tc in seen_cells:
-                        continue
-                    seen_cells.add(cell._tc)
-                    text = cell.text.strip()
-                    if text:
-                        row_parts.append(text)
-                if row_parts:
-                    parts.append("\t".join(row_parts))
-        return "\n\n".join(parts)
+        return _read_docx(path)
     if suffix == ".odt":
         return _read_odt(path)
     if suffix == ".rtf":
@@ -107,6 +118,24 @@ def _make_chunk_segment(text: str, loc: int) -> ExtractedSegment:
     )
 
 
+def _snap_chunk_end(clean_text: str, start: int, end: int, overlap: int) -> int:
+    search_start = max(start, end - overlap)
+    for i in range(end - 1, search_start - 1, -1):
+        if clean_text[i].isspace():
+            return i if i > start else end
+    return end
+
+
+def _advance_chunk_start(clean_text: str, start: int, end: int, overlap: int) -> int:
+    n = len(clean_text)
+    next_start = max(start + 1, end - overlap)
+    while next_start < end and not clean_text[next_start].isspace():
+        next_start += 1
+    while next_start < n and clean_text[next_start].isspace():
+        next_start += 1
+    return next_start if next_start > start else end
+
+
 def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[ExtractedSegment]:
     """Slice document text into chunks snapping to word boundaries and filtering non-text."""
     clean_text = text.strip()
@@ -124,14 +153,7 @@ def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> lis
     while start < n:
         end = min(start + chunk_size, n)
         if end < n:
-            search_start = max(start, end - overlap)
-            cut = -1
-            for i in range(end - 1, search_start - 1, -1):
-                if clean_text[i].isspace():
-                    cut = i
-                    break
-            if cut > start:
-                end = cut
+            end = _snap_chunk_end(clean_text, start, end, overlap)
 
         chunk_str = clean_text[start:end].strip()
         if chunk_str and has_words(chunk_str):
@@ -141,16 +163,7 @@ def chunk_document(text: str, chunk_size: int = 1800, overlap: int = 200) -> lis
         if end >= n:
             break
 
-        next_start = max(start + 1, end - overlap)
-        while next_start < end and not clean_text[next_start].isspace():
-            next_start += 1
-        while next_start < n and clean_text[next_start].isspace():
-            next_start += 1
-
-        if next_start <= start:
-            next_start = end
-
-        start = next_start
+        start = _advance_chunk_start(clean_text, start, end, overlap)
 
     return chunks
 

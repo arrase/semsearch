@@ -72,6 +72,7 @@ _USERS: set[str] = {
 }
 
 _COMMENT_STARTS: tuple[str, ...] = ("//", "#", "/*", "*", "--", '"""', "'''", "<!--", ";")
+_NON_VAR_DEFINERS: set[str] = _DEFINERS - {"let", "var", "const", "val"}
 
 
 def extract_identifier(query: str) -> list[str] | None:
@@ -122,31 +123,30 @@ def _occurrences(name: str, line: str) -> list[tuple[int, int]]:
     return found
 
 
+def _is_c_like_signature(before: str, after: str, previous: str) -> bool:
+    if not after.startswith("(") or not before or previous in _USERS or "->" in before:
+        return False
+    if any(c in "=(,.!?" for c in before):
+        return False
+    last = before[-1]
+    return last.isalnum() or last in "*&>_]"
+
+
 def _definition_strength(before: str, after: str, line: str) -> int:
     before_tokens = before.split()
     previous = before_tokens[-1] if before_tokens else ""
 
-    if previous in _DEFINERS and previous not in ("let", "var", "const", "val"):
+    if previous in _NON_VAR_DEFINERS:
         return 2
 
     if before.startswith("func (") and before.endswith(")"):
         return 2
 
     if before.startswith(("- (", "+ (")):
-        if any(after.startswith(p) for p in (":", "{", ";")) or not after:
-            return 2
-        return 0
+        return 2 if (not after or after.startswith((":", "{", ";"))) else 0
 
-    if (
-        after.startswith("(")
-        and before
-        and previous not in _USERS
-        and not any(c in "=(,.!?" for c in before)
-        and "->" not in before
-    ):
-        last = before[-1]
-        if last.isalnum() or last in "*&>_]":
-            return 1 if line.strip().endswith(";") else 2
+    if _is_c_like_signature(before, after, previous):
+        return 1 if line.strip().endswith(";") else 2
 
     return 0
 
@@ -201,16 +201,16 @@ def find_first_line_with_words(words: list[str], text: str, first_line: int = 1)
     first_any: int | None = None
 
     for offset, line in enumerate(text.splitlines()):
-        if any(_has_word_part(w, line) for w in clean_words):
-            stripped = line.strip()
-            tokens = stripped.split()[:4]
-            if any(t in _DEFINERS and t not in ("let", "var", "const", "val") for t in tokens):
-                return first_line + offset
+        if not any(_has_word_part(w, line) for w in clean_words):
+            continue
+        stripped = line.strip()
+        if any(t in _NON_VAR_DEFINERS for t in stripped.split()[:4]):
+            return first_line + offset
 
-            if first_code is None and not any(stripped.startswith(c) for c in _COMMENT_STARTS):
-                first_code = offset
-            if first_any is None:
-                first_any = offset
+        if first_code is None and not stripped.startswith(_COMMENT_STARTS):
+            first_code = offset
+        if first_any is None:
+            first_any = offset
 
     res = first_code if first_code is not None else first_any
     return (first_line + res) if res is not None else None

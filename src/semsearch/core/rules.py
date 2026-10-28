@@ -345,6 +345,27 @@ def is_path_excluded(path: str, excluded_folders: list[str] | set[str] | None) -
     return False
 
 
+def _is_excluded_type(
+    ext: str,
+    kind: FileKind,
+    excluded_types: list[str] | set[str] | None,
+) -> bool:
+    if not excluded_types:
+        return False
+    norm_types = {t.lstrip(".").strip().lower() for t in excluded_types if t.strip()}
+    return ext in norm_types or kind.value in norm_types
+
+
+def _check_mode_compatibility(path: str, kind: FileKind, is_code_mode: bool) -> str:
+    if is_code_mode:
+        return "not a code file" if kind != FileKind.CODE else ""
+    if kind == FileKind.CODE:
+        return "code file in general mode"
+    if kind != FileKind.SCREENSHOT and is_inside_code_project(path):
+        return "non-screenshot inside code project"
+    return ""
+
+
 def should_skip(
     path: str,
     is_code_mode: bool,
@@ -373,18 +394,11 @@ def should_skip(
     if kind is None:
         return True, "unsupported file kind"
 
-    if excluded_types:
-        norm_types = {t.lstrip(".").strip().lower() for t in excluded_types if t.strip()}
-        if ext in norm_types or kind.value in norm_types:
-            return True, f"excluded file type {ext or kind.value}"
+    if _is_excluded_type(ext, kind, excluded_types):
+        return True, f"excluded file type {ext or kind.value}"
 
-    if is_code_mode:
-        if kind != FileKind.CODE:
-            return True, "not a code file"
-    else:
-        if kind == FileKind.CODE:
-            return True, "code file in general mode"
-        if kind != FileKind.SCREENSHOT and is_inside_code_project(path):
-            return True, "non-screenshot inside code project"
+    mode_reason = _check_mode_compatibility(path, kind, is_code_mode)
+    if mode_reason:
+        return True, mode_reason
 
     return False, ""

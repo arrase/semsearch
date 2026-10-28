@@ -293,7 +293,7 @@ class SearchPanel(QWidget):
 
     def _stop_workers(self) -> None:
         self._semantic_timer.stop()
-        for worker in list(self._active_workers):
+        for worker in self._active_workers:
             worker.stop()
         if self._worker is not None:
             self._worker.stop()
@@ -315,6 +315,32 @@ class SearchPanel(QWidget):
         self._execute_instant_lexical(stripped)
         self._semantic_timer.start(120)
 
+    @staticmethod
+    def _fts_rows_to_hits(fts_rows: list[dict], target_db) -> list[SearchHit]:
+        best_by_file: dict[int, SearchHit] = {}
+        for r in fts_rows:
+            fid = int(r["file_id"])
+            score = float(-r["rank"])
+            if fid in best_by_file and best_by_file[fid].score >= score:
+                continue
+            file_rec = target_db.find_by_id(fid)
+            if not file_rec:
+                continue
+            raw_size = getattr(file_rec, "size", 0)
+            raw_mtime = getattr(file_rec, "mtime", 0.0)
+            best_by_file[fid] = SearchHit(
+                path=file_rec.path,
+                kind=file_rec.kind,
+                score=score,
+                excerpt=r["snippet"] or r["excerpt"],
+                keyword_rank=max(1, int(score)) if score > 0 else 0,
+                segment_id=r["segment_id"],
+                loc=r["loc"],
+                size=raw_size if isinstance(raw_size, int) else 0,
+                modified=float(raw_mtime) if isinstance(raw_mtime, (int, float)) else 0.0,
+            )
+        return list(best_by_file.values())
+
     def _execute_instant_lexical(self, query: str) -> None:
         """Run fast keyword match against SQLite index, deduplicating by file_id."""
         is_code = query.lower().startswith("code:")
@@ -327,33 +353,11 @@ class SearchPanel(QWidget):
             if terms:
                 fts_q = " OR ".join(make_fts_patterns(terms, prefix_last=True))
                 fts_rows = target_db.fts_search(fts_q, limit=50)
-        best_by_file: dict[int, SearchHit] = {}
-        for r in fts_rows:
-            fid = int(r["file_id"])
-            score = float(-r["rank"])
-            if fid in best_by_file and best_by_file[fid].score >= score:
-                continue
-            file_rec = target_db.find_by_id(fid)
-            if file_rec:
-                raw_size = getattr(file_rec, "size", 0)
-                raw_mtime = getattr(file_rec, "mtime", 0.0)
-                best_by_file[fid] = SearchHit(
-                    path=file_rec.path,
-                    kind=file_rec.kind,
-                    score=score,
-                    excerpt=r["snippet"] or r["excerpt"],
-                    keyword_rank=max(1, int(score)) if score > 0 else 0,
-                    segment_id=r["segment_id"],
-                    loc=r["loc"],
-                    size=raw_size if isinstance(raw_size, int) else 0,
-                    modified=float(raw_mtime) if isinstance(raw_mtime, (int, float)) else 0.0,
-                )
 
-        hits = list(best_by_file.values())
+        hits = self._fts_rows_to_hits(fts_rows, target_db)
         if hits:
             hits.sort(key=lambda h: h.score, reverse=True)
-            top_score = hits[0].score
-            threshold = 0.5 * top_score
+            threshold = 0.5 * hits[0].score
             ranked = [h for h in hits if h.score >= threshold]
             weaker = [h for h in hits if h.score < threshold]
             self._current_result_set = ResultSet(ranked=ranked, weaker=weaker)
@@ -468,30 +472,32 @@ class SearchPanel(QWidget):
 
     def eventFilter(self, watched, event) -> bool:
         """Handle keyboard navigation across search input and results list."""
-        if event.type() == event.Type.KeyPress:
-            key_event: QKeyEvent = event
-            key = key_event.key()
-            modifiers = key_event.modifiers()
+        if event.type() != event.Type.KeyPress:
+            return super().eventFilter(watched, event)
 
-            if key == Qt.Key.Key_Down:
-                self._move_selection(1)
-                return True
-            if key == Qt.Key.Key_Up:
-                self._move_selection(-1)
-                return True
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._activate_current_item(modifiers)
-                return True
-            if key == Qt.Key.Key_Escape:
-                if self.search_input.text():
-                    self.search_input.clear()
-                    self._set_geometry_collapsed()
-                else:
-                    self.hide_panel()
-                return True
-            if key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
-                self._copy_selected_path()
-                return True
+        key_event: QKeyEvent = event
+        key = key_event.key()
+        modifiers = key_event.modifiers()
+
+        if key == Qt.Key.Key_Down:
+            self._move_selection(1)
+            return True
+        if key == Qt.Key.Key_Up:
+            self._move_selection(-1)
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._activate_current_item(modifiers)
+            return True
+        if key == Qt.Key.Key_Escape:
+            if self.search_input.text():
+                self.search_input.clear()
+                self._set_geometry_collapsed()
+            else:
+                self.hide_panel()
+            return True
+        if key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
+            self._copy_selected_path()
+            return True
 
         return super().eventFilter(watched, event)
 

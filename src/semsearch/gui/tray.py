@@ -9,6 +9,8 @@ from semsearch.gui.theme import ThemeColors
 from semsearch.i18n import tr
 from semsearch.services.indexer import IndexService
 
+_PAUSE_INDEXING_LABEL = "Pause Indexing"
+
 
 def render_tray_icon(percent: float = 0.0, is_indexing: bool = False, is_paused: bool = False) -> QIcon:
     """Render dynamic 64x64 pixmap icon for system tray."""
@@ -85,7 +87,7 @@ class SystemTrayManager(QObject):
         self.panel_action.triggered.connect(self.open_panel_requested.emit)
         self.menu.addAction(self.panel_action)
 
-        self.pause_action = QAction(tr("Pause Indexing"), self)
+        self.pause_action = QAction(tr(_PAUSE_INDEXING_LABEL), self)
         self.pause_action.triggered.connect(self._handle_toggle_pause)
         self.menu.addAction(self.pause_action)
         self.menu.addSeparator()
@@ -121,7 +123,7 @@ class SystemTrayManager(QObject):
             self._poll_status()
         else:
             self.status_action.setText(tr("Idle"))
-            self.pause_action.setText(tr("Pause Indexing"))
+            self.pause_action.setText(tr(_PAUSE_INDEXING_LABEL))
 
     def _poll_status(self) -> None:
         if self.index_service is not None:
@@ -165,12 +167,12 @@ class SystemTrayManager(QObject):
                 indexed=status.indexed,
                 total=status.total,
             )
-            self.pause_action.setText(tr("Pause Indexing"))
+            self.pause_action.setText(tr(_PAUSE_INDEXING_LABEL))
         else:
             status_text = (
                 tr("Idle - {indexed} indexed", indexed=f"{status.indexed:,}") if status.indexed > 0 else tr("Idle")
             )
-            self.pause_action.setText(tr("Pause Indexing"))
+            self.pause_action.setText(tr(_PAUSE_INDEXING_LABEL))
 
         self.status_action.setText(status_text)
         self.tray_icon.setToolTip(f"SemSearch - {status_text}")

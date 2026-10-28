@@ -134,24 +134,36 @@ class IndexService:
         self._pause_event.set()
         self._work_event.set()
 
+    def _is_code_file_path(self, resolved_path: Path) -> bool:
+        if not (self.config.code_enabled and self.code_db is not None):
+            return False
+        return any(resolved_path.is_relative_to(Path(cf).resolve()) for cf in self.config.code_folders)
+
+    def _is_excluded_general_ext(self, ext: str, is_code: bool) -> bool:
+        if is_code or not self.config.excluded_types:
+            return False
+        norm_excl = {t.lstrip(".").strip().lower() for t in self.config.excluded_types if t.strip()}
+        return ext in norm_excl
+
+    @staticmethod
+    def _upsert_candidate(target_db: Database, rec: FileRecord | None, cand: Candidate) -> int:
+        if rec is None:
+            return target_db.insert_file(cand)
+        if rec.state != FileState.PENDING or cand.mtime != rec.mtime or cand.size != rec.size:
+            target_db.requeue_file(rec.id, cand)
+        return rec.id
+
     def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
         """Enqueue newly modified or created file for immediate or backfill indexing."""
         resolved_path = Path(path).resolve()
         resolved = str(resolved_path)
-        if not resolved_path.exists():
-            return
-        if is_path_excluded(resolved, self.config.excluded_folders):
+        if not resolved_path.exists() or is_path_excluded(resolved, self.config.excluded_folders):
             return
 
-        is_code = False
-        if self.config.code_enabled and self.code_db is not None:
-            is_code = any(resolved_path.is_relative_to(Path(cf).resolve()) for cf in self.config.code_folders)
-
+        is_code = self._is_code_file_path(resolved_path)
         ext = resolved_path.suffix.lstrip(".").lower()
-        if not is_code and self.config.excluded_types:
-            norm_excl = {t.lstrip(".").strip().lower() for t in self.config.excluded_types if t.strip()}
-            if ext in norm_excl:
-                return
+        if self._is_excluded_general_ext(ext, is_code):
+            return
 
         target_db = self.code_db if is_code and self.code_db is not None else self.db
         rec = target_db.find_by_path(resolved)
@@ -173,13 +185,7 @@ class IndexService:
             inode=st.st_ino,
             device=st.st_dev,
         )
-
-        if rec is None:
-            fid = target_db.insert_file(cand)
-        else:
-            fid = rec.id
-            if rec.state != FileState.PENDING or st.st_mtime != rec.mtime or st.st_size != rec.size:
-                target_db.requeue_file(rec.id, cand)
+        fid = self._upsert_candidate(target_db, rec, cand)
 
         with self._lock:
             if tier == IndexQueueTier.NEW_FILES and len(self._new_files_queue) < 50:
@@ -190,11 +196,19 @@ class IndexService:
         self._update_status_counts()
         self._work_event.set()
 
+    def _crawl_single_root(self, root: str, is_code: bool, excl_types: list[str] | None) -> list[Candidate]:
+        if self.config.excluded_folders or (excl_types and excl_types != ["heic"]):
+            return crawl_folder(
+                root,
+                is_code=is_code,
+                excluded_folders=self.config.excluded_folders,
+                excluded_types=excl_types,
+            )
+        return crawl_folder(root, is_code=is_code)
+
     def crawl_and_sync(self, roots: list[str] | None = None, is_code: bool = False) -> None:
         """Crawl folders and synchronize database records."""
-        if self._stop_event.is_set():
-            return
-        if is_code and not self.code_db:
+        if self._stop_event.is_set() or (is_code and not self.code_db):
             return
 
         with self._lock:
@@ -208,15 +222,7 @@ class IndexService:
         for root in scan_roots:
             if self._stop_event.is_set():
                 break
-            if self.config.excluded_folders or (excl_types and excl_types != ["heic"]):
-                candidates = crawl_folder(
-                    root,
-                    is_code=is_code,
-                    excluded_folders=self.config.excluded_folders,
-                    excluded_types=excl_types,
-                )
-            else:
-                candidates = crawl_folder(root, is_code=is_code)
+            candidates = self._crawl_single_root(root, is_code, excl_types)
             sync_candidates(target_db, candidates, roots=[root])
 
         self._update_status_counts()
@@ -227,7 +233,7 @@ class IndexService:
                 self.status.activity = EngineActivity.IDLE
         self._work_event.set()
 
-    def _get_next_file(self) -> tuple[FileRecord | None, Database | None, IndexQueueTier | None]:
+    def _pop_next_queued_file(self) -> tuple[FileRecord, Database] | None:
         with self._lock:
             while self._new_files_queue:
                 fid, is_code = self._new_files_queue.pop(0)
@@ -236,7 +242,13 @@ class IndexService:
                     continue
                 rec = target_db.find_by_id(fid)
                 if rec and rec.state == FileState.PENDING:
-                    return rec, target_db, IndexQueueTier.NEW_FILES
+                    return rec, target_db
+        return None
+
+    def _get_next_file(self) -> tuple[FileRecord | None, Database | None, IndexQueueTier | None]:
+        queued = self._pop_next_queued_file()
+        if queued is not None:
+            return queued[0], queued[1], IndexQueueTier.NEW_FILES
 
         pending_general = self.db.list_pending(limit=1)
         if pending_general:
@@ -293,61 +305,73 @@ class IndexService:
 
         return [], True, info
 
+    @staticmethod
+    def _get_resume_offset(file_record: FileRecord) -> int:
+        if file_record.state != FileState.PARTIAL:
+            return 0
+        if file_record.kind == FileKind.PDF:
+            return file_record.info.get("last_page", 0)
+        if file_record.kind == FileKind.DOC:
+            return file_record.info.get("last_chunk", 0)
+        return 0
+
+    def _build_embed_inputs(
+        self,
+        file_record: FileRecord,
+        segments: list[ExtractedSegment],
+        info: dict,
+    ) -> list[str | dict[str, str]]:
+        if file_record.kind == FileKind.CODE:
+            repo, title = _code_place(file_record.path, self.config.code_folders)
+            if repo:
+                info["repo"] = repo
+        else:
+            title = Path(file_record.path).stem
+
+        embed_inputs: list[str | dict[str, str]] = []
+        for s in segments:
+            if s.modality == Modality.TEXT and isinstance(s.payload, str) and s.payload:
+                embed_inputs.append(format_doc_prompt(title, s.payload[:4000]) if has_words(s.payload) else "")
+            elif s.modality != Modality.NONE and s.payload:
+                embed_inputs.append(s.payload)
+            else:
+                embed_inputs.append("")
+        return embed_inputs
+
+    def _embed_segments(
+        self,
+        file_record: FileRecord,
+        segments: list[ExtractedSegment],
+        info: dict,
+    ) -> list[bytes | None]:
+        if self.ollama is None or not segments:
+            return [None] * len(segments)
+
+        embed_inputs = self._build_embed_inputs(file_record, segments, info)
+        embeddings = self.ollama.embed(self.config.model, embed_inputs)
+        vectors: list[bytes | None] = []
+        for idx in range(len(segments)):
+            if idx < len(embeddings) and embeddings[idx]:
+                vec_arr = l2_normalize(np.array(embeddings[idx], dtype=np.float32))
+                vectors.append(float16_to_bytes(vec_arr))
+            else:
+                vectors.append(None)
+        return vectors
+
     def process_file(self, file_record: FileRecord, target_db: Database) -> bool:
         """Execute pipelined extraction, Ollama embedding, and database commit for a file."""
         if not Path(file_record.path).exists():
             target_db.delete_file(file_record.id)
             return False
 
-        start_offset = 0
-        if file_record.state == FileState.PARTIAL:
-            if file_record.kind == FileKind.PDF:
-                start_offset = file_record.info.get("last_page", 0)
-            elif file_record.kind == FileKind.DOC:
-                start_offset = file_record.info.get("last_chunk", 0)
+        start_offset = self._get_resume_offset(file_record)
 
         try:
             segments, is_complete, info = self._extract_segments(file_record, start_offset=start_offset)
+            vectors = self._embed_segments(file_record, segments, info)
         except Exception as exc:
             target_db.update_file_state(file_record.id, FileState.FAILED, detail=str(exc))
             return False
-
-        vectors: list[bytes | None] = []
-        if self.ollama is not None and segments:
-            embed_inputs: list[str | dict[str, str]] = []
-            file_p = Path(file_record.path)
-            if file_record.kind == FileKind.CODE:
-                repo, title = _code_place(file_record.path, self.config.code_folders)
-                if repo:
-                    info["repo"] = repo
-            else:
-                title = file_p.stem
-
-            for s in segments:
-                if s.modality == Modality.TEXT and isinstance(s.payload, str) and s.payload:
-                    if not has_words(s.payload):
-                        embed_inputs.append("")
-                        continue
-                    embed_inputs.append(format_doc_prompt(title, s.payload[:4000]))
-                elif s.modality != Modality.NONE and s.payload:
-                    embed_inputs.append(s.payload)
-                else:
-                    embed_inputs.append("")
-
-            try:
-                embeddings = self.ollama.embed(self.config.model, embed_inputs)
-            except Exception as exc:
-                target_db.update_file_state(file_record.id, FileState.FAILED, detail=str(exc))
-                return False
-
-            for idx in range(len(segments)):
-                if idx < len(embeddings) and embeddings[idx]:
-                    vec_arr = l2_normalize(np.array(embeddings[idx], dtype=np.float32))
-                    vectors.append(float16_to_bytes(vec_arr))
-                else:
-                    vectors.append(None)
-        else:
-            vectors = [None] * len(segments)
 
         for s, vec in zip(segments, vectors, strict=False):
             body = s.payload if isinstance(s.payload, str) and s.payload else s.excerpt
@@ -369,6 +393,18 @@ class IndexService:
         target_db.update_file_state(file_record.id, new_state, info=info)
         return True
 
+    def _handle_idle_transition(self) -> None:
+        self._update_status_counts()
+        self.db.shrink_memory()
+        if self.code_db is not None:
+            self.code_db.shrink_memory()
+        with self._lock:
+            if not self.status.paused:
+                self.status.activity = EngineActivity.IDLE
+                self.status.current_file = ""
+        if not self._stop_event.is_set():
+            self._work_event.wait()
+
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
             self._pause_event.wait()
@@ -378,16 +414,7 @@ class IndexService:
             self._work_event.clear()
             file_rec, target_db, tier = self._get_next_file()
             if file_rec is None or target_db is None:
-                self._update_status_counts()
-                self.db.shrink_memory()
-                if self.code_db is not None:
-                    self.code_db.shrink_memory()
-                with self._lock:
-                    if not self.status.paused:
-                        self.status.activity = EngineActivity.IDLE
-                        self.status.current_file = ""
-                if not self._stop_event.is_set():
-                    self._work_event.wait()
+                self._handle_idle_transition()
                 continue
 
             with self._lock:

@@ -46,6 +46,27 @@ from semsearch.gui.widgets import ElidedLabel
 from semsearch.i18n import tr
 from semsearch.services.actions import open_file, open_media_at, reveal_in_file_manager
 
+_PAGE_INFO_TEMPLATE = "Page {current} of {total}"
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+_AUDIO_SUFFIXES = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
+_VIDEO_SUFFIXES = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+_CODE_SUFFIXES = (
+    ".py",
+    ".js",
+    ".ts",
+    ".rs",
+    ".go",
+    ".c",
+    ".cpp",
+    ".h",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".md",
+    ".sh",
+)
+
 
 def format_file_size(size_bytes: int) -> str:
     """Format byte size into human readable string."""
@@ -331,7 +352,7 @@ class PdfPreviewWidget(QWidget):
         nav_row = QHBoxLayout()
         self.prev_btn = QPushButton(tr("◀ Prev"))
         self.prev_btn.clicked.connect(self._prev_page)
-        self.page_info = QLabel(tr("Page {current} of {total}", current=1, total=1))
+        self.page_info = QLabel(tr(_PAGE_INFO_TEMPLATE, current=1, total=1))
         self.page_info.setFont(get_ui_font(11))
         self.page_info.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
         self.page_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -359,11 +380,9 @@ class PdfPreviewWidget(QWidget):
         self.prev_btn.setText(tr("◀ Prev"))
         self.next_btn.setText(tr("Next ▶"))
         if self._total_pages > 0:
-            self.page_info.setText(
-                tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages)
-            )
+            self.page_info.setText(tr(_PAGE_INFO_TEMPLATE, current=self._current_page + 1, total=self._total_pages))
         else:
-            self.page_info.setText(tr("Page {current} of {total}", current=1, total=1))
+            self.page_info.setText(tr(_PAGE_INFO_TEMPLATE, current=1, total=1))
         self.meta_card.retranslate_ui()
 
     def load_pdf(
@@ -386,7 +405,7 @@ class PdfPreviewWidget(QWidget):
             self._rendered_pixmap = QPixmap()
             self.page_label.clear()
             self.page_label.setText(tr("File not found: {name}", name=name))
-            self.page_info.setText(tr("Page {current} of {total}", current=0, total=0))
+            self.page_info.setText(tr(_PAGE_INFO_TEMPLATE, current=0, total=0))
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
             return
@@ -432,7 +451,7 @@ class PdfPreviewWidget(QWidget):
 
         self._rendered_pixmap = qpix
         self._rescale_page()
-        self.page_info.setText(tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages))
+        self.page_info.setText(tr(_PAGE_INFO_TEMPLATE, current=self._current_page + 1, total=self._total_pages))
         self.prev_btn.setEnabled(self._current_page > 0)
         self.next_btn.setEnabled(self._current_page < self._total_pages - 1)
 
@@ -844,6 +863,49 @@ class CodePreviewWidget(QWidget):
         """Refresh translated metadata card labels."""
         self.meta_card.retranslate_ui()
 
+    @staticmethod
+    def _read_code_or_doc_content(path: str, target_path: Path, excerpt: str) -> str:
+        if not target_path.is_file():
+            return excerpt or ""
+        if target_path.suffix.lower() in (".docx", ".odt", ".rtf", ".html", ".htm"):
+            return read_doc_text(path)
+        return target_path.read_text(encoding="utf-8", errors="replace")
+
+    @staticmethod
+    def _highlight_query_terms(doc, query: str) -> tuple[list[QTextEdit.ExtraSelection], QTextCursor | None]:
+        if not query:
+            return [], None
+        selections: list[QTextEdit.ExtraSelection] = []
+        first_match_cursor: QTextCursor | None = None
+        terms = extract_terms(query) or [t for t in query.lower().split() if len(t) > 1]
+        for term in terms:
+            match_cursor = QTextCursor(doc)
+            while True:
+                match_cursor = doc.find(term, match_cursor)
+                if match_cursor.isNull():
+                    break
+                if first_match_cursor is None:
+                    first_match_cursor = QTextCursor(match_cursor)
+                term_sel = QTextEdit.ExtraSelection()
+                term_sel.format.setBackground(QColor(250, 204, 21, 140))
+                term_sel.format.setForeground(QColor("#0F1115"))
+                term_sel.cursor = match_cursor
+                selections.append(term_sel)
+        return selections, first_match_cursor
+
+    @staticmethod
+    def _find_excerpt_cursor(doc, excerpt: str) -> QTextCursor | None:
+        if not excerpt:
+            return None
+        clean_excerpt = excerpt.replace("«", "").replace("»", "").replace("…", "").strip()
+        if not clean_excerpt:
+            return None
+        first_line_snip = clean_excerpt.splitlines()[0].strip()[:60]
+        if not first_line_snip:
+            return None
+        ex_cursor = doc.find(first_line_snip)
+        return None if ex_cursor.isNull() else ex_cursor
+
     def load_code(
         self,
         path: str,
@@ -864,13 +926,7 @@ class CodePreviewWidget(QWidget):
             if (wrap_lines or is_doc_file)
             else QPlainTextEdit.LineWrapMode.NoWrap
         )
-        if not target_path.is_file():
-            content = excerpt if excerpt else ""
-        elif target_path.suffix.lower() in (".docx", ".odt", ".rtf", ".html", ".htm"):
-            content = read_doc_text(path)
-        else:
-            content = target_path.read_text(encoding="utf-8", errors="replace")
-        self.editor.setPlainText(content)
+        self.editor.setPlainText(self._read_code_or_doc_content(path, target_path, excerpt))
 
         doc = self.editor.document()
         cursor = QTextCursor(doc)
@@ -886,35 +942,13 @@ class CodePreviewWidget(QWidget):
             line_selection.cursor = cursor
             selections.append(line_selection)
 
-        first_match_cursor: QTextCursor | None = None
-        if query:
-            terms = extract_terms(query)
-            if not terms:
-                terms = [t for t in query.lower().split() if len(t) > 1]
-            for term in terms:
-                match_cursor = QTextCursor(doc)
-                while True:
-                    match_cursor = doc.find(term, match_cursor)
-                    if match_cursor.isNull():
-                        break
-                    if first_match_cursor is None:
-                        first_match_cursor = QTextCursor(match_cursor)
-                    term_sel = QTextEdit.ExtraSelection()
-                    term_sel.format.setBackground(QColor(250, 204, 21, 140))
-                    term_sel.format.setForeground(QColor("#0F1115"))
-                    term_sel.cursor = match_cursor
-                    selections.append(term_sel)
+        term_selections, first_match_cursor = self._highlight_query_terms(doc, query)
+        selections.extend(term_selections)
 
         if line <= 0:
-            if first_match_cursor is not None:
-                cursor = first_match_cursor
-            elif excerpt:
-                clean_excerpt = excerpt.replace("«", "").replace("»", "").replace("…", "").strip()
-                first_line_snip = clean_excerpt.splitlines()[0].strip()[:60] if clean_excerpt else ""
-                if first_line_snip:
-                    ex_cursor = doc.find(first_line_snip)
-                    if not ex_cursor.isNull():
-                        cursor = ex_cursor
+            fallback_cursor = first_match_cursor or self._find_excerpt_cursor(doc, excerpt)
+            if fallback_cursor is not None:
+                cursor = fallback_cursor
 
         self.editor.setExtraSelections(selections)
         self.editor.setTextCursor(cursor)
@@ -980,38 +1014,32 @@ class PreviewPane(QStackedWidget):
 
         suffix = Path(path).suffix.lower()
 
-        if kind in (FileKind.IMAGE, FileKind.SCREENSHOT) or suffix in (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-            ".bmp",
-            ".gif",
-        ):
+        if kind in (FileKind.IMAGE, FileKind.SCREENSHOT) or suffix in _IMAGE_SUFFIXES:
             self.image_view.load_image(path, name, size, mtime, reason)
             self.setCurrentIndex(1)
         elif kind == FileKind.PDF or suffix == ".pdf":
             page = int(loc) if loc > 0 else 1
             self.pdf_view.load_pdf(path, name, page, clean_query, size, mtime, reason)
             self.setCurrentIndex(2)
-        elif kind == FileKind.AUDIO or suffix in (".mp3", ".wav", ".ogg", ".flac", ".m4a"):
+        elif kind == FileKind.AUDIO or suffix in _AUDIO_SUFFIXES:
             self.audio_view.load_audio(path, name, loc, size, mtime, reason)
             self.setCurrentIndex(3)
-        elif kind == FileKind.VIDEO or suffix in (".mp4", ".mkv", ".webm", ".avi", ".mov"):
+        elif kind == FileKind.VIDEO or suffix in _VIDEO_SUFFIXES:
             self.video_view.load_video(path, name, loc, size, mtime, reason)
             self.setCurrentIndex(4)
-        elif kind == FileKind.CODE or (
-            kind != FileKind.DOC
-            and suffix
-            in (".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh")
-        ):
-            self.code_view.load_code(
-                path, name, focus, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=False
-            )
-            self.setCurrentIndex(5)
         else:
+            is_code_view = kind == FileKind.CODE or (kind != FileKind.DOC and suffix in _CODE_SUFFIXES)
+            target_line = focus if is_code_view else 0
             self.code_view.load_code(
-                path, name, 0, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=True
+                path,
+                name,
+                target_line,
+                size,
+                mtime,
+                reason,
+                query=clean_query,
+                excerpt=item.excerpt,
+                wrap_lines=not is_code_view,
             )
             self.setCurrentIndex(5)
 

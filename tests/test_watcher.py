@@ -216,8 +216,10 @@ def test_directory_move_updates_indexed_files(tmp_path: Path):
     assert db.find_by_path(old_f2_path) is None
     rec1 = db.find_by_path(new_f1_path)
     rec2 = db.find_by_path(new_f2_path)
-    assert rec1 is not None and rec1.id == fid1
-    assert rec2 is not None and rec2.id == fid2
+    assert rec1 is not None
+    assert rec1.id == fid1
+    assert rec2 is not None
+    assert rec2.id == fid2
 
     # New paths are added to the debounce bucket
     assert new_f1_path in bucket.paths
@@ -314,11 +316,13 @@ def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Pat
     # dir_a file moved
     assert db.find_by_path(str(file_a.resolve())) is None
     new_a = db.find_by_path(str((dir_b / "doc.md").resolve()))
-    assert new_a is not None and new_a.id == fid_a
+    assert new_a is not None
+    assert new_a.id == fid_a
 
     # dir-a file completely unaffected
     dash_rec = db.find_by_path(str(file_dash.resolve()))
-    assert dash_rec is not None and dash_rec.id == fid_dash
+    assert dash_rec is not None
+    assert dash_rec.id == fid_dash
 
 
 def test_debounce_bucket_has_pending_and_wake_event():
