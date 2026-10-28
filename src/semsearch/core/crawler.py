@@ -1,7 +1,7 @@
 """Filesystem crawler and candidate synchronization engine."""
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from semsearch.core.database import Database
@@ -69,8 +69,7 @@ def crawl_folder(
             dir_files = [
                 e
                 for e in dir_files
-                if classify_file(e.path, is_code_mode=is_code)
-                not in (FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO)
+                if classify_file(e.path, is_code_mode=is_code) not in (FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO)
             ]
 
         for entry in dir_files:
@@ -80,11 +79,9 @@ def crawl_folder(
                 excluded_folders=excluded_folders,
                 excluded_types=excluded_types,
             )
-            if skip:
-                continue
-
             kind = classify_file(entry.path, is_code_mode=is_code)
-            assert kind is not None
+            if skip or kind is None:
+                continue
 
             try:
                 stat = entry.stat(follow_symlinks=False)
@@ -120,7 +117,7 @@ def sync_candidates(
 
     if roots is not None:
         resolved_roots = [str(Path(r).resolve()) for r in roots]
-        vanished_roots = {r for r in resolved_roots if not os.path.exists(r)}
+        vanished_roots = {r for r in resolved_roots if not Path(r).exists()}
         existing_by_id = {f.id: f for r in resolved_roots for f in db.find_files_under(r)}
         existing_files = list(existing_by_id.values())
     else:
@@ -136,10 +133,7 @@ def sync_candidates(
     for candidate in candidates:
         if candidate.path in by_path:
             existing = by_path[candidate.path]
-            size_or_mtime_changed = (
-                existing.size != candidate.size
-                or abs(existing.mtime - candidate.mtime) > 0.001
-            )
+            size_or_mtime_changed = existing.size != candidate.size or abs(existing.mtime - candidate.mtime) > 0.001
             if size_or_mtime_changed:
                 db.requeue_file(existing.id, candidate)
                 report.changed += 1
@@ -153,11 +147,7 @@ def sync_candidates(
                 report.unchanged += 1
         elif (candidate.device, candidate.inode) in by_inode:
             existing = by_inode[(candidate.device, candidate.inode)]
-            if (
-                existing.path not in seen_paths
-                and existing.path not in moved_from
-                and not os.path.exists(existing.path)
-            ):
+            if existing.path not in seen_paths and existing.path not in moved_from and not Path(existing.path).exists():
                 db.move_file(existing.id, candidate.path)
                 moved_from.add(existing.path)
                 if (
@@ -182,10 +172,8 @@ def sync_candidates(
                 if not any(_is_under_root(existing.path, vr) for vr in vanished_roots):
                     db.delete_file(existing.id)
                     report.deleted += 1
-            else:
-                if not os.path.exists(existing.path):
-                    db.delete_file(existing.id)
-                    report.deleted += 1
+            elif not Path(existing.path).exists():
+                db.delete_file(existing.id)
+                report.deleted += 1
 
     return report
-

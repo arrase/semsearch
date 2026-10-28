@@ -3,12 +3,14 @@
 import base64
 import io
 import json
-from pathlib import Path
 import subprocess
 import wave
+from pathlib import Path
+
 import numpy as np
-from PIL import Image
 import pymupdf as fitz
+from PIL import Image
+
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.code import extract_code, extract_notebook
 from semsearch.extractors.docs import extract_doc
@@ -164,7 +166,7 @@ def test_video_extractor_ahash_shot_deduplication(tmp_path: Path) -> None:
         "aac",
         str(vid_path),
     ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    res = subprocess.run(cmd, capture_output=True, check=False)
     assert res.returncode == 0
 
     segs = extract_video(str(vid_path), sample_interval_sec=3.0, hash_threshold=4)
@@ -179,15 +181,7 @@ def test_video_extractor_ahash_shot_deduplication(tmp_path: Path) -> None:
 def test_code_extractor_and_notebook_strip_outputs(tmp_path: Path) -> None:
     # 1. Code stretching and focus definition
     code_path = tmp_path / "engine.py"
-    code = (
-        "# module doc\n"
-        "\n"
-        "def start_engine():\n"
-        "    return True\n"
-        "\n"
-        "class Motor:\n"
-        "    pass\n"
-    )
+    code = "# module doc\n\ndef start_engine():\n    return True\n\nclass Motor:\n    pass\n"
     code_path.write_text(code, encoding="utf-8")
 
     stretches = extract_code(str(code_path))

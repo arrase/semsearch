@@ -52,6 +52,7 @@ Phase 4 delivers the complete Linux desktop graphical user experience in PySide6
       AMBER: str = "#F59E0B"
       HIGHLIGHT_YELLOW: str = "rgba(250, 204, 21, 0.35)"
 
+
   def build_qss() -> str: ...
   def apply_theme(widget: QWidget) -> None: ...
   ```
@@ -210,7 +211,9 @@ Phase 4 delivers the complete Linux desktop graphical user experience in PySide6
 - **Public API**:
   ```python
   class SettingsDialog(QDialog):
-      def __init__(self, config_manager: ConfigManager, ollama_client: OllamaClient, parent: QWidget | None = None) -> None: ...
+      def __init__(
+          self, config_manager: ConfigManager, ollama_client: OllamaClient, parent: QWidget | None = None
+      ) -> None: ...
       def load_settings(self) -> None: ...
       def save_settings(self) -> None: ...
   ```
@@ -228,7 +231,9 @@ Phase 4 delivers the complete Linux desktop graphical user experience in PySide6
 - **Public API**:
   ```python
   class OnboardingWizard(QWizard):
-      def __init__(self, config_manager: ConfigManager, ollama_client: OllamaClient, parent: QWidget | None = None) -> None: ...
+      def __init__(
+          self, config_manager: ConfigManager, ollama_client: OllamaClient, parent: QWidget | None = None
+      ) -> None: ...
   ```
 
 ### 8. Global Hotkey Interception (`src/semsearch/gui/hotkey.py`)
@@ -241,6 +246,7 @@ Phase 4 delivers the complete Linux desktop graphical user experience in PySide6
   ```python
   class HotkeyListener(QObject):
       hotkey_triggered = Signal()
+
       def __init__(self, shortcut: str = "<ctrl>+<shift>+<space>") -> None: ...
       def start(self) -> None: ...
       def stop(self) -> None: ...

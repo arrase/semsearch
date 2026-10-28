@@ -1,12 +1,12 @@
 """Unit and widget tests for multimodal preview components."""
 
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
-from docx import Document
-from PIL import Image
 import pymupdf
 import pytest
+from docx import Document
+from PIL import Image
 from PySide6.QtGui import QTextFormat
 from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
@@ -203,7 +203,9 @@ def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication
 
     # 5. RTF format
     rtf_path = tmp_path / "sample.rtf"
-    rtf_path.write_text(r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}}\f0\fs20 RTF extracted body text.\par}", encoding="utf-8")
+    rtf_path.write_text(
+        r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}}\f0\fs20 RTF extracted body text.\par}", encoding="utf-8"
+    )
     widget.load_code(str(rtf_path), "sample.rtf")
     assert "RTF extracted body text." in widget.editor.toPlainText()
 
@@ -239,7 +241,9 @@ def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
 def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApplication):
     """Verify FileKind.DOC (.md) omits full-width yellow line highlight while FileKind.CODE with line > 0 retains it."""
     md_path = tmp_path / "Bienvenido.md"
-    md_path.write_text("Esta es su nueva *bóveda*.\n\nSegunda línea con contenido sobre un pozo profundo.\n", encoding="utf-8")
+    md_path.write_text(
+        "Esta es su nueva *bóveda*.\n\nSegunda línea con contenido sobre un pozo profundo.\n", encoding="utf-8"
+    )
 
     pane = PreviewPane()
 
@@ -274,8 +278,8 @@ def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
     revealed = []
     card_triggers = []
     pane_triggers = []
-    monkeypatch.setattr("semsearch.gui.preview.open_file", lambda p: opened.append(p))
-    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", lambda p: revealed.append(p))
+    monkeypatch.setattr("semsearch.gui.preview.open_file", opened.append)
+    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", revealed.append)
 
     txt_path = tmp_path / "notes.txt"
     txt_path.write_text("Hello world", encoding="utf-8")
@@ -352,6 +356,3 @@ def test_preview_pane_clear_releases_resources(tmp_path: Path, qapp: QApplicatio
     assert pane.video_view._current_pos == 0.0
     assert pane.code_view.editor.toPlainText() == ""
     assert pane.code_view.editor.extraSelections() == []
-
-
-

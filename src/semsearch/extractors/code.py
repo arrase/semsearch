@@ -1,8 +1,9 @@
 """Source code and Jupyter notebook extractor."""
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
+
 from semsearch.core.code_lookup import code_summary
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
@@ -159,4 +160,3 @@ def extract_notebook(path: str, chunk_chars: int = 1800) -> list[ExtractedSegmen
         )
 
     return segments
-

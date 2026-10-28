@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+
 from semsearch.gui.app import SemSearchApp, forward_ipc_command
 from semsearch.i18n import tr
 

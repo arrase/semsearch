@@ -1,14 +1,14 @@
 """Unit and integration tests for SemSearchApp shell, IPC server, hotkeys, and CLI dispatcher."""
 
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import shiboken6
 from pynput.keyboard import HotKey
 from PySide6.QtNetwork import QLocalServer
 from PySide6.QtWidgets import QApplication
-import shiboken6
 
 from semsearch.config import AppConfig, ConfigManager
 from semsearch.core.database import Database
@@ -275,4 +275,3 @@ def test_app_trigger_reindex_rapid_clicks_skips_duplicate():
     assert t2 is not None and t2 is not t1
     t2.join(timeout=2.0)
     assert not t2.is_alive()
-

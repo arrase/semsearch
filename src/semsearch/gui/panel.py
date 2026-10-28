@@ -1,7 +1,9 @@
 """Quick search floating panel with instant lexical FTS5, debounced semantic ranking, and preview."""
 
-from pathlib import Path
+import contextlib
 import threading
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
@@ -31,7 +33,6 @@ from semsearch.services.actions import (
     reveal_in_file_manager,
 )
 from semsearch.services.searcher import ResultSet, SearchService
-
 
 KIND_GROUP_NAMES = {
     FileKind.DOC: "Documents",
@@ -132,11 +133,7 @@ class SearchPanel(QWidget):
         self.search_service = search_service
         self.config = app_config or AppConfig()
 
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.is_expanded = False
@@ -184,9 +181,7 @@ class SearchPanel(QWidget):
         self.search_icon.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; background: transparent; border: none;")
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText(
-            tr("Search files, documents, code, media... (prefix 'code:' for source)")
-        )
+        self.search_input.setPlaceholderText(tr("Search files, documents, code, media... (prefix 'code:' for source)"))
         self.search_input.setFixedHeight(38)
         self.search_input.setFont(get_ui_font(14))
         self.search_input.setStyleSheet(
@@ -249,9 +244,7 @@ class SearchPanel(QWidget):
         )
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(12, 0, 12, 0)
-        self.footer_hint = QLabel(
-            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss")
-        )
+        self.footer_hint = QLabel(tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"))
         self.footer_hint.setFont(get_ui_font(10))
         self.footer_hint.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
         footer_layout.addWidget(self.footer_hint)
@@ -266,12 +259,8 @@ class SearchPanel(QWidget):
 
     def retranslate_ui(self) -> None:
         """Refresh translated panel strings."""
-        self.search_input.setPlaceholderText(
-            tr("Search files, documents, code, media... (prefix 'code:' for source)")
-        )
-        self.footer_hint.setText(
-            tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss")
-        )
+        self.search_input.setPlaceholderText(tr("Search files, documents, code, media... (prefix 'code:' for source)"))
+        self.footer_hint.setText(tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"))
         self.preview_pane.retranslate_ui()
         if self._current_result_set.ranked or self._current_result_set.weaker:
             self._populate_list(self._current_result_set)
@@ -487,20 +476,20 @@ class SearchPanel(QWidget):
             if key == Qt.Key.Key_Down:
                 self._move_selection(1)
                 return True
-            elif key == Qt.Key.Key_Up:
+            if key == Qt.Key.Key_Up:
                 self._move_selection(-1)
                 return True
-            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._activate_current_item(modifiers)
                 return True
-            elif key == Qt.Key.Key_Escape:
+            if key == Qt.Key.Key_Escape:
                 if self.search_input.text():
                     self.search_input.clear()
                     self._set_geometry_collapsed()
                 else:
                     self.hide_panel()
                 return True
-            elif key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
+            if key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
                 self._copy_selected_path()
                 return True
 
@@ -520,7 +509,7 @@ class SearchPanel(QWidget):
                 break
             next_row += step
 
-    def _activate_current_item(self, modifiers: Qt.KeyboardModifiers) -> None:
+    def _activate_current_item(self, modifiers: Qt.KeyboardModifier) -> None:
         current = self.result_list.currentItem()
         if current is None:
             return
@@ -550,10 +539,9 @@ class SearchPanel(QWidget):
         self.search_input.setText(query)
 
     def _preload_model(self) -> None:
-        try:
-            self.search_service.ollama.preload(self.search_service.model)
-        except OllamaError:
-            pass
+        if self.search_service.ollama is not None:
+            with contextlib.suppress(OllamaError):
+                self.search_service.ollama.preload(self.search_service.model)
 
     def show_panel(self) -> None:
         """Present search panel with focus."""

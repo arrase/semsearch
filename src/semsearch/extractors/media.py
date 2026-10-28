@@ -2,13 +2,14 @@
 
 import base64
 import io
-import os
-from pathlib import Path
 import subprocess
 import tempfile
 import wave
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
+
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
 
@@ -51,7 +52,7 @@ def extract_audio(
         "s16le",
         "pipe:1",
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.run(cmd, capture_output=True, check=False)
     raw_bytes = proc.stdout
 
     if not raw_bytes:
@@ -120,9 +121,9 @@ def extract_video(
             f"fps=1/{sample_interval_sec},scale='min(1024,iw)':-2",
             "-q:v",
             "2",
-            os.path.join(tmp_dir, "frame_%05d.jpg"),
+            str(Path(tmp_dir) / "frame_%05d.jpg"),
         ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, capture_output=True, check=False)
 
         frame_files = sorted(Path(tmp_dir).glob("frame_*.jpg"))
         prev_hash: int | None = None

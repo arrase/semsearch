@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from unittest.mock import MagicMock
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -75,9 +76,7 @@ def test_settings_dialog_load_and_tabs(tmp_path: Path, mock_ollama, mock_db, qap
     assert dialog.general_tab.hotkey_edit.text() == "ctrl+shift+space"
 
 
-def test_settings_dialog_test_connection_multimodal_filtering(
-    tmp_path: Path, mock_ollama, mock_db, qapp: QApplication
-):
+def test_settings_dialog_test_connection_multimodal_filtering(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
     """Verify testing connection populates model dropdown strictly with multimodal models."""
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
@@ -87,10 +86,7 @@ def test_settings_dialog_test_connection_multimodal_filtering(
     dialog.storage_tab.test_btn.click()
     mock_ollama.list_multimodal_models.assert_called_once()
 
-    items = [
-        dialog.storage_tab.model_combo.itemText(i)
-        for i in range(dialog.storage_tab.model_combo.count())
-    ]
+    items = [dialog.storage_tab.model_combo.itemText(i) for i in range(dialog.storage_tab.model_combo.count())]
     assert items == ["embeddinggemma-2", "llava"]
     assert dialog.storage_tab.model_combo.currentText() == "embeddinggemma-2"
 
@@ -190,9 +186,7 @@ def test_settings_dialog_vacuum_both_databases(tmp_path: Path, mock_ollama, qapp
     mock_code_db.vacuum.assert_called_once()
 
 
-def test_settings_dialog_reindex_requested_signal_forwarding(
-    tmp_path: Path, mock_ollama, mock_db, qapp: QApplication
-):
+def test_settings_dialog_reindex_requested_signal_forwarding(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
     """Verify clicking reindex button emits reindex_requested signal from tab and dialog."""
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
@@ -262,9 +256,7 @@ def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama, qapp
     assert "8.0 KB" in dialog.storage_tab.stats_label.text()
 
 
-def test_settings_dialog_num_ctx_validation_against_model(
-    tmp_path: Path, mock_ollama, mock_db, qapp: QApplication
-):
+def test_settings_dialog_num_ctx_validation_against_model(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
     """Verify context window validation against Ollama model's maximum context_length."""
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
@@ -289,5 +281,3 @@ def test_settings_dialog_num_ctx_validation_against_model(
     dialog.storage_tab.num_ctx_edit.setText("4096")
     dialog.save_settings()
     assert cfg_mgr.config.num_ctx == 4096
-
-

@@ -2,11 +2,13 @@
 
 import ast
 import json
-from pathlib import Path
 import wave
+from pathlib import Path
+
 import docx
-from PIL import Image
 import pymupdf as fitz
+from PIL import Image
+
 from semsearch.core.search_text import has_words
 from semsearch.core.types import SegmentKind
 from semsearch.extractors.media import extract_audio, extract_video

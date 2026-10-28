@@ -388,7 +388,6 @@ def build_qss() -> str:
     """
 
 
-
 def apply_theme(widget: QWidget) -> None:
     """Apply standard QSS theme to a widget or window."""
     widget.setStyleSheet(build_qss())

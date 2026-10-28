@@ -3,7 +3,7 @@
 import ast
 from pathlib import Path
 from unittest.mock import MagicMock
-import pytest
+
 from PySide6.QtWidgets import QApplication
 
 from semsearch.config import AppConfig, ConfigManager
@@ -39,19 +39,14 @@ def test_zero_ocr_architectural_invariant() -> None:
                     assert name_root not in BANNED_OCR_LIBRARIES, (
                         f"Banned OCR library {alias.name} imported in {py_file}"
                     )
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    mod_root = node.module.split(".")[0].lower()
-                    assert mod_root not in BANNED_OCR_LIBRARIES, (
-                        f"Banned OCR module {node.module} imported in {py_file}"
-                    )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mod_root = node.module.split(".")[0].lower()
+                assert mod_root not in BANNED_OCR_LIBRARIES, f"Banned OCR module {node.module} imported in {py_file}"
 
         # Full source string audit
         lower_content = content.lower()
         for banned in BANNED_OCR_LIBRARIES:
-            assert banned not in lower_content, (
-                f"Occurrence of banned OCR string {banned} detected in {py_file}"
-            )
+            assert banned not in lower_content, f"Occurrence of banned OCR string {banned} detected in {py_file}"
 
 
 def test_multimodal_model_default_and_filtering_invariant(tmp_path: Path) -> None:

@@ -1,11 +1,13 @@
 """Document and text extractor supporting txt, md, html, docx, odt, and rtf."""
 
-from html.parser import HTMLParser
-from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from html.parser import HTMLParser
+from pathlib import Path
+
 from docx import Document
+
 from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 

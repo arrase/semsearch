@@ -1,7 +1,6 @@
 """Tests for PowerScheduler, Linux power supply detection, and operating hours scheduling."""
 
 from pathlib import Path
-import pytest
 
 from semsearch.config import AppConfig
 from semsearch.services.scheduler import PowerScheduler
@@ -65,7 +64,7 @@ def test_operating_hours_daytime_schedule():
     config = AppConfig(
         index_schedule_enabled=True,
         index_schedule_start=540,  # 09:00
-        index_schedule_end=1080,   # 18:00
+        index_schedule_end=1080,  # 18:00
     )
     scheduler = PowerScheduler(dummy_indexer, config)
 
@@ -84,7 +83,7 @@ def test_operating_hours_overnight_schedule():
     config = AppConfig(
         index_schedule_enabled=True,
         index_schedule_start=1320,  # 22:00
-        index_schedule_end=420,     # 07:00
+        index_schedule_end=420,  # 07:00
     )
     scheduler = PowerScheduler(dummy_indexer, config)
 

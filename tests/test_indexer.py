@@ -1,9 +1,9 @@
 """Tests for IndexService, priority queue tiers, pipelining, and partial continuation."""
 
-from pathlib import Path
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
-import numpy as np
+
 import pytest
 
 from semsearch.config import AppConfig
@@ -22,7 +22,6 @@ from semsearch.core.vectors import DIM
 from semsearch.services.indexer import IndexQueueTier, IndexService, _code_place
 
 
-
 class MockOllama(OllamaClient):
     def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
         return [[0.1] * DIM for _ in inputs]
@@ -33,7 +32,9 @@ def test_process_file_with_ollama_vectors(tmp_path: Path):
     doc_path.write_text("# Chapter 1\nThis is a long document with interesting notes.", encoding="utf-8")
 
     db = Database(tmp_path / "index.sqlite")
-    cand = Candidate(path=str(doc_path), kind=FileKind.DOC, size=len(doc_path.read_bytes()), mtime=1.0, inode=1, device=1)
+    cand = Candidate(
+        path=str(doc_path), kind=FileKind.DOC, size=len(doc_path.read_bytes()), mtime=1.0, inode=1, device=1
+    )
     fid = db.insert_file(cand)
 
     service = IndexService(db=db, ollama=MockOllama())
@@ -46,7 +47,7 @@ def test_process_file_with_ollama_vectors(tmp_path: Path):
     updated_rec = db.find_by_path(str(doc_path))
     assert updated_rec.state == FileState.DONE
 
-    seg_ids, file_ids, modalities, mat = db.get_all_vectors()
+    seg_ids, file_ids, _modalities, mat = db.get_all_vectors()
     assert len(seg_ids) >= 1
     assert fid in file_ids
     assert mat.shape[0] == len(seg_ids)
@@ -84,13 +85,13 @@ def test_multi_tier_priority_ordering(tmp_path: Path):
     service.enqueue_file(str(p_new), tier=IndexQueueTier.NEW_FILES)
 
     # 1st: Tier 1 (NEW_FILES)
-    rec1, target_db1, tier1 = service._get_next_file()
+    rec1, _target_db1, tier1 = service._get_next_file()
     assert tier1 == IndexQueueTier.NEW_FILES
     assert rec1.id == fid_new
     db.update_file_state(fid_new, FileState.DONE)
 
     # 2nd: Tier 2 (BACKFILL general)
-    rec2, target_db2, tier2 = service._get_next_file()
+    rec2, _target_db2, tier2 = service._get_next_file()
     assert tier2 == IndexQueueTier.BACKFILL
     assert rec2.id == fid_gen
 
@@ -98,14 +99,14 @@ def test_multi_tier_priority_ordering(tmp_path: Path):
     db.update_file_state(fid_gen, FileState.DONE)
 
     # 3rd: Tier 3 (CODE)
-    rec3, target_db3, tier3 = service._get_next_file()
+    rec3, _target_db3, tier3 = service._get_next_file()
     assert tier3 == IndexQueueTier.CODE
     assert rec3.id == fid_code
 
     code_db.update_file_state(fid_code, FileState.DONE)
 
     # 4th: Tier 4 (LONG_FILES)
-    rec4, target_db4, tier4 = service._get_next_file()
+    rec4, _target_db4, tier4 = service._get_next_file()
     assert tier4 == IndexQueueTier.LONG_FILES
     assert rec4.id == fid_part
 
@@ -117,7 +118,7 @@ def test_partial_continuation_flow(tmp_path: Path, monkeypatch):
     pdf_file.write_bytes(b"%PDF-1.4 mock")
 
     cand = Candidate(str(pdf_file), FileKind.PDF, 1000, 1.0, 10, 1)
-    fid = db.insert_file(cand)
+    db.insert_file(cand)
 
     call_count = 0
 
@@ -125,11 +126,28 @@ def test_partial_continuation_flow(tmp_path: Path, monkeypatch):
         nonlocal call_count
         call_count += 1
         if start_page == 0:
-            segs = [ExtractedSegment(SegmentKind.PAGE, Modality.TEXT, loc=float(i + 1), excerpt=f"Page {i+1}", payload=f"Page text {i+1}") for i in range(30)]
+            segs = [
+                ExtractedSegment(
+                    SegmentKind.PAGE,
+                    Modality.TEXT,
+                    loc=float(i + 1),
+                    excerpt=f"Page {i + 1}",
+                    payload=f"Page text {i + 1}",
+                )
+                for i in range(30)
+            ]
             return segs, False
-        else:
-            segs = [ExtractedSegment(SegmentKind.PAGE, Modality.TEXT, loc=float(i + 1), excerpt=f"Page {i+1}", payload=f"Page text {i+1}") for i in range(30, 50)]
-            return segs, True
+        segs = [
+            ExtractedSegment(
+                SegmentKind.PAGE,
+                Modality.TEXT,
+                loc=float(i + 1),
+                excerpt=f"Page {i + 1}",
+                payload=f"Page text {i + 1}",
+            )
+            for i in range(30, 50)
+        ]
+        return segs, True
 
     monkeypatch.setattr("semsearch.services.indexer.extract_pdf", mock_extract_pdf)
 
@@ -191,7 +209,9 @@ def test_modified_file_requeuing(tmp_path: Path):
         device=st.st_dev,
     )
     fid = db.insert_file(cand)
-    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "initial content", None, "modified.txt", "initial content", "")
+    db.insert_segment(
+        fid, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "initial content", None, "modified.txt", "initial content", ""
+    )
     db.update_file_state(fid, FileState.DONE)
 
     service = IndexService(db=db)
@@ -265,7 +285,9 @@ def test_crawl_and_sync_resets_activity_to_idle(tmp_path: Path):
     code_folder.mkdir()
     (code_folder / "app.py").write_text("print(1)", encoding="utf-8")
     code_db = Database(tmp_path / "code.sqlite")
-    service_with_code = IndexService(db=db, code_db=code_db, config=AppConfig(code_folders=[str(code_folder)], code_enabled=True))
+    service_with_code = IndexService(
+        db=db, code_db=code_db, config=AppConfig(code_folders=[str(code_folder)], code_enabled=True)
+    )
     service_with_code.crawl_and_sync(is_code=True)
     assert service_with_code.get_status().activity == EngineActivity.IDLE
     assert code_db.stats()["files"] == 1
@@ -437,12 +459,16 @@ def test_get_next_file_code_db_skips_non_pending_without_affecting_general_db(tm
     p_gen = tmp_path / "doc.txt"
     p_gen.write_text("General doc", encoding="utf-8")
     st_gen = p_gen.stat()
-    fid_gen = db.insert_file(Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev))
+    fid_gen = db.insert_file(
+        Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev)
+    )
 
     p_code = code_folder / "script.py"
     p_code.write_text("print('test')", encoding="utf-8")
     st_code = p_code.stat()
-    fid_code = code_db.insert_file(Candidate(str(p_code), FileKind.CODE, st_code.st_size, st_code.st_mtime, st_code.st_ino, st_code.st_dev))
+    fid_code = code_db.insert_file(
+        Candidate(str(p_code), FileKind.CODE, st_code.st_size, st_code.st_mtime, st_code.st_ino, st_code.st_dev)
+    )
 
     assert fid_gen == 1
     assert fid_code == 1
@@ -471,7 +497,9 @@ def test_get_next_file_code_file_skips_when_code_db_none_without_matching_genera
     p_gen = tmp_path / "general.md"
     p_gen.write_text("General content", encoding="utf-8")
     st_gen = p_gen.stat()
-    fid_gen = db.insert_file(Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev))
+    fid_gen = db.insert_file(
+        Candidate(str(p_gen), FileKind.DOC, st_gen.st_size, st_gen.st_mtime, st_gen.st_ino, st_gen.st_dev)
+    )
     assert fid_gen == 1
 
     service = IndexService(db=db, code_db=None)
@@ -540,12 +568,9 @@ def test_process_file_ollama_embed_failure_marks_failed(tmp_path: Path):
     assert updated_rec.state == FileState.FAILED
     assert "Ollama connection failed" in updated_rec.detail
 
-    content_segments = [
-        s
-        for s in db._conn.execute(
-            "SELECT * FROM segments WHERE file = ? AND kind != 'name'", (fid,)
-        ).fetchall()
-    ]
+    content_segments = list(
+        db._conn.execute("SELECT * FROM segments WHERE file = ? AND kind != 'name'", (fid,)).fetchall()
+    )
     assert len(content_segments) == 0
 
 
@@ -592,9 +617,7 @@ def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeyp
     assert "Unexpected extraction crash" in updated_rec.detail
 
 
-def test_worker_loop_code_db_process_file_exception_marks_failed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_worker_loop_code_db_process_file_exception_marks_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     code_folder = tmp_path / "code"
     code_folder.mkdir()
     code_path = code_folder / "crash.py"
@@ -739,4 +762,3 @@ def test_get_status_skips_sqlite_stats_when_idle(tmp_path: Path, monkeypatch: py
     status_active = service.get_status()
     assert status_active.activity == EngineActivity.INDEXING
     assert stats_calls == 1
-

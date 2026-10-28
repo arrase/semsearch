@@ -1,6 +1,7 @@
 """Ollama client and multimodal model discovery for SemSearch."""
 
 from typing import Any
+
 import httpx
 
 
@@ -146,12 +147,16 @@ class OllamaClient:
         modelfile = str(info.get("modelfile") or "")
         for line in modelfile.splitlines():
             parts = line.strip().split()
-            if len(parts) >= 3 and parts[0].upper() == "PARAMETER" and parts[1].lower() == "num_ctx":
-                if parts[2].isdigit():
-                    max_ctx = int(parts[2])
-                    self._context_length_cache[cache_key] = max_ctx
-                    self._context_length_cache[direct_key] = max_ctx
-                    return max_ctx
+            if (
+                len(parts) >= 3
+                and parts[0].upper() == "PARAMETER"
+                and parts[1].lower() == "num_ctx"
+                and parts[2].isdigit()
+            ):
+                max_ctx = int(parts[2])
+                self._context_length_cache[cache_key] = max_ctx
+                self._context_length_cache[direct_key] = max_ctx
+                return max_ctx
 
         return None
 
@@ -179,7 +184,9 @@ class OllamaClient:
             return True
 
         name = model_name or str(info.get("name") or info.get("model") or "")
-        return any(indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "llava", "bakllava"))
+        return any(
+            indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "llava", "bakllava")
+        )
 
     def is_multimodal(self, model: str | dict[str, Any], tag_info: dict[str, Any] | None = None) -> bool:
         """Inspect capabilities, details, or architecture to check if a model is multimodal."""

@@ -1,6 +1,7 @@
 """Unit tests for GUI visual design tokens, fonts, and stylesheets."""
 
 from PySide6.QtWidgets import QApplication, QWidget
+
 from semsearch.gui.theme import (
     ThemeColors,
     ThemeLayout,

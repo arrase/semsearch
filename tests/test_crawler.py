@@ -1,11 +1,12 @@
 """Unit tests for crawler, rules, and synchronization reconciliation."""
 
 import os
-from pathlib import Path
 import shutil
+from pathlib import Path
+
 import pytest
 
-from semsearch.core.crawler import SyncReport, crawl_folder, sync_candidates
+from semsearch.core.crawler import crawl_folder, sync_candidates
 from semsearch.core.database import Database
 from semsearch.core.rules import (
     classify_file,
@@ -14,7 +15,7 @@ from semsearch.core.rules import (
     is_secret,
     should_skip,
 )
-from semsearch.core.types import Candidate, FileKind, FileState, Modality, SegmentKind
+from semsearch.core.types import FileKind, FileState, Modality, SegmentKind
 
 
 @pytest.fixture
@@ -399,4 +400,3 @@ def test_crawl_and_sync_with_excluded_folders_and_types(db: Database, tmp_path: 
         "keep.md": FileKind.DOC,
         "Captura de pantalla_20260927.png": FileKind.SCREENSHOT,
     }
-

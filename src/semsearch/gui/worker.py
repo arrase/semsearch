@@ -1,6 +1,7 @@
 """Background worker thread for asynchronous search queries."""
 
 import threading
+
 from PySide6.QtCore import QThread, Signal
 
 from semsearch.services.searcher import SearchService

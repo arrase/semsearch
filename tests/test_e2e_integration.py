@@ -3,12 +3,12 @@
 import ast
 import base64
 import io
-from pathlib import Path
 import subprocess
-from unittest.mock import MagicMock
+from pathlib import Path
+
 import numpy as np
-from PIL import Image
 import pytest
+from PIL import Image
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
@@ -16,7 +16,6 @@ from semsearch.core.search_text import is_lookup_query
 from semsearch.core.types import (
     Candidate,
     FileKind,
-    FileState,
     Modality,
     SearchHit,
     SegmentKind,
@@ -134,7 +133,7 @@ def _build_and_index_testbed(
 
 
 def test_testbed_indexing_e2e(tmp_path: Path) -> None:
-    db, code_db, _, files = _build_and_index_testbed(tmp_path)
+    db, code_db, _, _files = _build_and_index_testbed(tmp_path)
 
     # All files indexed
     assert db.stats()["files"] == 9
@@ -172,22 +171,17 @@ def test_zero_ocr_invariant() -> None:
                     assert name_root not in BANNED_OCR_LIBRARIES, (
                         f"Banned OCR library {alias.name} imported in {py_file}"
                     )
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    mod_root = node.module.split(".")[0].lower()
-                    assert mod_root not in BANNED_OCR_LIBRARIES, (
-                        f"Banned OCR module {node.module} imported in {py_file}"
-                    )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mod_root = node.module.split(".")[0].lower()
+                assert mod_root not in BANNED_OCR_LIBRARIES, f"Banned OCR module {node.module} imported in {py_file}"
 
         lower_content = content.lower()
         for banned in BANNED_OCR_LIBRARIES:
-            assert banned not in lower_content, (
-                f"Banned OCR keyword {banned} found in {py_file}"
-            )
+            assert banned not in lower_content, f"Banned OCR keyword {banned} found in {py_file}"
 
 
 def test_cross_modal_and_keyword_search_e2e(tmp_path: Path) -> None:
-    db, code_db, searcher, files = _build_and_index_testbed(tmp_path)
+    _db, _code_db, searcher, _files = _build_and_index_testbed(tmp_path)
 
     # 1. Text-to-Image visual query
     res_img = searcher.search("photo sunset golden landscape")
@@ -214,7 +208,7 @@ def test_cross_modal_and_keyword_search_e2e(tmp_path: Path) -> None:
 
 
 def test_code_search_and_definition_anchor_e2e(tmp_path: Path) -> None:
-    db, code_db, searcher, files = _build_and_index_testbed(tmp_path)
+    _db, _code_db, searcher, _files = _build_and_index_testbed(tmp_path)
 
     # Function search with definition line anchor
     res_fn = searcher.search("code: retry_with_backoff")
@@ -239,7 +233,7 @@ def test_code_search_and_definition_anchor_e2e(tmp_path: Path) -> None:
 
 
 def test_lookup_serial_query_e2e(tmp_path: Path) -> None:
-    db, code_db, searcher, files = _build_and_index_testbed(tmp_path)
+    _db, _code_db, searcher, _files = _build_and_index_testbed(tmp_path)
 
     # Serial query triggers lookup detection
     assert is_lookup_query("ERR-4096-FAIL") is True
@@ -258,11 +252,22 @@ def test_lookup_serial_query_e2e(tmp_path: Path) -> None:
 
 
 def test_weaker_matches_folding_e2e(tmp_path: Path) -> None:
-    db, code_db, searcher, files = _build_and_index_testbed(tmp_path)
+    db, _code_db, searcher, _files = _build_and_index_testbed(tmp_path)
 
     cand = Candidate(path="/tmp/weak_doc.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=888, device=888)
     fid = db.insert_file(cand)
-    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 1.0, 1.0, "Executive Strategy overview report", None, "weak_doc.txt", "Executive Strategy overview report", "")
+    db.insert_segment(
+        fid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "Executive Strategy overview report",
+        None,
+        "weak_doc.txt",
+        "Executive Strategy overview report",
+        "",
+    )
 
     res = searcher.search("Executive Strategy Brief client deployment")
     assert isinstance(res, ResultSet)

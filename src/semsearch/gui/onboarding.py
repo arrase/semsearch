@@ -1,6 +1,7 @@
 """Five-step modal onboarding wizard for initial SemSearch setup."""
 
 from pathlib import Path
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -137,8 +138,7 @@ class FoldersPage(QWizardPage):
 
     def get_selected_folders(self) -> list[str]:
         folders: list[str] = [path for path, cb in self.folder_checkboxes.items() if cb.isChecked()]
-        for i in range(self.custom_list.count()):
-            folders.append(self.custom_list.item(i).text())
+        folders.extend(self.custom_list.item(i).text() for i in range(self.custom_list.count()))
         return folders
 
 
@@ -202,9 +202,7 @@ class ModelPage(QWizardPage):
                 self.status_label.setStyleSheet(f"color: {ThemeColors.LEAF};")
             else:
                 self.model_combo.addItem("embeddinggemma-2")
-                self.status_label.setText(
-                    tr("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled.")
-                )
+                self.status_label.setText(tr("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled."))
                 self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
         except Exception as e:
             self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
@@ -304,14 +302,14 @@ class CompletionPage(QWizardPage):
 
         shortcut_label = QLabel(tr("Press  Ctrl + Shift + Space  anytime to open Quick Search"))
         shortcut_label.setFont(get_ui_font(14))
-        shortcut_label.setStyleSheet(f"color: {ThemeColors.BRAND_START}; font-weight: bold; border: none; background: transparent;")
+        shortcut_label.setStyleSheet(
+            f"color: {ThemeColors.BRAND_START}; font-weight: bold; border: none; background: transparent;"
+        )
 
         hotkey_layout.addWidget(title)
         hotkey_layout.addWidget(shortcut_label)
 
-        tray_tip = QLabel(
-            tr("SemSearch will now run in your system tray and start indexing your selected folders.")
-        )
+        tray_tip = QLabel(tr("SemSearch will now run in your system tray and start indexing your selected folders."))
         tray_tip.setFont(get_ui_font(12))
         tray_tip.setWordWrap(True)
 
@@ -344,10 +342,10 @@ class OnboardingWizard(QWizard):
         self.code_page = CodePage()
         self.completion_page = CompletionPage()
 
-        self.addPage(self.welcome_page)     # 0
-        self.addPage(self.folders_page)     # 1
-        self.addPage(self.model_page)       # 2
-        self.addPage(self.code_page)        # 3
+        self.addPage(self.welcome_page)  # 0
+        self.addPage(self.folders_page)  # 1
+        self.addPage(self.model_page)  # 2
+        self.addPage(self.code_page)  # 3
         self.addPage(self.completion_page)  # 4
 
         apply_theme(self)

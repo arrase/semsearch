@@ -1,13 +1,14 @@
 """Multimodal synthetic testbed generator for end-to-end testing."""
 
 import json
-from pathlib import Path
 import subprocess
 import wave
+from pathlib import Path
+
 import docx
 import numpy as np
-from PIL import Image, ImageDraw
 import pymupdf as fitz
+from PIL import Image, ImageDraw
 
 
 def create_synthetic_image(path: Path) -> Path:

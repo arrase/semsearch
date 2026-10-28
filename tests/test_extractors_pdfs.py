@@ -2,7 +2,9 @@
 
 import base64
 from pathlib import Path
+
 import pymupdf as fitz
+
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.pdfs import extract_pdf
 

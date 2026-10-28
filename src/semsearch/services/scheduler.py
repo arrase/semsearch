@@ -1,8 +1,8 @@
 """Linux power supply detection and operating hours scheduler."""
 
+import threading
 from datetime import datetime
 from pathlib import Path
-import threading
 
 from semsearch.config import AppConfig
 from semsearch.services.indexer import IndexService
@@ -37,11 +37,13 @@ class PowerScheduler:
         for dev_path in self.sysfs_path.iterdir():
             type_file = dev_path / "type"
             status_file = dev_path / "status"
-            if type_file.is_file() and type_file.read_text(encoding="utf-8").strip() == "Battery":
-                if status_file.is_file():
-                    status = status_file.read_text(encoding="utf-8").strip()
-                    if status == "Discharging":
-                        return True
+            if (
+                type_file.is_file()
+                and type_file.read_text(encoding="utf-8").strip() == "Battery"
+                and status_file.is_file()
+                and status_file.read_text(encoding="utf-8").strip() == "Discharging"
+            ):
+                return True
         return False
 
     def is_within_schedule(self, now_minutes: int | None = None) -> bool:

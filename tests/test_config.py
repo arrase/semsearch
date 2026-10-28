@@ -1,7 +1,7 @@
 """Unit tests for SemSearch configuration and core types."""
 
 from pathlib import Path
-import pytest
+
 from semsearch.config import AppConfig, ConfigManager
 from semsearch.core.types import (
     Candidate,
@@ -170,4 +170,3 @@ def test_config_manager_filters_unknown_fields(tmp_path: Path):
     mgr = ConfigManager(config_path=cfg_file)
     assert mgr.config.model == "test-embed"
     assert not hasattr(mgr.config, "extra_key")
-
