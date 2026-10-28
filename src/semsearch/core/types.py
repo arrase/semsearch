@@ -1,12 +1,12 @@
 """Core domain data types, enums, and models for SemSearch."""
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from semsearch.i18n import tr
 
 
-class FileKind(str, Enum):
+class FileKind(StrEnum):
     """File classification kind."""
 
     SCREENSHOT = "screenshot"
@@ -18,7 +18,7 @@ class FileKind(str, Enum):
     CODE = "code"
 
 
-class SegmentKind(str, Enum):
+class SegmentKind(StrEnum):
     """Searchable segment piece kind."""
 
     NAME = "name"
@@ -33,7 +33,7 @@ class SegmentKind(str, Enum):
     OCR = "ocr"
 
 
-class Modality(str, Enum):
+class Modality(StrEnum):
     """Modality producing segment embedding vector."""
 
     NONE = "none"
@@ -42,7 +42,7 @@ class Modality(str, Enum):
     AUDIO = "audio"
 
 
-class FileState(str, Enum):
+class FileState(StrEnum):
     """Lifecycle indexing state of a file."""
 
     PENDING = "pending"
@@ -52,7 +52,7 @@ class FileState(str, Enum):
     FAILED = "failed"
 
 
-class EngineActivity(str, Enum):
+class EngineActivity(StrEnum):
     """Current engine activity status."""
 
     STARTING = "starting"

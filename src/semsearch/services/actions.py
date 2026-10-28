@@ -1,8 +1,8 @@
 """Linux desktop deep link actions, media playback, and editor integration."""
 
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 from semsearch.config import AppConfig
 from semsearch.core.types import FileKind, SearchHit
@@ -99,6 +99,7 @@ def reveal_in_file_manager(path: str) -> bool:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
             if res.returncode == 0:
                 return True

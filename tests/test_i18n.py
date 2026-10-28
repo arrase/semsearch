@@ -1,8 +1,9 @@
 """Comprehensive unit and widget tests for i18n support across individual language modules."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 from unittest.mock import MagicMock
+
 import pytest
 from PySide6.QtWidgets import QApplication
 

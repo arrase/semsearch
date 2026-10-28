@@ -3,9 +3,10 @@
 import base64
 import io
 from pathlib import Path
+
 import numpy as np
-from PIL import Image
 import pytest
+from PIL import Image
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
@@ -112,8 +113,9 @@ def indexed_testbed(tmp_path: Path):
 
 # Section 3: Cross-Modal & Semantic Search Fidelity Verification
 
+
 def test_cross_modal_text_to_image_search(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     # Natural language visual description targeting photo_sunset.jpg
     res = searcher.search("photo sunset golden landscape")
     assert len(res.ranked) > 0
@@ -123,7 +125,7 @@ def test_cross_modal_text_to_image_search(indexed_testbed):
 
 
 def test_cross_modal_text_to_video_search(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     # Query matching synthesized video test pattern
     res = searcher.search("video smpte color bars test")
     assert len(res.ranked) > 0
@@ -148,8 +150,9 @@ def test_search_evaluation_harness_live_ollama():
 
 # Section 4: Lexical BM25 & Lookup Serial Search Verification
 
+
 def test_fts5_bm25_keyword_matching(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     res = searcher.search("Executive Strategy Brief")
     assert len(res.ranked) > 0
     assert Path(res.ranked[0].path).name == "brief.docx"
@@ -157,7 +160,7 @@ def test_fts5_bm25_keyword_matching(indexed_testbed):
 
 
 def test_identifier_and_serial_lookup_routing(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     assert is_lookup_query("ERR-4096-FAIL") is True
     assert is_lookup_query("0xdeadbeef") is True
     assert is_lookup_query("calculateMetrics") is True
@@ -190,8 +193,9 @@ def test_term_coverage_multi_term_and_prefix(tmp_path: Path):
 
 # Section 5: Code Search & Definition Line Anchor Verification
 
+
 def test_code_search_routing(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     # Query with code: prefix
     res = searcher.search("code: retry_with_backoff")
     assert len(res.ranked) > 0
@@ -201,7 +205,7 @@ def test_code_search_routing(indexed_testbed):
 
 
 def test_symbol_definition_line_anchoring(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     # Function symbol definition anchor
     res_fn = searcher.search("code: retry_with_backoff")
     assert len(res_fn.ranked) > 0
@@ -214,7 +218,7 @@ def test_symbol_definition_line_anchoring(indexed_testbed):
 
 
 def test_jupyter_notebook_code_search(indexed_testbed):
-    _, files, _, _, searcher, _ = indexed_testbed
+    _, _files, _, _, searcher, _ = indexed_testbed
     res = searcher.search("code: calculate_metrics")
     assert len(res.ranked) > 0
     nb_hit = next((h for h in res.ranked if Path(h.path).name == "analysis.ipynb"), None)
@@ -225,15 +229,38 @@ def test_jupyter_notebook_code_search(indexed_testbed):
 
 # Section 6: Quality Gating & Weaker Matches Verification
 
+
 def test_quality_gating_filtering(tmp_path: Path):
     db = Database(tmp_path / "gating.db")
     c1_cand = Candidate(path="/tmp/doc1.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=1, device=1)
     f1 = db.insert_file(c1_cand)
-    db.insert_segment(f1, SegmentKind.CHUNK, Modality.TEXT, 1.0, 1.0, "matching target keyword query", None, "doc1.txt", "matching target keyword query", "")
+    db.insert_segment(
+        f1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "matching target keyword query",
+        None,
+        "doc1.txt",
+        "matching target keyword query",
+        "",
+    )
 
     c2_cand = Candidate(path="/tmp/doc2.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=2, device=2)
     f2 = db.insert_file(c2_cand)
-    db.insert_segment(f2, SegmentKind.CHUNK, Modality.TEXT, 1.0, 1.0, "completely unrelated data", None, "doc2.txt", "only matching term present", "")
+    db.insert_segment(
+        f2,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "completely unrelated data",
+        None,
+        "doc2.txt",
+        "only matching term present",
+        "",
+    )
 
     searcher = SearchService(db=db)
     res = searcher.search("matching target keyword query")
@@ -248,7 +275,18 @@ def test_folded_weaker_matches_partitioning(indexed_testbed):
     # Insert a weakly matching document
     cand = Candidate(path="/tmp/weak.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=999, device=999)
     fid = db.insert_file(cand)
-    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 1.0, 1.0, "Architectural overview brief summary", None, "weak.txt", "Architectural overview brief summary", "")
+    db.insert_segment(
+        fid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        1.0,
+        1.0,
+        "Architectural overview brief summary",
+        None,
+        "weak.txt",
+        "Architectural overview brief summary",
+        "",
+    )
 
     res = searcher.search("Quarterly Systems Engineering and Architectural Report")
     # Strong matches with high coverage/score in ranked, weaker matches in weaker

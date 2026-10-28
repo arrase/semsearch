@@ -1,7 +1,7 @@
 """File filtering, secret detection, and classification rules."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 from semsearch.core.types import FileKind
 
@@ -256,9 +256,7 @@ def looks_machine_named(stem: str) -> bool:
         return False
     if re.match(r"^[0-9a-f]{8,}([-_][0-9a-f]{4,})*$", name):
         return True
-    if re.match(r"^[a-z]{0,16}[-_. ]?\d{3,}([-_.]\d+)*$", name):
-        return True
-    return False
+    return bool(re.match(r"^[a-z]{0,16}[-_. ]?\d{3,}([-_.]\d+)*$", name))
 
 
 def is_dataset_folder(paths: list[str]) -> bool:
@@ -338,7 +336,7 @@ def is_path_excluded(path: str, excluded_folders: list[str] | set[str] | None) -
         clean = excl.strip()
         if not clean:
             continue
-        if clean.startswith("/") or clean.startswith("~"):
+        if clean.startswith(("/", "~")):
             excl_resolved = str(Path(clean).expanduser().resolve())
             if resolved == excl_resolved or resolved.startswith(f"{excl_resolved}/"):
                 return True
@@ -390,4 +388,3 @@ def should_skip(
             return True, "non-screenshot inside code project"
 
     return False, ""
-

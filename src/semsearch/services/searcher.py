@@ -1,8 +1,9 @@
 """Search engine with dual-query routing, hybrid DigUp ranking, and desktop gating."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
+
 import numpy as np
 
 from semsearch.core.code_lookup import (
@@ -98,13 +99,13 @@ class SearchService:
 
         if can_check_def:
             best_seg_def: tuple[int, int, int] | None = None
-            for s_id, s_kind, s_loc, s_loc_end, _, s_body in target_db.get_file_segments(file_rec.id):
+            for seg_id_cand, s_kind, seg_loc, _, _, s_body in target_db.get_file_segments(file_rec.id):
                 if s_kind == SegmentKind.LINES and s_body:
-                    def_res = find_definition(name, s_body, first_line=int(s_loc or 1))
+                    def_res = find_definition(name, s_body, first_line=int(seg_loc or 1))
                     if def_res:
                         line_num, strength = def_res
                         if best_seg_def is None or strength > best_seg_def[2]:
-                            best_seg_def = (s_id, line_num, strength)
+                            best_seg_def = (seg_id_cand, line_num, strength)
                         if strength == 2:
                             break
             if best_seg_def is not None:
@@ -121,9 +122,9 @@ class SearchService:
                     if def_res:
                         line_num, strength = def_res
                         matched_seg_id = segment_id
-                        for s_id, s_kind, s_loc, s_loc_end, _, _ in target_db.get_file_segments(file_rec.id):
-                            if s_kind == SegmentKind.LINES and s_loc <= line_num <= max(s_loc_end, s_loc):
-                                matched_seg_id = s_id
+                        for seg_id_cand, s_kind, seg_loc, s_loc_end, _, _ in target_db.get_file_segments(file_rec.id):
+                            if s_kind == SegmentKind.LINES and seg_loc <= line_num <= max(s_loc_end, seg_loc):
+                                matched_seg_id = seg_id_cand
                                 break
                         return matched_seg_id, float(line_num), strength
 
@@ -194,7 +195,7 @@ class SearchService:
                 if len(seg_ids) > 0 and mat.shape[0] > 0:
                     cosines = cosine_similarity(query_vec, mat)
                     z_scores = z_score_normalize(cosines, modalities, sets_scale=sets_scale)
-                    for seg_id, f_id, cos, z in zip(seg_ids, file_ids, cosines, z_scores):
+                    for seg_id, f_id, cos, z in zip(seg_ids, file_ids, cosines, z_scores, strict=False):
                         z_val = float(z)
                         cos_val = float(cos)
                         if f_id not in best or z_val > best[f_id][0]:
@@ -206,9 +207,8 @@ class SearchService:
         elif terms:
             patterns = make_fts_patterns(terms, prefix_last=prefix_last)
             for idx, p in enumerate(patterns):
-                if len(terms[idx]) >= 3 and not p.endswith("*"):
-                    if not target_db.is_indexed(p):
-                        patterns[idx] = p + "*"
+                if len(terms[idx]) >= 3 and not p.endswith("*") and not target_db.is_indexed(p):
+                    patterns[idx] = p + "*"
         else:
             patterns = []
 
@@ -230,9 +230,7 @@ class SearchService:
             if cov_fids:
                 coverage = target_db.compute_coverage(patterns, cov_fids)
 
-        word_rank: dict[int, tuple[int, dict]] = {
-            w["file_id"]: (idx + 1, w) for idx, w in enumerate(words)
-        }
+        word_rank: dict[int, tuple[int, dict]] = {w["file_id"]: (idx + 1, w) for idx, w in enumerate(words)}
 
         # 3. Quality Gating & Score Fusion
         z_gate = SEMANTIC_Z_GATE
@@ -240,11 +238,7 @@ class SearchService:
         meaning_weight, words_weight = (0.5, word_weight * 2.0) if is_lookup else (1.0, word_weight)
 
         if pure_kind_query:
-            candidates = {
-                f_rec.id
-                for f_rec in target_db.find_all_files()
-                if f_rec.kind in hinted_kinds
-            }
+            candidates = {f_rec.id for f_rec in target_db.find_all_files() if f_rec.kind in hinted_kinds}
         else:
             candidates = {fid for fid, sem in best.items() if sem[0] >= z_gate}
             for fid, cov in coverage.items():
@@ -279,13 +273,15 @@ class SearchService:
                 matched_in_stem = sum(1 for ft in folded_terms if ft in stem_folded)
                 if matched_in_stem > 0:
                     name_ratio = matched_in_stem / len(folded_terms)
-                    name_bonus = 3.0 * (name_ratio ** 1.5)
+                    name_bonus = 3.0 * (name_ratio**1.5)
 
             def_bonus = 0.0
             if is_code:
                 keyword = word_rank.get(fid)
                 use_meaning = sem is not None and (sem[0] >= z_gate or keyword is None)
-                init_seg_id = sem[2] if use_meaning and sem is not None else (keyword[1]["segment_id"] if keyword else None)
+                init_seg_id = (
+                    sem[2] if use_meaning and sem is not None else (keyword[1]["segment_id"] if keyword else None)
+                )
                 if init_seg_id is not None:
                     res_seg_id, res_focus, strength = self._resolve_code_place(
                         target_db=target_db,
@@ -294,7 +290,8 @@ class SearchService:
                         identifier=identifier,
                         clean_query=clean_query,
                         terms=terms,
-                        words_here=(keyword is not None and keyword[1]["segment_id"] == init_seg_id) or identifier is not None,
+                        words_here=(keyword is not None and keyword[1]["segment_id"] == init_seg_id)
+                        or identifier is not None,
                     )
                     resolved_code_places[fid] = (res_seg_id, res_focus, strength)
                     if strength == 2:
@@ -303,11 +300,7 @@ class SearchService:
                         def_bonus = 1.5
 
             score = (
-                meaning_weight * max(z_val, 0.0)
-                + words_weight * (cov_val ** 1.5)
-                + kind_bonus
-                + name_bonus
-                + def_bonus
+                meaning_weight * max(z_val, 0.0) + words_weight * (cov_val**1.5) + kind_bonus + name_bonus + def_bonus
             )
             scored[fid] = score
 
@@ -329,9 +322,7 @@ class SearchService:
 
             use_meaning = semantic is not None and (semantic[0] >= z_gate or keyword is None)
             segment_id = (
-                semantic[2]
-                if use_meaning and semantic is not None
-                else (keyword[1]["segment_id"] if keyword else None)
+                semantic[2] if use_meaning and semantic is not None else (keyword[1]["segment_id"] if keyword else None)
             )
             if segment_id is None and pure_kind_query:
                 file_segs = target_db.get_file_segments(fid)
@@ -391,4 +382,3 @@ class SearchService:
         weaker = [h for h in hits if h.score < threshold]
 
         return ResultSet(ranked=ranked, weaker=weaker)
-

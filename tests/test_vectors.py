@@ -1,7 +1,6 @@
 """Unit tests for vector mathematics, similarity, and normalization."""
 
 import numpy as np
-import pytest
 
 from semsearch.core.types import Modality
 from semsearch.core.vectors import (
@@ -66,10 +65,10 @@ def test_cosine_similarity():
     q = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     docs = np.array(
         [
-            [1.0, 0.0, 0.0],   # identical -> 1.0
-            [0.0, 1.0, 0.0],   # orthogonal -> 0.0
+            [1.0, 0.0, 0.0],  # identical -> 1.0
+            [0.0, 1.0, 0.0],  # orthogonal -> 0.0
             [-1.0, 0.0, 0.0],  # opposite -> -1.0
-            [2.0, 0.0, 0.0],   # unnormalized same direction -> 1.0
+            [2.0, 0.0, 0.0],  # unnormalized same direction -> 1.0
         ],
         dtype=np.float32,
     )
@@ -156,8 +155,7 @@ def test_z_score_normalize_clamps_low_variance_noise_to_sigma_floor():
 def test_z_score_normalize_multi_hit_outlier_resistance():
     """Verify two strong matches in a 20-item corpus both pass z >= 2.2 without top-hit sigma masking."""
     bg = np.array(
-        [0.55, 0.56, 0.57, 0.58, 0.59, 0.54, 0.56, 0.57, 0.58, 0.60,
-         0.55, 0.57, 0.58, 0.59, 0.56, 0.57, 0.58, 0.59],
+        [0.55, 0.56, 0.57, 0.58, 0.59, 0.54, 0.56, 0.57, 0.58, 0.60, 0.55, 0.57, 0.58, 0.59, 0.56, 0.57, 0.58, 0.59],
         dtype=np.float32,
     )
     hits = np.array([0.689, 0.743], dtype=np.float32)
@@ -168,4 +166,3 @@ def test_z_score_normalize_multi_hit_outlier_resistance():
     assert z[-1] >= 3.0
     assert z[-2] >= 2.2
     assert np.all(z[:-2] < 2.2)
-

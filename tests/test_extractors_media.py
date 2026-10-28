@@ -2,11 +2,13 @@
 
 import base64
 import io
-from pathlib import Path
 import subprocess
 import wave
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
+
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.media import (
     average_hash,
@@ -112,7 +114,7 @@ def test_extract_video_deduplication(tmp_path: Path) -> None:
         "aac",
         str(vid_path),
     ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    res = subprocess.run(cmd, capture_output=True, check=False)
     assert res.returncode == 0
 
     video_segs = extract_video(str(vid_path), sample_interval_sec=3.0, hash_threshold=4)

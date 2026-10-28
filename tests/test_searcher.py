@@ -1,6 +1,7 @@
 """Tests for hybrid search service, routing, ranking, and folding."""
 
 from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -15,11 +16,10 @@ from semsearch.core.types import (
     Candidate,
     FileKind,
     Modality,
-    SearchHit,
     SegmentKind,
 )
 from semsearch.core.vectors import DIM, float16_to_bytes, l2_normalize
-from semsearch.services.searcher import ResultSet, SearchService
+from semsearch.services.searcher import SearchService
 
 
 @pytest.fixture
@@ -73,12 +73,34 @@ def test_query_routing_general_vs_code(mock_dbs):
     # Insert file in general db
     c1 = Candidate(path="/docs/specs.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=1, device=1)
     fid1 = db.insert_file(c1)
-    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "system specifications", None, "specs.txt", "system specifications", "specs")
+    db.insert_segment(
+        fid1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        "system specifications",
+        None,
+        "specs.txt",
+        "system specifications",
+        "specs",
+    )
 
     # Insert file in code db
     c2 = Candidate(path="/src/engine.py", kind=FileKind.CODE, size=200, mtime=1.0, inode=2, device=2)
     fid2 = code_db.insert_file(c2)
-    code_db.insert_segment(fid2, SegmentKind.LINES, Modality.TEXT, 1, 10, "class SearchEngine:\n    pass", None, "engine.py", "class SearchEngine pass", "engine")
+    code_db.insert_segment(
+        fid2,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        1,
+        10,
+        "class SearchEngine:\n    pass",
+        None,
+        "engine.py",
+        "class SearchEngine pass",
+        "engine",
+    )
 
     searcher = SearchService(db=db, code_db=code_db)
 
@@ -103,12 +125,34 @@ def test_quality_gating_and_ranking(mock_dbs):
     # High coverage keyword match (coverage >= 0.5)
     c1 = Candidate(path="/docs/invoice.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=1, device=1)
     fid1 = db.insert_file(c1)
-    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "client invoice billing", None, "invoice.txt", "client invoice billing payment", "")
+    db.insert_segment(
+        fid1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        "client invoice billing",
+        None,
+        "invoice.txt",
+        "client invoice billing payment",
+        "",
+    )
 
     # Low coverage keyword match (coverage < 0.5) and no vector
     c2 = Candidate(path="/docs/random.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=2, device=2)
     fid2 = db.insert_file(c2)
-    db.insert_segment(fid2, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "unrelated notes", None, "random.txt", "only client mentioned here", "")
+    db.insert_segment(
+        fid2,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        "unrelated notes",
+        None,
+        "random.txt",
+        "only client mentioned here",
+        "",
+    )
 
     searcher = SearchService(db=db)
     results = searcher.search("client invoice billing payment")
@@ -129,15 +173,22 @@ def test_vector_search_with_mock_ollama(mock_dbs, monkeypatch):
     c1 = Candidate(path="/images/sunset.jpg", kind=FileKind.IMAGE, size=500, mtime=1.0, inode=1, device=1)
     fid1 = db.insert_file(c1)
     db.insert_segment(
-        fid1, SegmentKind.IMAGE, Modality.IMAGE, 0, 0, "sunset over the beach",
-        float16_to_bytes(vec_high), "sunset.jpg", "", ""
+        fid1,
+        SegmentKind.IMAGE,
+        Modality.IMAGE,
+        0,
+        0,
+        "sunset over the beach",
+        float16_to_bytes(vec_high),
+        "sunset.jpg",
+        "",
+        "",
     )
 
     c2 = Candidate(path="/images/mountains.jpg", kind=FileKind.IMAGE, size=500, mtime=1.0, inode=2, device=2)
     fid2 = db.insert_file(c2)
     db.insert_segment(
-        fid2, SegmentKind.IMAGE, Modality.IMAGE, 0, 0, "snowy peaks",
-        float16_to_bytes(vec_low), "mountains.jpg", "", ""
+        fid2, SegmentKind.IMAGE, Modality.IMAGE, 0, 0, "snowy peaks", float16_to_bytes(vec_low), "mountains.jpg", "", ""
     )
 
     class MockOllama(OllamaClient):
@@ -157,7 +208,18 @@ def test_weaker_matches_folding(mock_dbs):
 
     c1 = Candidate(path="/a.txt", kind=FileKind.DOC, size=10, mtime=1.0, inode=1, device=1)
     fid1 = db.insert_file(c1)
-    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "alpha beta gamma delta", None, "a.txt", "alpha beta gamma delta", "")
+    db.insert_segment(
+        fid1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        "alpha beta gamma delta",
+        None,
+        "a.txt",
+        "alpha beta gamma delta",
+        "",
+    )
 
     c2 = Candidate(path="/b.txt", kind=FileKind.DOC, size=10, mtime=1.0, inode=2, device=2)
     fid2 = db.insert_file(c2)
@@ -183,7 +245,9 @@ def test_code_definition_line_jump(tmp_path: Path):
     code_db = Database(tmp_path / "code.sqlite")
     c = Candidate(path=str(code_path), kind=FileKind.CODE, size=100, mtime=1.0, inode=1, device=1)
     fid = code_db.insert_file(c)
-    code_db.insert_segment(fid, SegmentKind.LINES, Modality.TEXT, 1, 4, "def parse_tokens", None, "parser.py", "parse tokens", "")
+    code_db.insert_segment(
+        fid, SegmentKind.LINES, Modality.TEXT, 1, 4, "def parse_tokens", None, "parser.py", "parse tokens", ""
+    )
 
     searcher = SearchService(db=Database(":memory:"), code_db=code_db)
     results = searcher.search("code: parse_tokens")
@@ -324,9 +388,7 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
 
     caller_path = tmp_path / "window.py"
     caller_path.write_text("from searcher import SearchService\nsvc = SearchService()\n", encoding="utf-8")
-    fid_caller = code_db.insert_file(
-        Candidate(str(caller_path), FileKind.CODE, 80, 20.0, 1, 1)
-    )
+    fid_caller = code_db.insert_file(Candidate(str(caller_path), FileKind.CODE, 80, 20.0, 1, 1))
     code_db.insert_segment(
         fid_caller,
         SegmentKind.LINES,
@@ -342,9 +404,7 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
 
     def_path = tmp_path / "searcher.py"
     def_path.write_text("# Search module\nclass SearchService:\n    pass\n", encoding="utf-8")
-    fid_def = code_db.insert_file(
-        Candidate(str(def_path), FileKind.CODE, 80, 10.0, 2, 1)
-    )
+    fid_def = code_db.insert_file(Candidate(str(def_path), FileKind.CODE, 80, 10.0, 2, 1))
     code_db.insert_segment(
         fid_def,
         SegmentKind.LINES,
@@ -381,15 +441,31 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
     for i in range(17):
         fid = db.insert_file(Candidate(f"/docs/bg_{i}.txt", FileKind.DOC, 100, 1.0, i + 1, 1))
         db.insert_segment(
-            fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, "unrelated text",
-            make_vec_with_cos(0.58), f"bg_{i}.txt", "unrelated text", ""
+            fid,
+            SegmentKind.CHUNK,
+            Modality.TEXT,
+            0.0,
+            0.0,
+            "unrelated text",
+            make_vec_with_cos(0.58),
+            f"bg_{i}.txt",
+            "unrelated text",
+            "",
         )
 
     # Weak semantic candidate (cos ~ 0.66 -> z < 2.2)
     fid_weak = db.insert_file(Candidate("/docs/Bienvenido.md", FileKind.DOC, 200, 2.0, 100, 1))
     db.insert_segment(
-        fid_weak, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, "Esta es su nueva boveda",
-        make_vec_with_cos(0.66), "Bienvenido.md", "Esta es su nueva boveda", ""
+        fid_weak,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0.0,
+        0.0,
+        "Esta es su nueva boveda",
+        make_vec_with_cos(0.66),
+        "Bienvenido.md",
+        "Esta es su nueva boveda",
+        "",
     )
 
     class QueryMockOllama(OllamaClient):
@@ -404,13 +480,20 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
     # Add two genuine semantic matches (two black hole images: cos ~ 0.743 and cos ~ 0.689)
     fid_bh1 = db.insert_file(Candidate("/pics/descarga.png", FileKind.IMAGE, 500, 3.0, 101, 1))
     db.insert_segment(
-        fid_bh1, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "",
-        make_vec_with_cos(0.743), "descarga.png", "", ""
+        fid_bh1, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "", make_vec_with_cos(0.743), "descarga.png", "", ""
     )
     fid_bh2 = db.insert_file(Candidate("/pics/captura_black_hole.png", FileKind.SCREENSHOT, 600, 4.0, 102, 1))
     db.insert_segment(
-        fid_bh2, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "",
-        make_vec_with_cos(0.689), "captura_black_hole.png", "", ""
+        fid_bh2,
+        SegmentKind.IMAGE,
+        Modality.IMAGE,
+        0.0,
+        0.0,
+        "",
+        make_vec_with_cos(0.689),
+        "captura_black_hole.png",
+        "",
+        "",
     )
 
     res_strong = searcher.search("agujero negro")
@@ -418,4 +501,3 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
     assert [h.path for h in res_strong.ranked] == ["/pics/descarga.png", "/pics/captura_black_hole.png"]
     assert all(h.z >= 2.2 for h in res_strong.ranked)
     assert all(h.reason == "Matches meaning" for h in res_strong.ranked)
-

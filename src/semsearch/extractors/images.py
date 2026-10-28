@@ -2,7 +2,9 @@
 
 import base64
 import io
+
 from PIL import Image, ImageOps
+
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
 

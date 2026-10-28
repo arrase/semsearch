@@ -1,9 +1,10 @@
 """Unit tests for document extractor and boundary-snapped chunking."""
 
-from pathlib import Path
-import xml.etree.ElementTree as ET
 import zipfile
+from pathlib import Path
+
 from docx import Document
+
 from semsearch.core.search_text import has_words
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.docs import (

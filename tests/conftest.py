@@ -1,9 +1,11 @@
 """Shared pytest configuration and fixtures for GUI test suites."""
 
+import importlib
 import os
 import sys
 from collections.abc import Generator
 from unittest.mock import MagicMock
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -14,7 +16,7 @@ os.environ["LANG"] = "en_US.UTF-8"
 os.environ["LC_ALL"] = "en_US.UTF-8"
 
 try:
-    import pynput.keyboard
+    importlib.import_module("pynput.keyboard")
 except ImportError:
     mock_pynput = MagicMock()
     mock_pynput.keyboard.HotKey.parse = staticmethod(lambda s: s.split("+"))

@@ -1,8 +1,8 @@
 """Comprehensive verification suite for DigUp parity search quality and indexing improvements."""
 
 from pathlib import Path
+
 import httpx
-import numpy as np
 import pytest
 
 from semsearch.core.code_lookup import (
@@ -15,7 +15,6 @@ from semsearch.core.database import Database
 from semsearch.core.ollama import OllamaClient, format_doc_prompt
 from semsearch.core.search_text import (
     extract_kind_hints,
-    extract_snippet,
     extract_terms,
     has_words,
     inflects,
@@ -29,14 +28,13 @@ from semsearch.core.types import (
     Modality,
     SegmentKind,
 )
-from semsearch.core.vectors import DIM, float16_to_bytes, l2_normalize
-from semsearch.services.indexer import IndexService, _code_place
-from semsearch.services.searcher import ResultSet, SearchService
+from semsearch.services.indexer import _code_place
+from semsearch.services.searcher import SearchService
 
 
 def test_search_text_normalization():
     # NFKC fullwidth to ASCII
-    assert normalize_search_text("ＡＢＣ") == "ABC"
+    assert normalize_search_text("\uff21\uff22\uff23") == "ABC"
 
     # Soft hyphen (0x00AD) and BOM (0xFEFF) stripped
     assert normalize_search_text("Doc\u00adument\ufeff") == "Document"
@@ -90,7 +88,7 @@ def test_make_fts_patterns_inflection_wildcard():
     patterns = make_fts_patterns(["invoice", "কুমির", "مدرس"], prefix_last=False)
     assert patterns[0] == '"invoice"'
     assert patterns[1] == '"কুমির"*'  # Inflected Indic gets prefix wildcard
-    assert patterns[2] == '"مدرس"*'   # Inflected Arabic gets prefix wildcard
+    assert patterns[2] == '"مدرس"*'  # Inflected Arabic gets prefix wildcard
 
 
 def test_is_lookup_logic():

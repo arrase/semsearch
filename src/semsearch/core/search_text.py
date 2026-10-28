@@ -2,10 +2,13 @@
 
 import re
 import unicodedata
+
 from semsearch.core.types import FileKind
 
 _STRIP_SCALARS = {
-    0x00AD, 0x061C, 0xFEFF,
+    0x00AD,
+    0x061C,
+    0xFEFF,
     0x0640,  # Tatweel
 }
 # Ranges of invisible formatting / direction / joiner characters
@@ -20,24 +23,178 @@ _STRIP_RANGES = [
 _ALEF_VARIANTS = {0x0622, 0x0623, 0x0625, 0x0671}
 
 STOPWORDS: set[str] = {
-    "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",
-    "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
-    "it", "its", "some", "any", "find", "show", "file", "files", "photo", "photos", "picture", "pictures",
-    "image", "images", "screenshot", "screenshots", "video", "videos", "pdf", "pdfs", "document", "documents",
-    "doc", "docs", "note", "notes", "paper", "papers", "clip", "movie", "audio", "song", "podcast", "voice",
-    "sound", "recording",
+    "a",
+    "an",
+    "the",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "with",
+    "and",
+    "or",
+    "my",
+    "me",
+    "that",
+    "this",
+    "these",
+    "those",
+    "from",
+    "about",
+    "where",
+    "what",
+    "which",
+    "who",
+    "when",
+    "is",
+    "was",
+    "are",
+    "were",
+    "be",
+    "it",
+    "its",
+    "some",
+    "any",
+    "find",
+    "show",
+    "file",
+    "files",
+    "photo",
+    "photos",
+    "picture",
+    "pictures",
+    "image",
+    "images",
+    "screenshot",
+    "screenshots",
+    "video",
+    "videos",
+    "pdf",
+    "pdfs",
+    "document",
+    "documents",
+    "doc",
+    "docs",
+    "note",
+    "notes",
+    "paper",
+    "papers",
+    "clip",
+    "movie",
+    "audio",
+    "song",
+    "podcast",
+    "voice",
+    "sound",
+    "recording",
     # Spanish stopwords and kind words
-    "de", "la", "el", "en", "con", "para", "por", "del", "al", "los", "las", "un", "una", "unos", "unas",
-    "mi", "mis", "su", "sus", "que", "como", "donde", "cuando", "quien", "cual", "es", "son", "fue", "era",
-    "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas", "busca", "buscar", "mostrar", "muestra",
-    "archivo", "archivos", "foto", "fotos", "imagen", "imagenes", "imágenes", "captura", "capturas", "pantalla",
-    "vídeo", "vídeos", "documento", "documentos", "nota", "notas", "audios", "cancion", "canción",
-    "grabacion", "grabación", "codigo", "código",
+    "de",
+    "la",
+    "el",
+    "en",
+    "con",
+    "para",
+    "por",
+    "del",
+    "al",
+    "los",
+    "las",
+    "un",
+    "una",
+    "unos",
+    "unas",
+    "mi",
+    "mis",
+    "su",
+    "sus",
+    "que",
+    "como",
+    "donde",
+    "cuando",
+    "quien",
+    "cual",
+    "es",
+    "son",
+    "fue",
+    "era",
+    "este",
+    "esta",
+    "estos",
+    "estas",
+    "ese",
+    "esa",
+    "esos",
+    "esas",
+    "busca",
+    "buscar",
+    "mostrar",
+    "muestra",
+    "archivo",
+    "archivos",
+    "foto",
+    "fotos",
+    "imagen",
+    "imagenes",
+    "imágenes",
+    "captura",
+    "capturas",
+    "pantalla",
+    "vídeo",
+    "vídeos",
+    "documento",
+    "documentos",
+    "nota",
+    "notas",
+    "audios",
+    "cancion",
+    "canción",
+    "grabacion",
+    "grabación",
+    "codigo",
+    "código",
     # Bengali and Arabic stopwords
-    "এবং", "ও", "এই", "সেই", "একটি", "আমার", "থেকে", "জন্য", "সাথে", "মধ্যে", "কোথায়", "কোন", "কী", "কি", "যে",
-    "ছবি", "স্ক্রিনশট", "ভিডিও", "ফাইল", "পিডিএফ",
-    "في", "من", "على", "الى", "عن", "مع", "هذا", "هذه", "ذلك", "التي", "الذي", "اين", "ما",
-    "صورة", "صور", "لقطة", "شاشة", "فيديو", "ملف", "مستند",
+    "এবং",
+    "ও",
+    "এই",
+    "সেই",
+    "একটি",
+    "আমার",
+    "থেকে",
+    "জন্য",
+    "সাথে",
+    "মধ্যে",
+    "কোথায়",
+    "কোন",
+    "কী",
+    "কি",
+    "যে",
+    "ছবি",
+    "স্ক্রিনশট",
+    "ভিডিও",
+    "ফাইল",
+    "পিডিএফ",
+    "في",
+    "من",
+    "على",
+    "الى",
+    "عن",
+    "مع",
+    "هذا",
+    "هذه",
+    "ذلك",
+    "التي",
+    "الذي",
+    "اين",
+    "ما",
+    "صورة",
+    "صور",
+    "لقطة",
+    "شاشة",
+    "فيديو",
+    "ملف",
+    "مستند",
 }
 
 KIND_WORDS: dict[str, FileKind] = {
@@ -117,7 +274,6 @@ KIND_WORDS: dict[str, FileKind] = {
 }
 
 
-
 def _is_word_char(char: str) -> bool:
     cat = unicodedata.category(char)
     return cat[0] in ("L", "N", "M")
@@ -129,10 +285,9 @@ def _tokenize_words(text: str) -> list[str]:
     for c in text:
         if _is_word_char(c):
             current.append(c)
-        else:
-            if current:
-                words.append("".join(current))
-                current = []
+        elif current:
+            words.append("".join(current))
+            current = []
     if current:
         words.append("".join(current))
     return words
@@ -212,10 +367,7 @@ def is_lookup(terms: list[str]) -> bool:
     """Determine if query terms represent codes, IDs, or model identifiers."""
     if not terms:
         return False
-    return all(
-        any(c.isdigit() for c in t) and (any(c.isalpha() for c in t) or len(t) >= 4)
-        for t in terms
-    )
+    return all(any(c.isdigit() for c in t) and (any(c.isalpha() for c in t) or len(t) >= 4) for t in terms)
 
 
 def is_lookup_query(query: str, terms: list[str] | None = None) -> bool:
@@ -254,11 +406,7 @@ def extract_kind_hints(text: str) -> set[FileKind]:
 def _fold_latin_diacritics(text: str) -> str:
     """Normalize text and strip Latin combining diacritical marks (0x0300..0x036F)."""
     norm = normalize_search_text(text).lower()
-    return "".join(
-        ch
-        for ch in unicodedata.normalize("NFD", norm)
-        if not (0x0300 <= ord(ch) <= 0x036F)
-    )
+    return "".join(ch for ch in unicodedata.normalize("NFD", norm) if not (0x0300 <= ord(ch) <= 0x036F))
 
 
 def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
@@ -274,7 +422,6 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
         norm_chars.append(p)
         origin.extend([idx] * len(p))
     haystack = "".join(norm_chars)
-
 
     found: list[tuple[int, int]] = []
     cursor = 0

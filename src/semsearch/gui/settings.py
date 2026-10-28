@@ -1,7 +1,8 @@
 """Settings dialog with four configuration tabs and verified multimodal model filtering."""
 
-from pathlib import Path
 import shutil
+from pathlib import Path
+
 from PySide6.QtCore import QTime, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -33,7 +34,6 @@ from semsearch.gui.theme import (
 )
 from semsearch.i18n import SUPPORTED_LANGUAGES, tr
 
-
 AUTOSTART_DIR = Path.home() / ".config" / "autostart"
 AUTOSTART_FILE = AUTOSTART_DIR / "semsearch.desktop"
 
@@ -57,9 +57,7 @@ def set_autostart_enabled(enabled: bool) -> None:
     if enabled:
         AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
         local_bin = Path.home() / ".local" / "bin" / "semsearch"
-        exec_path = shutil.which("semsearch") or (
-            str(local_bin) if local_bin.is_file() else "semsearch"
-        )
+        exec_path = shutil.which("semsearch") or (str(local_bin) if local_bin.is_file() else "semsearch")
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
@@ -71,9 +69,8 @@ def set_autostart_enabled(enabled: bool) -> None:
             "X-GNOME-Autostart-enabled=true\n"
         )
         AUTOSTART_FILE.write_text(content, encoding="utf-8")
-    else:
-        if AUTOSTART_FILE.is_file():
-            AUTOSTART_FILE.unlink()
+    elif AUTOSTART_FILE.is_file():
+        AUTOSTART_FILE.unlink()
 
 
 class FoldersTab(QWidget):
@@ -329,9 +326,7 @@ class StorageModelTab(QWidget):
         if not raw:
             return 0
         if not raw.isdigit():
-            self.status_label.setText(
-                tr("⚠ Invalid context window: enter a positive integer or 0 for default.")
-            )
+            self.status_label.setText(tr("⚠ Invalid context window: enter a positive integer or 0 for default."))
             self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
             return None
 
@@ -376,9 +371,7 @@ class StorageModelTab(QWidget):
             idx = self.model_combo.findText("embeddinggemma-2")
             if idx >= 0:
                 self.model_combo.setCurrentIndex(idx)
-            self.status_label.setText(
-                tr("✓ Connected: {count} multimodal model(s) verified.", count=len(models))
-            )
+            self.status_label.setText(tr("✓ Connected: {count} multimodal model(s) verified.", count=len(models)))
             self.status_label.setStyleSheet(f"color: {ThemeColors.LEAF};")
         else:
             self.model_combo.addItem("embeddinggemma-2")
@@ -602,16 +595,9 @@ class SettingsDialog(QDialog):
         cfg = self.config_manager.config
 
         # Tab 1: Folders
-        folders = [
-            self.folders_tab.folders_list.item(i).text()
-            for i in range(self.folders_tab.folders_list.count())
-        ]
-        excl_folders = [
-            s.strip() for s in self.folders_tab.skipped_folders_edit.text().split(",") if s.strip()
-        ]
-        excl_types = [
-            s.strip().lstrip(".") for s in self.folders_tab.skipped_ext_edit.text().split(",") if s.strip()
-        ]
+        folders = [self.folders_tab.folders_list.item(i).text() for i in range(self.folders_tab.folders_list.count())]
+        excl_folders = [s.strip() for s in self.folders_tab.skipped_folders_edit.text().split(",") if s.strip()]
+        excl_types = [s.strip().lstrip(".") for s in self.folders_tab.skipped_ext_edit.text().split(",") if s.strip()]
         cfg.folders = folders
         cfg.excluded_folders = excl_folders
         cfg.excluded_types = excl_types
@@ -625,8 +611,7 @@ class SettingsDialog(QDialog):
         # Tab 2: Code
         cfg.code_enabled = self.code_tab.code_enable_check.isChecked()
         code_folders = [
-            self.code_tab.code_folders_list.item(i).text()
-            for i in range(self.code_tab.code_folders_list.count())
+            self.code_tab.code_folders_list.item(i).text() for i in range(self.code_tab.code_folders_list.count())
         ]
         cfg.code_folders = code_folders
         cfg.code_editor = self.code_tab.editor_combo.currentData()

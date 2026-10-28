@@ -1,9 +1,9 @@
 """Background indexing service, multi-tier priority scheduling, and pipelined execution."""
 
-from enum import Enum
-import os
-from pathlib import Path
 import threading
+from enum import StrEnum
+from pathlib import Path
+
 import numpy as np
 
 from semsearch.config import AppConfig
@@ -30,7 +30,7 @@ from semsearch.extractors.media import extract_audio, extract_video
 from semsearch.extractors.pdfs import extract_pdf
 
 
-class IndexQueueTier(str, Enum):
+class IndexQueueTier(StrEnum):
     """Priority queue tiers for file indexing."""
 
     NEW_FILES = "new_files"
@@ -47,7 +47,7 @@ def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str |
     repo: Path | None = None
 
     curr = folder
-    while curr != curr.parent and curr != home:
+    while curr not in (curr.parent, home):
         if (curr / ".git").exists() or is_code_project_root(str(curr)):
             repo = curr
             break
@@ -69,7 +69,6 @@ def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str |
     parts = path_obj.parts
     title = "/".join(parts[-2:]) if len(parts) >= 2 else path_obj.name
     return None, title
-
 
 
 class IndexService:
@@ -139,7 +138,7 @@ class IndexService:
         """Enqueue newly modified or created file for immediate or backfill indexing."""
         resolved_path = Path(path).resolve()
         resolved = str(resolved_path)
-        if not os.path.exists(resolved):
+        if not resolved_path.exists():
             return
         if is_path_excluded(resolved, self.config.excluded_folders):
             return
@@ -158,7 +157,7 @@ class IndexService:
         rec = target_db.find_by_path(resolved)
 
         try:
-            st = os.stat(resolved)
+            st = resolved_path.stat()
         except OSError:
             return
 
@@ -228,7 +227,6 @@ class IndexService:
                 self.status.activity = EngineActivity.IDLE
         self._work_event.set()
 
-
     def _get_next_file(self) -> tuple[FileRecord | None, Database | None, IndexQueueTier | None]:
         with self._lock:
             while self._new_files_queue:
@@ -297,7 +295,7 @@ class IndexService:
 
     def process_file(self, file_record: FileRecord, target_db: Database) -> bool:
         """Execute pipelined extraction, Ollama embedding, and database commit for a file."""
-        if not os.path.exists(file_record.path):
+        if not Path(file_record.path).exists():
             target_db.delete_file(file_record.id)
             return False
 
@@ -351,7 +349,7 @@ class IndexService:
         else:
             vectors = [None] * len(segments)
 
-        for s, vec in zip(segments, vectors):
+        for s, vec in zip(segments, vectors, strict=False):
             body = s.payload if isinstance(s.payload, str) and s.payload else s.excerpt
             orig = s.payload if isinstance(s.payload, str) else ""
             target_db.insert_segment(
@@ -393,7 +391,9 @@ class IndexService:
                 continue
 
             with self._lock:
-                self.status.activity = EngineActivity.FINISHING if tier == IndexQueueTier.LONG_FILES else EngineActivity.INDEXING
+                self.status.activity = (
+                    EngineActivity.FINISHING if tier == IndexQueueTier.LONG_FILES else EngineActivity.INDEXING
+                )
                 self.status.current_file = Path(file_rec.path).name
 
             try:

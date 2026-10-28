@@ -1,7 +1,7 @@
 """Configuration models and manager for SemSearch."""
 
-from dataclasses import asdict, dataclass, field
 import json
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "semsearch" / "config.json"

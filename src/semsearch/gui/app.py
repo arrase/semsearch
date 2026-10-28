@@ -1,8 +1,10 @@
 """Application lifecycle manager, single-instance IPC server, and widget coordination."""
 
+import contextlib
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
@@ -87,9 +89,7 @@ class SemSearchApp(QApplication):
         # UI Components
         self.tray = SystemTrayManager(self.index_service)
         self.panel = SearchPanel(self.search_service, self.config)
-        self.settings_dialog = SettingsDialog(
-            self.config_manager, self.ollama, self.db, code_db=self.code_db
-        )
+        self.settings_dialog = SettingsDialog(self.config_manager, self.ollama, self.db, code_db=self.code_db)
 
         # Hotkey listener
         self.hotkey_listener = HotkeyListener(self.config.hotkey)
@@ -99,9 +99,7 @@ class SemSearchApp(QApplication):
 
     def _apply_language(self) -> None:
         resolved = set_language(self.config.language)
-        self.setLayoutDirection(
-            Qt.LayoutDirection.RightToLeft if is_rtl(resolved) else Qt.LayoutDirection.LeftToRight
-        )
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if is_rtl(resolved) else Qt.LayoutDirection.LeftToRight)
 
     def _init_ipc_server(self) -> None:
         server_name = get_ipc_server_name()
@@ -120,7 +118,7 @@ class SemSearchApp(QApplication):
                 self._handle_ipc_message(client)
 
     def _handle_ipc_message(self, client: QLocalSocket) -> None:
-        msg = client.readAll().data().decode("utf-8").strip()
+        msg = bytes(client.readAll().data()).decode("utf-8").strip()
         if msg:
             self.handle_cli_action(msg)
 
@@ -159,10 +157,8 @@ class SemSearchApp(QApplication):
         self.hotkey_listener.stop()
         self.hotkey_listener = HotkeyListener(self.config.hotkey)
         self.hotkey_listener.hotkey_triggered.connect(self.toggle_panel)
-        try:
+        with contextlib.suppress(Exception):
             self.hotkey_listener.start()
-        except Exception:
-            pass
 
         self._trigger_reindex()
 
@@ -205,10 +201,8 @@ class SemSearchApp(QApplication):
         else:
             self._start_indexing()
 
-        try:
+        with contextlib.suppress(Exception):
             self.hotkey_listener.start()
-        except Exception:
-            pass
 
     def _start_indexing(self) -> None:
         self.index_service.start()

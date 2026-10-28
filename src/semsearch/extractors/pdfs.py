@@ -1,7 +1,9 @@
 """PDF extractor with digital text extraction and visual page rendering."""
 
 import base64
+
 import pymupdf as fitz
+
 from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 

@@ -83,11 +83,7 @@ def z_score_normalize(
     means: dict[Modality, float] = {}
     for mod in set(modalities):
         bucket = mod_buckets.get(mod, [])
-        means[mod] = (
-            _trimmed_mean(np.asarray(bucket, dtype=np.float64))
-            if len(bucket) >= 20
-            else global_mean
-        )
+        means[mod] = _trimmed_mean(np.asarray(bucket, dtype=np.float64)) if len(bucket) >= 20 else global_mean
 
     centered = np.array(
         [scores[idx] - means[modalities[idx]] for idx in range(n)],
@@ -102,4 +98,3 @@ def z_score_normalize(
     variance = float(np.mean(bg_centered * bg_centered)) if len(bg_centered) > 0 else 0.0
     sigma = max(float(np.sqrt(variance)), 0.045)
     return (centered / sigma).astype(np.float32)
-
