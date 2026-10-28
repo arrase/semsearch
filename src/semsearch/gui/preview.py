@@ -1,9 +1,9 @@
 """Multimodal preview pane with specialized visual renderers for desktop search results."""
 
-from datetime import datetime
 import math
-from pathlib import Path
 import subprocess
+from datetime import datetime
+from pathlib import Path
 
 import pymupdf
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
@@ -62,7 +62,7 @@ def format_tilde_path(path_str: str) -> str:
     """Convert home directory prefix into tilde notation."""
     home = str(Path.home())
     if path_str.startswith(home):
-        return "~" + path_str[len(home):]
+        return "~" + path_str[len(home) :]
     return path_str
 
 
@@ -359,7 +359,9 @@ class PdfPreviewWidget(QWidget):
         self.prev_btn.setText(tr("◀ Prev"))
         self.next_btn.setText(tr("Next ▶"))
         if self._total_pages > 0:
-            self.page_info.setText(tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages))
+            self.page_info.setText(
+                tr("Page {current} of {total}", current=self._current_page + 1, total=self._total_pages)
+            )
         else:
             self.page_info.setText(tr("Page {current} of {total}", current=1, total=1))
         self.meta_card.retranslate_ui()
@@ -478,10 +480,7 @@ class WaveformWidget(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(80)
         self._progress: float = 0.0
-        self._bars: list[float] = [
-            abs(math.sin(i * 0.28) * math.cos(i * 0.14)) * 0.75 + 0.15
-            for i in range(64)
-        ]
+        self._bars: list[float] = [abs(math.sin(i * 0.28) * math.cos(i * 0.14)) * 0.75 + 0.15 for i in range(64)]
 
     def set_progress(self, progress: float) -> None:
         """Update active progress in [0.0, 1.0]."""
@@ -492,8 +491,7 @@ class WaveformWidget(QWidget):
         """Generate deterministic bar amplitudes from file path."""
         seed = sum(ord(c) for c in path)
         self._bars = [
-            abs(math.sin((i + seed) * 0.28) * math.cos((i + seed * 2) * 0.14)) * 0.75 + 0.15
-            for i in range(64)
+            abs(math.sin((i + seed) * 0.28) * math.cos((i + seed * 2) * 0.14)) * 0.75 + 0.15 for i in range(64)
         ]
         self.update()
 
@@ -958,10 +956,10 @@ class PreviewPane(QStackedWidget):
 
         self.addWidget(self.empty_view)  # 0
         self.addWidget(self.image_view)  # 1
-        self.addWidget(self.pdf_view)    # 2
+        self.addWidget(self.pdf_view)  # 2
         self.addWidget(self.audio_view)  # 3
         self.addWidget(self.video_view)  # 4
-        self.addWidget(self.code_view)   # 5
+        self.addWidget(self.code_view)  # 5
 
         self.setCurrentIndex(0)
 
@@ -982,7 +980,14 @@ class PreviewPane(QStackedWidget):
 
         suffix = Path(path).suffix.lower()
 
-        if kind in (FileKind.IMAGE, FileKind.SCREENSHOT) or suffix in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
+        if kind in (FileKind.IMAGE, FileKind.SCREENSHOT) or suffix in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".bmp",
+            ".gif",
+        ):
             self.image_view.load_image(path, name, size, mtime, reason)
             self.setCurrentIndex(1)
         elif kind == FileKind.PDF or suffix == ".pdf":
@@ -997,9 +1002,8 @@ class PreviewPane(QStackedWidget):
             self.setCurrentIndex(4)
         elif kind == FileKind.CODE or (
             kind != FileKind.DOC
-            and suffix in (
-                ".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh"
-            )
+            and suffix
+            in (".py", ".js", ".ts", ".rs", ".go", ".c", ".cpp", ".h", ".json", ".yaml", ".yml", ".toml", ".md", ".sh")
         ):
             self.code_view.load_code(
                 path, name, focus, size, mtime, reason, query=clean_query, excerpt=item.excerpt, wrap_lines=False

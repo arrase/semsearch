@@ -2,21 +2,73 @@
 
 import re
 
-_IDENTIFIER_RE = re.compile(
-    r"^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::|->|#)[A-Za-z_$][A-Za-z0-9_$]*)*$"
-)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::|->|#)[A-Za-z_$][A-Za-z0-9_$]*)*$")
 
 _DEFINERS: set[str] = {
-    "def", "func", "fn", "fun", "function", "class", "struct", "enum", "protocol", "interface",
-    "trait", "type", "typealias", "actor", "extension", "impl", "module", "namespace", "object",
-    "record", "macro", "const", "let", "var", "val", "union", "mod", "sub", "@interface",
-    "@implementation", "@protocol", "#define", "function*",
+    "def",
+    "func",
+    "fn",
+    "fun",
+    "function",
+    "class",
+    "struct",
+    "enum",
+    "protocol",
+    "interface",
+    "trait",
+    "type",
+    "typealias",
+    "actor",
+    "extension",
+    "impl",
+    "module",
+    "namespace",
+    "object",
+    "record",
+    "macro",
+    "const",
+    "let",
+    "var",
+    "val",
+    "union",
+    "mod",
+    "sub",
+    "@interface",
+    "@implementation",
+    "@protocol",
+    "#define",
+    "function*",
 }
 
 _USERS: set[str] = {
-    "return", "await", "yield", "throw", "new", "else", "case", "print", "echo", "assert",
-    "not", "and", "or", "in", "is", "do", "go", "defer", "try", "catch", "if", "while",
-    "for", "typeof", "delete", "raise", "import", "from",
+    "return",
+    "await",
+    "yield",
+    "throw",
+    "new",
+    "else",
+    "case",
+    "print",
+    "echo",
+    "assert",
+    "not",
+    "and",
+    "or",
+    "in",
+    "is",
+    "do",
+    "go",
+    "defer",
+    "try",
+    "catch",
+    "if",
+    "while",
+    "for",
+    "typeof",
+    "delete",
+    "raise",
+    "import",
+    "from",
 }
 
 _COMMENT_STARTS: tuple[str, ...] = ("//", "#", "/*", "*", "--", '"""', "'''", "<!--", ";")
@@ -45,7 +97,7 @@ def extract_identifier(query: str) -> list[str] | None:
 
 def identifier_phrase(words: list[str]) -> str:
     """Return quoted FTS phrase pattern so words match consecutively as written."""
-    return f'"{ " ".join(words) }"'
+    return f'"{" ".join(words)}"'
 
 
 def _is_name_char(c: str) -> bool:
@@ -80,16 +132,21 @@ def _definition_strength(before: str, after: str, line: str) -> int:
     if before.startswith("func (") and before.endswith(")"):
         return 2
 
-    if before.startswith("- (") or before.startswith("+ ("):
+    if before.startswith(("- (", "+ (")):
         if any(after.startswith(p) for p in (":", "{", ";")) or not after:
             return 2
         return 0
 
-    if after.startswith("(") and before and previous not in _USERS:
-        if not any(c in "=(,.!?" for c in before) and "->" not in before:
-            last = before[-1]
-            if last.isalnum() or last in "*&>_]":
-                return 1 if line.strip().endswith(";") else 2
+    if (
+        after.startswith("(")
+        and before
+        and previous not in _USERS
+        and not any(c in "=(,.!?" for c in before)
+        and "->" not in before
+    ):
+        last = before[-1]
+        if last.isalnum() or last in "*&>_]":
+            return 1 if line.strip().endswith(";") else 2
 
     return 0
 
@@ -160,8 +217,21 @@ def find_first_line_with_words(words: list[str], text: str, first_line: int = 1)
 
 
 _SUMMARY_IGNORE_PREFIXES = (
-    "//", "#", "/*", "*", "--", '"""', "'''", "import ", "from ",
-    "#include", "using ", "package ", "}", ")", "@",
+    "//",
+    "#",
+    "/*",
+    "*",
+    "--",
+    '"""',
+    "'''",
+    "import ",
+    "from ",
+    "#include",
+    "using ",
+    "package ",
+    "}",
+    ")",
+    "@",
 )
 
 

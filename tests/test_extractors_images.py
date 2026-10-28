@@ -3,7 +3,9 @@
 import base64
 import io
 from pathlib import Path
+
 from PIL import Image
+
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.images import extract_image
 

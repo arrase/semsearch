@@ -1,9 +1,10 @@
 """Unit and widget tests for quick search panel."""
 
 import gc
-from pathlib import Path
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
@@ -152,7 +153,10 @@ def test_keyboard_navigation_and_actions(mock_search_service, qapp: QApplication
         mock_hide.assert_called_once()
 
     # 2. Shift+Enter (reveal_in_file_manager)
-    with patch("semsearch.gui.panel.reveal_in_file_manager") as mock_reveal, patch.object(panel, "hide_panel") as mock_hide:
+    with (
+        patch("semsearch.gui.panel.reveal_in_file_manager") as mock_reveal,
+        patch.object(panel, "hide_panel") as mock_hide,
+    ):
         event_shift_enter = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
         panel.eventFilter(panel.search_input, event_shift_enter)
         mock_reveal.assert_called_once()
@@ -489,8 +493,8 @@ def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QA
     """Verify clicking Open or Show in Files inside the preview pane dismisses the panel."""
     opened = []
     revealed = []
-    monkeypatch.setattr("semsearch.gui.preview.open_file", lambda p: opened.append(p))
-    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", lambda p: revealed.append(p))
+    monkeypatch.setattr("semsearch.gui.preview.open_file", opened.append)
+    monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", revealed.append)
     mock_search_service.db.fts_search.return_value[0]["rank"] = -1.0
 
     panel = SearchPanel(mock_search_service, AppConfig())
@@ -511,9 +515,7 @@ def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QA
     assert not panel.isVisible()
 
 
-def test_panel_skips_obsolete_intermediate_workers_during_slow_search(
-    mock_search_service, qapp: QApplication
-):
+def test_panel_skips_obsolete_intermediate_workers_during_slow_search(mock_search_service, qapp: QApplication):
     """Verify intermediate debounced workers stopped while waiting on _search_lock skip search()."""
     first_started = threading.Event()
     unblock_first = threading.Event()
@@ -612,4 +614,3 @@ def test_panel_hide_does_not_unload_model(mock_search_service, qapp: QApplicatio
     panel.hide_panel()
 
     assert mock_search_service.ollama.method_calls == []
-

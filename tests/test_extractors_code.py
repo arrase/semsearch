@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.code import (
     extract_code,
@@ -52,8 +53,8 @@ def test_extract_code_whole_line_chunking(tmp_path: Path) -> None:
         assert isinstance(s.payload, str)
         assert s.payload.endswith("\n")
         # Every line inside should be intact
-        for l in s.payload.splitlines():
-            assert "x_" in l or "function_" in l or "pass" in l or l == ""
+        for line in s.payload.splitlines():
+            assert "x_" in line or "function_" in line or "pass" in line or line == ""
 
 
 def test_extract_notebook_strips_outputs(tmp_path: Path) -> None:
@@ -84,9 +85,7 @@ def test_extract_notebook_strips_outputs(tmp_path: Path) -> None:
                 ],
             },
         ],
-        "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}
-        },
+        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
         "nbformat": 4,
         "nbformat_minor": 2,
     }
@@ -98,7 +97,6 @@ def test_extract_notebook_strips_outputs(tmp_path: Path) -> None:
     assert segments[0].loc == 1.0
     assert segments[0].loc_end == 2.0
     combined_text = "".join(str(s.payload) for s in segments)
-
 
     # Must contain code and markdown
     assert "Analysis Notebook" in combined_text
@@ -112,7 +110,7 @@ def test_extract_notebook_strips_outputs(tmp_path: Path) -> None:
 
 def test_code_to_segment(tmp_path: Path) -> None:
     code_path = tmp_path / "test.rs"
-    code_path.write_text("fn main() {\n    println!(\"Hello\");\n}\n", encoding="utf-8")
+    code_path.write_text('fn main() {\n    println!("Hello");\n}\n', encoding="utf-8")
 
     segments = extract_code(str(code_path))
     assert len(segments) == 1

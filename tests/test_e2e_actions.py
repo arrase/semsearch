@@ -1,6 +1,7 @@
 """End-to-end desktop deep-linking action dispatch tests."""
 
 import subprocess
+
 import pytest
 
 from semsearch.config import AppConfig

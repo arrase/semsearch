@@ -1,7 +1,9 @@
 """Unit tests for SystemTrayManager and dynamic circular progress ring rendering."""
 
 from unittest.mock import MagicMock, patch
+
 from PySide6.QtWidgets import QApplication
+
 from semsearch.core.types import EngineActivity, EngineStatus
 from semsearch.gui.tray import SystemTrayManager, render_tray_icon
 
@@ -154,4 +156,3 @@ def test_system_tray_manager_skips_unchanged_status_updates(qapp: QApplication):
         assert mock_set_icon.call_count == 2
         assert mock_set_tooltip.call_count == 2
         assert mock_set_status_text.call_count == 2
-

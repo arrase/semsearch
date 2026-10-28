@@ -1,7 +1,6 @@
 """Tests for Linux desktop actions, editor jumps, and deep links."""
 
 from pathlib import Path
-import pytest
 
 from semsearch.config import AppConfig
 from semsearch.core.types import FileKind, SearchHit
@@ -22,7 +21,6 @@ def test_open_file(monkeypatch):
 
     def mock_popen(args, **kwargs):
         launched.append(args)
-        return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
     assert open_file("/path/to/doc.pdf") is True
@@ -34,7 +32,6 @@ def test_open_media_at(monkeypatch):
 
     def mock_popen(args, **kwargs):
         launched.append(args)
-        return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
 
@@ -59,7 +56,6 @@ def test_open_pdf_at(monkeypatch):
 
     def mock_popen(args, **kwargs):
         launched.append(args)
-        return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
 
@@ -89,7 +85,6 @@ def test_open_code_at(monkeypatch):
 
     def mock_popen(args, **kwargs):
         launched.append(args)
-        return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
 
@@ -124,7 +119,6 @@ def test_reveal_in_file_manager(monkeypatch):
 
     def mock_popen(args, **kwargs):
         launched.append(args)
-        return None
 
     monkeypatch.setattr("subprocess.Popen", mock_popen)
 
@@ -159,8 +153,8 @@ def test_copy_to_clipboard(monkeypatch):
     class MockProc:
         returncode = 0
 
-        def communicate(self, input):
-            captured.append(input)
+        def communicate(self, **kwargs):
+            captured.append(kwargs["input"])
 
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "wl-copy" else None)
     monkeypatch.setattr("subprocess.Popen", lambda args, **kwargs: MockProc())
@@ -169,15 +163,22 @@ def test_copy_to_clipboard(monkeypatch):
     assert captured == [b"hello world"]
 
     assert copy_file_to_clipboard("/home/user/test.txt") is True
-    assert captured[-1] == f"file://{Path('/home/user/test.txt').resolve()}".encode("utf-8")
+    assert captured[-1] == f"file://{Path('/home/user/test.txt').resolve()}".encode()
 
 
 def test_execute_hit_action(monkeypatch):
     actions_called = []
 
-    monkeypatch.setattr("semsearch.services.actions.open_code_at", lambda p, line, editor_preference: actions_called.append(("code", p, line)))
-    monkeypatch.setattr("semsearch.services.actions.open_pdf_at", lambda p, page: actions_called.append(("pdf", p, page)))
-    monkeypatch.setattr("semsearch.services.actions.open_media_at", lambda p, seconds: actions_called.append(("media", p, seconds)))
+    monkeypatch.setattr(
+        "semsearch.services.actions.open_code_at",
+        lambda p, line, editor_preference: actions_called.append(("code", p, line)),
+    )
+    monkeypatch.setattr(
+        "semsearch.services.actions.open_pdf_at", lambda p, page: actions_called.append(("pdf", p, page))
+    )
+    monkeypatch.setattr(
+        "semsearch.services.actions.open_media_at", lambda p, seconds: actions_called.append(("media", p, seconds))
+    )
     monkeypatch.setattr("semsearch.services.actions.open_file", lambda p: actions_called.append(("file", p)))
 
     config = AppConfig(code_editor="code")

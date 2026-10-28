@@ -1,7 +1,8 @@
 """Unit tests for SQLite WAL database and FTS indexing."""
 
-from pathlib import Path
 import threading
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -13,7 +14,6 @@ from semsearch.core.types import (
     Modality,
     SegmentKind,
 )
-
 
 
 @pytest.fixture
@@ -325,7 +325,6 @@ def test_find_files_under(db: Database):
     assert len(all_files) == 9
 
 
-
 def test_fts_search_snippet_highlighting(db: Database):
     """Verify fts_search returns snippet with highlighted text markers."""
     candidate = Candidate("/tmp/document.txt", FileKind.DOC, 100, 10.0, 1, 1)
@@ -424,7 +423,7 @@ def test_get_all_vectors_with_scale_and_file_segments(db: Database):
     db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0.0, 1.0, "chunk 0", vec_bytes, "", "chunk zero", "")
     db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 1.0, 2.0, "chunk 1", vec_bytes, "", "chunk one", "")
 
-    seg_ids, file_ids, modalities, matrix, sets_scale = db.get_all_vectors_with_scale()
+    seg_ids, _file_ids, _modalities, _matrix, sets_scale = db.get_all_vectors_with_scale()
     assert len(seg_ids) == 2
     assert sets_scale == [True, False]
 
@@ -445,9 +444,7 @@ def test_fts_malformed_query_and_thread_safety(db: Database):
 
     def worker(idx: int) -> None:
         try:
-            cid = db.insert_file(
-                Candidate(f"/tmp/f_{idx}.txt", FileKind.DOC, 10, float(idx), idx + 100, 1)
-            )
+            cid = db.insert_file(Candidate(f"/tmp/f_{idx}.txt", FileKind.DOC, 10, float(idx), idx + 100, 1))
             db.insert_segment(
                 cid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, f"body {idx}", None, f"f_{idx}.txt", f"body {idx}", ""
             )

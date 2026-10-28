@@ -1,14 +1,14 @@
 """Tests for inotify filesystem watcher and debouncing logic."""
 
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
+
 from watchdog.events import (
     DirDeletedEvent,
     DirMovedEvent,
     FileCreatedEvent,
     FileDeletedEvent,
-    FileModifiedEvent,
     FileMovedEvent,
 )
 
@@ -108,7 +108,7 @@ def test_event_handler_move_and_delete(tmp_path: Path):
     old_file = tmp_path / "old.md"
     old_file.write_text("content", encoding="utf-8")
     cand = Candidate(path=str(old_file), kind=FileKind.DOC, size=7, mtime=1.0, inode=10, device=1)
-    fid = db.insert_file(cand)
+    db.insert_file(cand)
 
     # Move event
     new_file = tmp_path / "new.md"
@@ -299,8 +299,12 @@ def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Pat
     file_a.write_text("a", encoding="utf-8")
     file_dash.write_text("dash", encoding="utf-8")
 
-    fid_a = db.insert_file(Candidate(path=str(file_a.resolve()), kind=FileKind.DOC, size=1, mtime=1.0, inode=301, device=1))
-    fid_dash = db.insert_file(Candidate(path=str(file_dash.resolve()), kind=FileKind.DOC, size=4, mtime=1.0, inode=302, device=1))
+    fid_a = db.insert_file(
+        Candidate(path=str(file_a.resolve()), kind=FileKind.DOC, size=1, mtime=1.0, inode=301, device=1)
+    )
+    fid_dash = db.insert_file(
+        Candidate(path=str(file_dash.resolve()), kind=FileKind.DOC, size=4, mtime=1.0, inode=302, device=1)
+    )
 
     # Move dir_a to dir_b
     dir_b = tmp_path / "dir_b"

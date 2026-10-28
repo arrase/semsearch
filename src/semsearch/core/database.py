@@ -1,11 +1,12 @@
 """SQLite WAL database management and full-text search indexing."""
 
 import json
-from pathlib import Path
 import re
 import sqlite3
 import threading
 import time
+from pathlib import Path
+
 import numpy as np
 
 from semsearch.core.search_text import extract_snippet, normalize_search_text
@@ -172,7 +173,7 @@ class Database:
                     candidate.device,
                 ),
             )
-            file_id = cursor.lastrowid
+            file_id = int(cursor.lastrowid or 0)
             file_path = Path(candidate.path)
             name = normalize_search_text(file_path.name)
             folder = normalize_search_text(_folder_text(file_path))
@@ -184,7 +185,7 @@ class Database:
                 """,
                 (file_id, SegmentKind.NAME.value, Modality.NONE.value),
             )
-            segment_id = cursor.lastrowid
+            segment_id = int(cursor.lastrowid or 0)
             cursor.execute(
                 """
                 INSERT INTO fts (rowid, name, body, original)
@@ -341,9 +342,7 @@ class Database:
         """Find the most recently modified partially indexed file."""
         with self._lock:
             cursor = self._conn.cursor()
-            cursor.execute(
-                f"SELECT {FILE_COLUMNS} FROM files WHERE state = 'partial' ORDER BY mtime DESC LIMIT 1"
-            )
+            cursor.execute(f"SELECT {FILE_COLUMNS} FROM files WHERE state = 'partial' ORDER BY mtime DESC LIMIT 1")
             row = cursor.fetchone()
             return self._row_to_file_record(row) if row else None
 
@@ -370,7 +369,7 @@ class Database:
                 """,
                 (file_id, kind.value, modality.value, loc, loc_end, excerpt, vec),
             )
-            segment_id = cursor.lastrowid
+            segment_id = int(cursor.lastrowid or 0)
             norm_name = normalize_search_text(name) if name else ""
             norm_body = normalize_search_text(body) if body else ""
             orig_val = original if original else (body if norm_body != body else "")
@@ -531,9 +530,7 @@ class Database:
                 else:
                     sets_scale.append(False)
 
-            matrix = np.vstack(
-                [np.frombuffer(r[3], dtype=np.float16).astype(np.float32) for r in rows]
-            )
+            matrix = np.vstack([np.frombuffer(r[3], dtype=np.float16).astype(np.float32) for r in rows])
             return segment_ids, file_ids, modalities, matrix, sets_scale
 
     def fts_search(self, query: str, limit: int = 100, terms: list[str] | None = None) -> list[dict]:
@@ -555,7 +552,10 @@ class Database:
                 cursor.execute(
                     """
                     SELECT fts.rowid, s.file, fts.name, fts.body, fts.original, bm25(fts, 10.0, 1.0) AS rank,
-                           coalesce(nullif(snippet(fts, 1, '«', '»', '…', 12), ''), snippet(fts, 0, '«', '»', '…', 12)) AS snippet,
+                           coalesce(
+                               nullif(snippet(fts, 1, '«', '»', '…', 12), ''),
+                               snippet(fts, 0, '«', '»', '…', 12)
+                           ) AS snippet,
                            s.loc, s.excerpt
                     FROM fts
                     LEFT JOIN segments s ON s.id = fts.rowid
@@ -603,7 +603,7 @@ class Database:
         """Calculate query term coverage share for candidate files across all their segments."""
         if not patterns or not file_ids:
             return {}
-        coverage: dict[int, float] = {fid: 0.0 for fid in file_ids}
+        coverage: dict[int, float] = dict.fromkeys(file_ids, 0.0)
         files_str = ",".join(str(int(fid)) for fid in file_ids)
         weight = 1.0 / len(patterns)
         with self._lock:
@@ -658,4 +658,3 @@ class Database:
             info=json.loads(row[9]) if row[9] else {},
             indexed_at=row[10] or 0.0,
         )
-

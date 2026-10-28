@@ -12,7 +12,6 @@ from semsearch.i18n import (
     fa,
     fr,
     he,
-    id,
     it,
     kk,
     ms,
@@ -23,9 +22,14 @@ from semsearch.i18n import (
     sr,
     th,
     tl,
-    tr as tr_lang,
     uk,
     vi,
+)
+from semsearch.i18n import (
+    id as id_lang,
+)
+from semsearch.i18n import (
+    tr as tr_lang,
 )
 
 DEFAULT_LANGUAGE = "en"
@@ -76,7 +80,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     "tr": tr_lang.STRINGS,
     "fa": fa.STRINGS,
     "he": he.STRINGS,
-    "id": id.STRINGS,
+    "id": id_lang.STRINGS,
     "vi": vi.STRINGS,
     "th": th.STRINGS,
     "ms": ms.STRINGS,
@@ -150,10 +154,7 @@ def is_rtl(lang: str | None = None) -> bool:
 
 def tr(key: str, **kwargs: object) -> str:
     """Translate a UI string into the active language using inline English as fallback."""
-    if _current_language == DEFAULT_LANGUAGE:
-        text = key
-    else:
-        text = TRANSLATIONS.get(_current_language, {}).get(key, key)
+    text = key if _current_language == DEFAULT_LANGUAGE else TRANSLATIONS.get(_current_language, {}).get(key, key)
     if kwargs:
         return text.format(**kwargs)
     return text

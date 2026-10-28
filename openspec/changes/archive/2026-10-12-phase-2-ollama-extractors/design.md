@@ -35,6 +35,7 @@ All extractors produce a uniform dataclass `ExtractedSegment`:
 from dataclasses import dataclass
 from semsearch.core.types import Modality, SegmentKind
 
+
 @dataclass
 class ExtractedSegment:
     kind: SegmentKind
@@ -132,6 +133,7 @@ class ExtractedSegment:
       hop_sec: float = 25.0,
       min_rms: float = 0.003,
   ) -> list[ExtractedSegment]: ...
+
 
   def average_hash(im: Any, hash_size: int = 8) -> int: ...
   def hamming_distance(h1: int, h2: int) -> int: ...

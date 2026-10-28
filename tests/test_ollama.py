@@ -1,13 +1,14 @@
 """Unit tests for OllamaClient and multimodal discovery."""
 
-import pytest
 import httpx
+import pytest
+
 from semsearch.core.ollama import (
     OllamaClient,
-    OllamaError,
     OllamaConnectionError,
-    OllamaTimeoutError,
+    OllamaError,
     OllamaModelError,
+    OllamaTimeoutError,
 )
 
 
@@ -433,4 +434,3 @@ def test_preload_sends_empty_input_with_resolved_and_explicit_num_ctx(monkeypatc
         "model": "unknown-ctx",
         "input": [],
     }
-

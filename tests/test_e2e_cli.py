@@ -1,8 +1,8 @@
 """End-to-end CLI activation and single-instance IPC dispatch tests."""
 
 from unittest.mock import MagicMock
-import pytest
-from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+from PySide6.QtNetwork import QLocalServer
 from PySide6.QtWidgets import QApplication
 
 from semsearch.gui.app import (

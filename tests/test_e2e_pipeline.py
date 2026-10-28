@@ -1,7 +1,8 @@
 """End-to-end indexing pipeline, database consistency, and incremental watcher tests."""
 
-from pathlib import Path
 import time
+from pathlib import Path
+
 import numpy as np
 
 from semsearch.config import AppConfig
@@ -28,7 +29,7 @@ class DeterministicOllama:
 
 def test_testbed_indexing_full_pipeline_e2e(tmp_path: Path) -> None:
     testbed_dir = tmp_path / "testbed"
-    testbed = generate_testbed(testbed_dir)
+    generate_testbed(testbed_dir)
 
     db_path = tmp_path / "semsearch.db"
     code_db_path = tmp_path / "code.db"
@@ -160,7 +161,9 @@ def test_incremental_indexing_modification_and_deletion_e2e(tmp_path: Path) -> N
     # 1. Modify notes.txt
     time.sleep(0.01)
     notes_path = testbed["notes"]
-    notes_path.write_text("Updated content with new tracking token SERIAL-DELTA-8899\nMaintenance complete.", encoding="utf-8")
+    notes_path.write_text(
+        "Updated content with new tracking token SERIAL-DELTA-8899\nMaintenance complete.", encoding="utf-8"
+    )
 
     indexer.crawl_and_sync(is_code=False)
     assert db.stats()["pending"] == 1

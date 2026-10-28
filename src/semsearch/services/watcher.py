@@ -1,11 +1,13 @@
 """Inotify filesystem event monitoring and differential debouncing."""
 
 import os
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
+
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
@@ -92,7 +94,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
     def _should_filter(self, path_str: str) -> bool:
         p = Path(path_str)
         for part in p.parts:
-            if part.startswith(".") and part != "." and part != "..":
+            if part.startswith(".") and part not in {".", ".."}:
                 return True
             if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
                 return True
@@ -119,21 +121,23 @@ class SemSearchEventHandler(FileSystemEventHandler):
 
         return False
 
-
     def on_created(self, event: FileSystemEvent) -> None:
-        if event.is_directory or self._should_filter(event.src_path):
+        src_path = os.fsdecode(event.src_path)
+        if event.is_directory or self._should_filter(src_path):
             return
-        self.bucket.add(event.src_path)
+        self.bucket.add(src_path)
 
     def on_modified(self, event: FileSystemEvent) -> None:
-        if event.is_directory or self._should_filter(event.src_path):
+        src_path = os.fsdecode(event.src_path)
+        if event.is_directory or self._should_filter(src_path):
             return
-        self.bucket.add(event.src_path)
+        self.bucket.add(src_path)
 
     def on_moved(self, event: FileSystemEvent) -> None:
-        dest_path = getattr(event, "dest_path", "")
+        src_path = os.fsdecode(event.src_path)
+        dest_path = os.fsdecode(getattr(event, "dest_path", ""))
         if event.is_directory:
-            src_root = Path(event.src_path).resolve()
+            src_root = Path(src_path).resolve()
             dest_root = Path(dest_path).resolve()
             for f in self.db.find_files_under(str(src_root)):
                 try:
@@ -149,7 +153,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
                     self.bucket.add(new_p)
             return
 
-        rec = self.db.find_by_path(event.src_path)
+        rec = self.db.find_by_path(src_path)
         if rec is not None:
             if self._should_filter(dest_path):
                 self.db.delete_file(rec.id)
@@ -160,11 +164,12 @@ class SemSearchEventHandler(FileSystemEventHandler):
             self.bucket.add(dest_path)
 
     def on_deleted(self, event: FileSystemEvent) -> None:
+        src_path = os.fsdecode(event.src_path)
         if event.is_directory:
-            for f in self.db.find_files_under(event.src_path):
+            for f in self.db.find_files_under(src_path):
                 self.db.delete_file(f.id)
             return
-        rec = self.db.find_by_path(event.src_path)
+        rec = self.db.find_by_path(src_path)
         if rec is not None:
             self.db.delete_file(rec.id)
 
@@ -182,7 +187,7 @@ class FileSystemWatcher:
         self.config = config
         self.check_interval_sec = check_interval_sec
 
-        self._observer: Observer | None = None
+        self._observer: BaseObserver | None = None
         self._buckets: dict[str, DebounceBucket] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -205,7 +210,7 @@ class FileSystemWatcher:
 
     def _sync_paths(self, paths: set[str]) -> None:
         for p in paths:
-            if os.path.exists(p):
+            if Path(p).exists():
                 self.index_service.enqueue_file(p)
 
     def _schedule_folders(
@@ -216,10 +221,9 @@ class FileSystemWatcher:
         quiet_window: float,
         max_ceiling: float | None = None,
     ) -> None:
-        assert self._observer is not None
         for folder in folders:
             f_path = str(Path(folder).resolve())
-            if os.path.isdir(f_path):
+            if self._observer is not None and Path(f_path).is_dir():
                 bucket = DebounceBucket(
                     quiet_window=quiet_window,
                     max_ceiling=max_ceiling,

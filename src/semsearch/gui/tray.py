@@ -1,6 +1,6 @@
 """System tray manager and dynamic circular progress ring rendering."""
 
-from PySide6.QtCore import QObject, QRectF, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -168,9 +168,7 @@ class SystemTrayManager(QObject):
             self.pause_action.setText(tr("Pause Indexing"))
         else:
             status_text = (
-                tr("Idle - {indexed} indexed", indexed=f"{status.indexed:,}")
-                if status.indexed > 0
-                else tr("Idle")
+                tr("Idle - {indexed} indexed", indexed=f"{status.indexed:,}") if status.indexed > 0 else tr("Idle")
             )
             self.pause_action.setText(tr("Pause Indexing"))
 
