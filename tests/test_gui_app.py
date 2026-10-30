@@ -21,7 +21,7 @@ from semsearch.gui.hotkey import HotkeyListener, normalize_hotkey
 from semsearch.main import build_parser
 
 
-def test_normalize_hotkey():
+def test_normalize_hotkey() -> None:
     """Verify conversion to pynput format and HotKey.parse compatibility."""
     assert normalize_hotkey("ctrl+shift+space") == "<ctrl>+<shift>+<space>"
     assert normalize_hotkey("<ctrl>+<shift>+<space>") == "<ctrl>+<shift>+<space>"
@@ -33,7 +33,7 @@ def test_normalize_hotkey():
         assert len(parsed) > 0
 
 
-def test_hotkey_listener_signal():
+def test_hotkey_listener_signal() -> None:
     """Verify HotkeyListener signal emission."""
     listener = HotkeyListener("ctrl+shift+space")
     spy = MagicMock()
@@ -43,7 +43,7 @@ def test_hotkey_listener_signal():
     spy.assert_called_once()
 
 
-def test_cli_parser_flags():
+def test_cli_parser_flags() -> None:
     """Verify CLI argument parser flags."""
     parser = build_parser()
 
@@ -57,7 +57,7 @@ def test_cli_parser_flags():
     assert args_daemon.daemon is True
 
 
-def test_real_semsearch_app_initialization(tmp_path: Path):
+def test_real_semsearch_app_initialization(tmp_path: Path) -> None:
     """Construct real SemSearchApp with real Database and verify all services wired properly."""
     existing_app = QApplication.instance()
     if existing_app is not None and not isinstance(existing_app, SemSearchApp):
@@ -114,7 +114,7 @@ def test_real_semsearch_app_initialization(tmp_path: Path):
 class DummyApp:
     """Mock application harness mimicking SemSearchApp with bound methods."""
 
-    def __init__(self, code_enabled: bool = True):
+    def __init__(self, *, code_enabled: bool = True) -> None:
         self.config = AppConfig(code_enabled=code_enabled)
         self.index_service = MagicMock()
         self.watcher = MagicMock()
@@ -136,8 +136,9 @@ class DummyApp:
     shutdown = SemSearchApp.shutdown
 
 
-def test_app_cli_action_routing(qapp: QApplication):
+def test_app_cli_action_routing(qapp: QApplication) -> None:
     """Verify action routing to panel, settings dialog, and tray daemon."""
+    del qapp
     dummy = DummyApp()
     dummy.handle_cli_action("SHOW_PANEL")
     dummy.panel.show_panel.assert_called_once()
@@ -150,16 +151,16 @@ def test_app_cli_action_routing(qapp: QApplication):
     assert dummy.panel.show_panel.call_count == 1
 
 
-def test_ipc_forwarding_mechanism(tmp_path: Path, qapp: QApplication):
+def test_ipc_forwarding_mechanism(qapp: QApplication) -> None:
     """Verify local socket IPC connection and message forwarding."""
     server_name = get_ipc_server_name()
     QLocalServer.removeServer(server_name)
     server = QLocalServer()
     assert server.listen(server_name)
 
-    received_messages = []
+    received_messages: list[str] = []
 
-    def on_new_connection():
+    def on_new_connection() -> None:
         conn = server.nextPendingConnection()
         if conn:
             if conn.bytesAvailable() == 0:
@@ -183,7 +184,7 @@ def test_ipc_forwarding_mechanism(tmp_path: Path, qapp: QApplication):
     QLocalServer.removeServer(server_name)
 
 
-def test_app_start_indexing_triggers_background_crawl():
+def test_app_start_indexing_triggers_background_crawl() -> None:
     """Verify SemSearchApp._start_indexing triggers background crawl for general and code files."""
     app = DummyApp(code_enabled=True)
     app._start_indexing()
@@ -199,7 +200,7 @@ def test_app_start_indexing_triggers_background_crawl():
     assert app.index_service.crawl_and_sync.call_count == 2
 
 
-def test_app_start_indexing_skips_code_when_disabled():
+def test_app_start_indexing_skips_code_when_disabled() -> None:
     """Verify _initial_crawl skips code crawl when code_enabled is False."""
     app = DummyApp(code_enabled=False)
     app._start_indexing()
@@ -210,7 +211,7 @@ def test_app_start_indexing_skips_code_when_disabled():
     app.index_service.crawl_and_sync.assert_called_once_with(is_code=False)
 
 
-def test_app_start_indexing_does_not_duplicate_running_thread():
+def test_app_start_indexing_does_not_duplicate_running_thread() -> None:
     """Verify _start_indexing does not spawn another thread if already running."""
     app = DummyApp(code_enabled=True)
     thread = threading.Thread(target=lambda: time.sleep(0.1), daemon=True)
@@ -222,7 +223,7 @@ def test_app_start_indexing_does_not_duplicate_running_thread():
     thread.join(timeout=2.0)
 
 
-def test_app_shutdown_joins_crawl_thread():
+def test_app_shutdown_joins_crawl_thread() -> None:
     """Verify shutdown joins running _crawl_thread and resets it to None."""
     app = DummyApp()
     app._crawl_thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
@@ -238,7 +239,7 @@ def test_app_shutdown_joins_crawl_thread():
     app.quit.assert_called_once()
 
 
-def test_app_trigger_reindex_spawns_thread():
+def test_app_trigger_reindex_spawns_thread() -> None:
     """Verify _trigger_reindex starts crawl thread."""
     app = DummyApp()
     app._trigger_reindex()
@@ -248,11 +249,11 @@ def test_app_trigger_reindex_spawns_thread():
     app.index_service.crawl_and_sync.assert_called()
 
 
-def test_app_trigger_reindex_rapid_clicks_skips_duplicate():
+def test_app_trigger_reindex_rapid_clicks_skips_duplicate() -> None:
     """Verify rapid reindex invocations skip spawning duplicate threads while running."""
     app = DummyApp(code_enabled=True)
     slow_event = threading.Event()
-    app.index_service.crawl_and_sync.side_effect = lambda **kwargs: slow_event.wait(timeout=1.0)
+    app.index_service.crawl_and_sync.side_effect = lambda **_kwargs: slow_event.wait(timeout=1.0)
 
     app._trigger_reindex()
     t1 = app._crawl_thread

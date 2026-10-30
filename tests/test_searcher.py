@@ -29,12 +29,12 @@ def mock_dbs(tmp_path: Path) -> tuple[Database, Database]:
     return db, code_db
 
 
-def test_prompts_formatting():
+def test_prompts_formatting() -> None:
     assert format_query_prompt("quarterly report") == "task: search result | query: quarterly report"
     assert format_code_query_prompt("binary search") == "task: code retrieval | query: binary search"
 
 
-def test_is_lookup_query():
+def test_is_lookup_query() -> None:
     assert is_lookup_query("getUserProfile") is True
     assert is_lookup_query("get_user_profile") is True
     assert is_lookup_query("src/core/types.py") is True
@@ -48,12 +48,23 @@ def test_is_lookup_query():
     assert is_lookup_query("") is False
 
 
-def test_compute_coverage(mock_dbs):
+def test_compute_coverage(mock_dbs: tuple[Database, Database]) -> None:
     db, _ = mock_dbs
     assert db.compute_coverage([], [1]) == {}
     text = "The annual financial report for fiscal year 2026 is published."
     fid = db.insert_file(Candidate(path="/docs/report.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=1, device=1))
-    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, text, None, "report.txt", text, "")
+    db.insert_segment(
+        fid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0.0,
+        0.0,
+        excerpt=text,
+        vec=None,
+        name="report.txt",
+        body=text,
+        original="",
+    )
 
     patterns = make_fts_patterns(["financial", "report", "2026"])
     assert db.compute_coverage(patterns, [fid])[fid] == 1.0
@@ -67,7 +78,7 @@ def test_compute_coverage(mock_dbs):
     assert pytest.approx(db.compute_coverage(patterns_partial, [fid])[fid], 0.01) == 0.33
 
 
-def test_query_routing_general_vs_code(mock_dbs):
+def test_query_routing_general_vs_code(mock_dbs: tuple[Database, Database]) -> None:
     db, code_db = mock_dbs
 
     # Insert file in general db
@@ -79,11 +90,11 @@ def test_query_routing_general_vs_code(mock_dbs):
         Modality.TEXT,
         0,
         0,
-        "system specifications",
-        None,
-        "specs.txt",
-        "system specifications",
-        "specs",
+        excerpt="system specifications",
+        vec=None,
+        name="specs.txt",
+        body="system specifications",
+        original="specs",
     )
 
     # Insert file in code db
@@ -95,11 +106,11 @@ def test_query_routing_general_vs_code(mock_dbs):
         Modality.TEXT,
         1,
         10,
-        "class SearchEngine:\n    pass",
-        None,
-        "engine.py",
-        "class SearchEngine pass",
-        "engine",
+        excerpt="class SearchEngine:\n    pass",
+        vec=None,
+        name="engine.py",
+        body="class SearchEngine pass",
+        original="engine",
     )
 
     searcher = SearchService(db=db, code_db=code_db)
@@ -119,7 +130,7 @@ def test_query_routing_general_vs_code(mock_dbs):
     assert len(searcher_no_code.search("code: SearchEngine")) == 0
 
 
-def test_quality_gating_and_ranking(mock_dbs):
+def test_quality_gating_and_ranking(mock_dbs: tuple[Database, Database]) -> None:
     db, _ = mock_dbs
 
     # High coverage keyword match (coverage >= 0.5)
@@ -131,11 +142,11 @@ def test_quality_gating_and_ranking(mock_dbs):
         Modality.TEXT,
         0,
         0,
-        "client invoice billing",
-        None,
-        "invoice.txt",
-        "client invoice billing payment",
-        "",
+        excerpt="client invoice billing",
+        vec=None,
+        name="invoice.txt",
+        body="client invoice billing payment",
+        original="",
     )
 
     # Low coverage keyword match (coverage < 0.5) and no vector
@@ -147,11 +158,11 @@ def test_quality_gating_and_ranking(mock_dbs):
         Modality.TEXT,
         0,
         0,
-        "unrelated notes",
-        None,
-        "random.txt",
-        "only client mentioned here",
-        "",
+        excerpt="unrelated notes",
+        vec=None,
+        name="random.txt",
+        body="only client mentioned here",
+        original="",
     )
 
     searcher = SearchService(db=db)
@@ -163,7 +174,7 @@ def test_quality_gating_and_ranking(mock_dbs):
     assert results.ranked[0].path == "/docs/invoice.txt"
 
 
-def test_vector_search_with_mock_ollama(mock_dbs, monkeypatch):
+def test_vector_search_with_mock_ollama(mock_dbs: tuple[Database, Database]) -> None:
     db, _ = mock_dbs
     rng = np.random.default_rng(42)
 
@@ -178,21 +189,38 @@ def test_vector_search_with_mock_ollama(mock_dbs, monkeypatch):
         Modality.IMAGE,
         0,
         0,
-        "sunset over the beach",
-        float16_to_bytes(vec_high),
-        "sunset.jpg",
-        "",
-        "",
+        excerpt="sunset over the beach",
+        vec=float16_to_bytes(vec_high),
+        name="sunset.jpg",
+        body="",
+        original="",
     )
 
     c2 = Candidate(path="/images/mountains.jpg", kind=FileKind.IMAGE, size=500, mtime=1.0, inode=2, device=2)
     fid2 = db.insert_file(c2)
     db.insert_segment(
-        fid2, SegmentKind.IMAGE, Modality.IMAGE, 0, 0, "snowy peaks", float16_to_bytes(vec_low), "mountains.jpg", "", ""
+        fid2,
+        SegmentKind.IMAGE,
+        Modality.IMAGE,
+        0,
+        0,
+        excerpt="snowy peaks",
+        vec=float16_to_bytes(vec_low),
+        name="mountains.jpg",
+        body="",
+        original="",
     )
 
     class MockOllama(OllamaClient):
-        def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
+        def embed(
+            self,
+            _model: str,
+            _inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx
             return [vec_high.tolist()]
 
     searcher = SearchService(db=db, ollama=MockOllama())
@@ -203,7 +231,7 @@ def test_vector_search_with_mock_ollama(mock_dbs, monkeypatch):
     assert results.ranked[0].z > 0.0
 
 
-def test_weaker_matches_folding(mock_dbs):
+def test_weaker_matches_folding(mock_dbs: tuple[Database, Database]) -> None:
     db, _ = mock_dbs
 
     c1 = Candidate(path="/a.txt", kind=FileKind.DOC, size=10, mtime=1.0, inode=1, device=1)
@@ -214,16 +242,27 @@ def test_weaker_matches_folding(mock_dbs):
         Modality.TEXT,
         0,
         0,
-        "alpha beta gamma delta",
-        None,
-        "a.txt",
-        "alpha beta gamma delta",
-        "",
+        excerpt="alpha beta gamma delta",
+        vec=None,
+        name="a.txt",
+        body="alpha beta gamma delta",
+        original="",
     )
 
     c2 = Candidate(path="/b.txt", kind=FileKind.DOC, size=10, mtime=1.0, inode=2, device=2)
     fid2 = db.insert_file(c2)
-    db.insert_segment(fid2, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "alpha beta", None, "b.txt", "alpha beta", "")
+    db.insert_segment(
+        fid2,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        excerpt="alpha beta",
+        vec=None,
+        name="b.txt",
+        body="alpha beta",
+        original="",
+    )
 
     searcher = SearchService(db=db)
     # Query matching all terms in c1 and half in c2
@@ -236,7 +275,7 @@ def test_weaker_matches_folding(mock_dbs):
     assert any(h.path == "/b.txt" for h in results.weaker)
 
 
-def test_code_definition_line_jump(tmp_path: Path):
+def test_code_definition_line_jump(tmp_path: Path) -> None:
     code_path = tmp_path / "parser.py"
     code_path.write_text(
         "import sys\n\ndef parse_tokens(stream):\n    return []\n",
@@ -246,7 +285,16 @@ def test_code_definition_line_jump(tmp_path: Path):
     c = Candidate(path=str(code_path), kind=FileKind.CODE, size=100, mtime=1.0, inode=1, device=1)
     fid = code_db.insert_file(c)
     code_db.insert_segment(
-        fid, SegmentKind.LINES, Modality.TEXT, 1, 4, "def parse_tokens", None, "parser.py", "parse tokens", ""
+        fid,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        1,
+        4,
+        excerpt="def parse_tokens",
+        vec=None,
+        name="parser.py",
+        body="parse tokens",
+        original="",
     )
 
     searcher = SearchService(db=Database(":memory:"), code_db=code_db)
@@ -257,7 +305,7 @@ def test_code_definition_line_jump(tmp_path: Path):
     assert hit.focus == 3.0  # Line 3 is where `def parse_tokens` is defined!
 
 
-def test_fts_keyword_rank_positive_and_matches_words(tmp_path: Path):
+def test_fts_keyword_rank_positive_and_matches_words(tmp_path: Path) -> None:
     """Verify FTS matches yield positive keyword_rank and hit.reason is 'Matches words'."""
     code_path = tmp_path / "service.py"
     code_path.write_text("def handle_request(): pass\n", encoding="utf-8")
@@ -286,7 +334,7 @@ def test_fts_keyword_rank_positive_and_matches_words(tmp_path: Path):
     assert hit.reason == "Matches words"
 
 
-def test_filename_match_outranks_incidental_body_mention(mock_dbs):
+def test_filename_match_outranks_incidental_body_mention(mock_dbs: tuple[Database, Database]) -> None:
     """Verify a file matching query terms in its filename outranks a file mentioning them only in body."""
     db, _ = mock_dbs
 
@@ -305,11 +353,11 @@ def test_filename_match_outranks_incidental_body_mention(mock_dbs):
         Modality.TEXT,
         1.0,
         1.0,
-        "Declaración de impuestos de Juan Ezquerro",
-        None,
-        "",
-        "Declaración de impuestos de Juan Ezquerro",
-        "",
+        excerpt="Declaración de impuestos de Juan Ezquerro",
+        vec=None,
+        name="",
+        body="Declaración de impuestos de Juan Ezquerro",
+        original="",
     )
 
     c_name = Candidate(
@@ -327,11 +375,11 @@ def test_filename_match_outranks_incidental_body_mention(mock_dbs):
         Modality.TEXT,
         1.0,
         1.0,
-        "Documento firmado",
-        None,
-        "",
-        "Documento firmado",
-        "",
+        excerpt="Documento firmado",
+        vec=None,
+        name="",
+        body="Documento firmado",
+        original="",
     )
 
     searcher = SearchService(db=db)
@@ -340,7 +388,7 @@ def test_filename_match_outranks_incidental_body_mention(mock_dbs):
     assert res.ranked[0].path == "/docs/Autorización Juan Ezquerro.pdf"
 
 
-def test_pure_kind_hint_query_returns_matching_files(mock_dbs):
+def test_pure_kind_hint_query_returns_matching_files(mock_dbs: tuple[Database, Database]) -> None:
     """Verify queries consisting only of kind hint words (e.g. 'captura de pantalla') return matching files."""
     db, _ = mock_dbs
     c_shot = Candidate(
@@ -352,7 +400,18 @@ def test_pure_kind_hint_query_returns_matching_files(mock_dbs):
         device=1,
     )
     fid_shot = db.insert_file(c_shot)
-    db.insert_segment(fid_shot, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "screenshot", None, "", "", "")
+    db.insert_segment(
+        fid_shot,
+        SegmentKind.IMAGE,
+        Modality.IMAGE,
+        0.0,
+        0.0,
+        excerpt="screenshot",
+        vec=None,
+        name="",
+        body="",
+        original="",
+    )
 
     c_doc = Candidate(
         path="/docs/manual_de_usuario.pdf",
@@ -369,11 +428,11 @@ def test_pure_kind_hint_query_returns_matching_files(mock_dbs):
         Modality.TEXT,
         1.0,
         1.0,
-        "Manual de instrucciones en español",
-        None,
-        "",
-        "Manual de instrucciones de uso",
-        "",
+        excerpt="Manual de instrucciones en español",
+        vec=None,
+        name="",
+        body="Manual de instrucciones de uso",
+        original="",
     )
 
     searcher = SearchService(db=db)
@@ -382,7 +441,7 @@ def test_pure_kind_hint_query_returns_matching_files(mock_dbs):
     assert res.ranked[0].path == "/pics/Captura de pantalla_20260927.png"
 
 
-def test_code_definition_bonus_outranks_caller(tmp_path: Path):
+def test_code_definition_bonus_outranks_caller(tmp_path: Path) -> None:
     """Verify code file defining a class/function ranks above files that merely import or call it."""
     code_db = Database(tmp_path / "code.sqlite")
 
@@ -395,11 +454,11 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
         Modality.TEXT,
         1.0,
         2.0,
-        "from searcher import SearchService",
-        None,
-        "window.py",
-        caller_path.read_text(encoding="utf-8"),
-        caller_path.read_text(encoding="utf-8"),
+        excerpt="from searcher import SearchService",
+        vec=None,
+        name="window.py",
+        body=caller_path.read_text(encoding="utf-8"),
+        original=caller_path.read_text(encoding="utf-8"),
     )
 
     def_path = tmp_path / "searcher.py"
@@ -411,11 +470,11 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
         Modality.TEXT,
         1.0,
         3.0,
-        "class SearchService:",
-        None,
-        "searcher.py",
-        def_path.read_text(encoding="utf-8"),
-        def_path.read_text(encoding="utf-8"),
+        excerpt="class SearchService:",
+        vec=None,
+        name="searcher.py",
+        body=def_path.read_text(encoding="utf-8"),
+        original=def_path.read_text(encoding="utf-8"),
     )
 
     searcher = SearchService(db=Database(":memory:"), code_db=code_db)
@@ -425,7 +484,7 @@ def test_code_definition_bonus_outranks_caller(tmp_path: Path):
     assert res.ranked[0].focus == 2.0
 
 
-def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
+def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs: tuple[Database, Database]) -> None:
     """Verify semantic candidates with z < 2.2 and no lexical match are pruned while z >= 2.2 passes."""
     db, _ = mock_dbs
     rng = np.random.default_rng(7)
@@ -446,11 +505,11 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
             Modality.TEXT,
             0.0,
             0.0,
-            "unrelated text",
-            make_vec_with_cos(0.58),
-            f"bg_{i}.txt",
-            "unrelated text",
-            "",
+            excerpt="unrelated text",
+            vec=make_vec_with_cos(0.58),
+            name=f"bg_{i}.txt",
+            body="unrelated text",
+            original="",
         )
 
     # Weak semantic candidate (cos ~ 0.66 -> z < 2.2)
@@ -461,15 +520,23 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
         Modality.TEXT,
         0.0,
         0.0,
-        "Esta es su nueva boveda",
-        make_vec_with_cos(0.66),
-        "Bienvenido.md",
-        "Esta es su nueva boveda",
-        "",
+        excerpt="Esta es su nueva boveda",
+        vec=make_vec_with_cos(0.66),
+        name="Bienvenido.md",
+        body="Esta es su nueva boveda",
+        original="",
     )
 
     class QueryMockOllama(OllamaClient):
-        def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
+        def embed(
+            self,
+            _model: str,
+            _inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx
             return [base_vec.tolist()]
 
     searcher = SearchService(db=db, ollama=QueryMockOllama())
@@ -480,7 +547,16 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
     # Add two genuine semantic matches (two black hole images: cos ~ 0.743 and cos ~ 0.689)
     fid_bh1 = db.insert_file(Candidate("/pics/descarga.png", FileKind.IMAGE, 500, 3.0, 101, 1))
     db.insert_segment(
-        fid_bh1, SegmentKind.IMAGE, Modality.IMAGE, 0.0, 0.0, "", make_vec_with_cos(0.743), "descarga.png", "", ""
+        fid_bh1,
+        SegmentKind.IMAGE,
+        Modality.IMAGE,
+        0.0,
+        0.0,
+        excerpt="",
+        vec=make_vec_with_cos(0.743),
+        name="descarga.png",
+        body="",
+        original="",
     )
     fid_bh2 = db.insert_file(Candidate("/pics/captura_black_hole.png", FileKind.SCREENSHOT, 600, 4.0, 102, 1))
     db.insert_segment(
@@ -489,11 +565,11 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs):
         Modality.IMAGE,
         0.0,
         0.0,
-        "",
-        make_vec_with_cos(0.689),
-        "captura_black_hole.png",
-        "",
-        "",
+        excerpt="",
+        vec=make_vec_with_cos(0.689),
+        name="captura_black_hole.png",
+        body="",
+        original="",
     )
 
     res_strong = searcher.search("agujero negro")

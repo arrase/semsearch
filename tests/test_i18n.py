@@ -146,6 +146,7 @@ def test_rtl_language_detection() -> None:
 
 def test_gui_live_retranslation_and_components(tmp_path: Path, qapp: QApplication) -> None:
     """Verify GUI widgets translate and dynamically retranslate when switching languages."""
+    del qapp
     mock_search = MagicMock()
     mock_search.search.return_value = ResultSet()
     mock_ollama = MagicMock()

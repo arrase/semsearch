@@ -12,7 +12,7 @@ from semsearch.gui.theme import (
 )
 
 
-def test_theme_colors_constants():
+def test_theme_colors_constants() -> None:
     """Verify ThemeColors token values."""
     assert ThemeColors.BG_PANEL == "rgba(36, 41, 54, 1.0)"
     assert ThemeColors.BG_PANEL.endswith(", 1.0)")
@@ -23,7 +23,7 @@ def test_theme_colors_constants():
     assert "250, 204, 21" in ThemeColors.HIGHLIGHT_YELLOW
 
 
-def test_theme_layout_constants():
+def test_theme_layout_constants() -> None:
     """Verify ThemeLayout geometry dimensions."""
     assert ThemeLayout.PANEL_WIDTH == 748
     assert ThemeLayout.PANEL_HEIGHT_COLLAPSED == 56
@@ -35,7 +35,7 @@ def test_theme_layout_constants():
     assert not hasattr(ThemeLayout, "WINDOW_HEIGHT")
 
 
-def test_typography_helpers():
+def test_typography_helpers() -> None:
     """Verify font helpers configure family and size."""
     ui_font = get_ui_font(14)
     assert ui_font.pointSize() == 14
@@ -44,8 +44,9 @@ def test_typography_helpers():
     assert mono_font.pointSize() == 11
 
 
-def test_build_qss_and_apply_theme(qapp: QApplication):
+def test_build_qss_and_apply_theme(qapp: QApplication) -> None:
     """Verify stylesheet generation and application to widget."""
+    del qapp
     qss = build_qss()
     assert "QLineEdit" in qss
     assert "QListView" in qss

@@ -8,7 +8,7 @@ from PIL import Image, ImageOps
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
 
-def extract_image(path: str, is_screenshot: bool = False) -> ExtractedSegment:
+def extract_image(path: str, *, is_screenshot: bool = False) -> ExtractedSegment:
     """Extract and normalize image using Pillow with strict zero OCR."""
     with Image.open(path) as raw_img:
         img = ImageOps.exif_transpose(raw_img) or raw_img

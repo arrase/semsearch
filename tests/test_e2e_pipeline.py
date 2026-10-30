@@ -17,7 +17,7 @@ from tests.testbed import generate_testbed
 class DeterministicOllama:
     """Mock OllamaClient providing deterministic normalized float vectors."""
 
-    def embed(self, model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
+    def embed(self, _model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
         results = []
         for inp in inputs:
             seed = sum(ord(c) for c in str(inp)[:64]) % 100000

@@ -259,6 +259,19 @@ def looks_machine_named(stem: str) -> bool:
     return bool(re.match(r"^[a-z]{0,16}[-_. ]?\d{3,}([-_.]\d+)*$", name))
 
 
+_DATASET_MIN_COUNT = 300
+_DATASET_MACHINE_RATIO = 0.7
+
+_EXT_KIND_MAP: dict[str, FileKind] = {
+    **dict.fromkeys(IMAGE_EXTENSIONS, FileKind.IMAGE),
+    **dict.fromkeys(PDF_EXTENSIONS, FileKind.PDF),
+    **dict.fromkeys(DOC_EXTENSIONS, FileKind.DOC),
+    **dict.fromkeys(AUDIO_EXTENSIONS, FileKind.AUDIO),
+    **dict.fromkeys(VIDEO_EXTENSIONS, FileKind.VIDEO),
+    **dict.fromkeys(CODE_EXTENSIONS, FileKind.CODE),
+}
+
+
 def is_dataset_folder(paths: list[str]) -> bool:
     """Detect if paths contain >= 300 media files of the same kind with >= 70% machine-named stems."""
     by_kind: dict[FileKind, list[str]] = {
@@ -272,14 +285,14 @@ def is_dataset_folder(paths: list[str]) -> bool:
             by_kind[kind].append(Path(path).stem)
 
     for kind_stems in by_kind.values():
-        if len(kind_stems) >= 300:
+        if len(kind_stems) >= _DATASET_MIN_COUNT:
             machine_count = sum(1 for stem in kind_stems if looks_machine_named(stem))
-            if (machine_count / len(kind_stems)) >= 0.7:
+            if (machine_count / len(kind_stems)) >= _DATASET_MACHINE_RATIO:
                 return True
     return False
 
 
-def classify_file(path: str, is_code_mode: bool = False) -> FileKind | None:
+def classify_file(path: str, *, is_code_mode: bool = False) -> FileKind | None:
     """Map a file path to its FileKind classification, or None if unsupported."""
     p = Path(path)
     ext = p.suffix.lstrip(".").lower()
@@ -291,27 +304,10 @@ def classify_file(path: str, is_code_mode: bool = False) -> FileKind | None:
     if is_code_mode and ext in CODE_DOC_EXTENSIONS:
         return FileKind.CODE
 
-    if ext in IMAGE_EXTENSIONS:
-        if any(name.startswith(prefix) for prefix in SCREENSHOT_PREFIXES):
-            return FileKind.SCREENSHOT
-        return FileKind.IMAGE
-
-    if ext in PDF_EXTENSIONS:
-        return FileKind.PDF
-
-    if ext in DOC_EXTENSIONS:
-        return FileKind.DOC
-
-    if ext in AUDIO_EXTENSIONS:
-        return FileKind.AUDIO
-
-    if ext in VIDEO_EXTENSIONS:
-        return FileKind.VIDEO
-
-    if ext in CODE_EXTENSIONS:
-        return FileKind.CODE
-
-    return None
+    kind = _EXT_KIND_MAP.get(ext)
+    if kind == FileKind.IMAGE and any(name.startswith(prefix) for prefix in SCREENSHOT_PREFIXES):
+        return FileKind.SCREENSHOT
+    return kind
 
 
 def is_inside_code_project(path: str) -> bool:
@@ -356,7 +352,7 @@ def _is_excluded_type(
     return ext in norm_types or kind.value in norm_types
 
 
-def _check_mode_compatibility(path: str, kind: FileKind, is_code_mode: bool) -> str:
+def _check_mode_compatibility(path: str, kind: FileKind, *, is_code_mode: bool) -> str:
     if is_code_mode:
         return "not a code file" if kind != FileKind.CODE else ""
     if kind == FileKind.CODE:
@@ -366,24 +362,29 @@ def _check_mode_compatibility(path: str, kind: FileKind, is_code_mode: bool) -> 
     return ""
 
 
+def _check_path_exclusions(path: str, p: Path, excluded_folders: list[str] | set[str] | None) -> str:
+    for part in p.parts[:-1]:
+        if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
+            return f"inside skipped folder {part}"
+    if is_path_excluded(path, excluded_folders):
+        return "inside excluded folder"
+    if is_secret(path):
+        return "secret or credential file"
+    return ""
+
+
 def should_skip(
     path: str,
+    *,
     is_code_mode: bool,
     excluded_folders: list[str] | set[str] | None = None,
     excluded_types: list[str] | set[str] | None = None,
 ) -> tuple[bool, str]:
     """Determine whether to skip a file during indexing."""
     p = Path(path)
-
-    for part in p.parts[:-1]:
-        if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
-            return True, f"inside skipped folder {part}"
-
-    if is_path_excluded(path, excluded_folders):
-        return True, "inside excluded folder"
-
-    if is_secret(path):
-        return True, "secret or credential file"
+    path_reason = _check_path_exclusions(path, p, excluded_folders)
+    if path_reason:
+        return True, path_reason
 
     ext = p.suffix.lstrip(".").lower()
     name = p.name.lower()
@@ -397,8 +398,5 @@ def should_skip(
     if _is_excluded_type(ext, kind, excluded_types):
         return True, f"excluded file type {ext or kind.value}"
 
-    mode_reason = _check_mode_compatibility(path, kind, is_code_mode)
-    if mode_reason:
-        return True, mode_reason
-
-    return False, ""
+    mode_reason = _check_mode_compatibility(path, kind, is_code_mode=is_code_mode)
+    return (True, mode_reason) if mode_reason else (False, "")

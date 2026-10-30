@@ -7,6 +7,9 @@ import pymupdf as fitz
 from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
+_MIN_PAGE_TEXT_CHARS = 200
+_MAX_RENDER_SIDE = 1400.0
+
 
 def extract_pdf(
     path: str,
@@ -25,7 +28,7 @@ def extract_pdf(
             page = doc[page_num]
             text = page.get_text().strip()
 
-            if len(text) >= 200 and has_words(text):
+            if len(text) >= _MIN_PAGE_TEXT_CHARS and has_words(text):
                 snippet = text[:300].replace("\n", " ").strip()
                 segments.append(
                     ExtractedSegment(
@@ -40,8 +43,8 @@ def extract_pdf(
                 rect = page.rect
                 max_side = max(rect.width, rect.height)
                 target_scale = 150.0 / 72.0
-                if max_side * target_scale > 1400.0 and max_side > 0:
-                    scale = 1400.0 / max_side
+                if max_side * target_scale > _MAX_RENDER_SIDE and max_side > 0:
+                    scale = _MAX_RENDER_SIDE / max_side
                     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
                 else:
                     pix = page.get_pixmap(dpi=150)

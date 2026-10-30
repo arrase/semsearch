@@ -88,7 +88,7 @@ class FileRecord:
     device: int
     state: FileState
     detail: str = ""
-    info: dict = field(default_factory=dict)
+    info: dict[str, object] = field(default_factory=dict)
     indexed_at: float = 0.0
 
 
@@ -125,7 +125,7 @@ class SearchHit:
     excerpt: str = ""
     modified: float = 0.0
     size: int = 0
-    info: dict = field(default_factory=dict)
+    info: dict[str, object] = field(default_factory=dict)
     focus: float = 0.0
 
     @property

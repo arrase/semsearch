@@ -2,7 +2,7 @@
 
 import math
 import subprocess
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pymupdf
@@ -13,10 +13,12 @@ from PySide6.QtGui import (
     QFont,
     QImage,
     QPainter,
+    QPaintEvent,
     QPen,
     QPixmap,
     QResizeEvent,
     QTextCursor,
+    QTextDocument,
     QTextFormat,
 )
 from PySide6.QtWidgets import (
@@ -50,33 +52,18 @@ _PAGE_INFO_TEMPLATE = "Page {current} of {total}"
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 _AUDIO_SUFFIXES = (".mp3", ".wav", ".ogg", ".flac", ".m4a")
 _VIDEO_SUFFIXES = (".mp4", ".mkv", ".webm", ".avi", ".mov")
-_CODE_SUFFIXES = (
-    ".py",
-    ".js",
-    ".ts",
-    ".rs",
-    ".go",
-    ".c",
-    ".cpp",
-    ".h",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".md",
-    ".sh",
-)
+_BYTES_PER_KB = 1024
 
 
 def format_file_size(size_bytes: int) -> str:
     """Format byte size into human readable string."""
-    if size_bytes < 1024:
+    if size_bytes < _BYTES_PER_KB:
         return f"{size_bytes} B"
-    if size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    if size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+    if size_bytes < _BYTES_PER_KB * _BYTES_PER_KB:
+        return f"{size_bytes / _BYTES_PER_KB:.1f} KB"
+    if size_bytes < _BYTES_PER_KB * _BYTES_PER_KB * _BYTES_PER_KB:
+        return f"{size_bytes / (_BYTES_PER_KB * _BYTES_PER_KB):.1f} MB"
+    return f"{size_bytes / (_BYTES_PER_KB * _BYTES_PER_KB * _BYTES_PER_KB):.1f} GB"
 
 
 def format_tilde_path(path_str: str) -> str:
@@ -222,11 +209,11 @@ class MetadataCard(QFrame):
         if size_bytes > 0:
             meta_parts.append(format_file_size(size_bytes))
         if mtime > 0:
-            dt = datetime.fromtimestamp(mtime)
+            dt = datetime.fromtimestamp(mtime, tz=UTC).astimezone()
             meta_parts.append(dt.strftime("%Y-%m-%d %H:%M"))
         self.meta_label.setText(" • ".join(meta_parts) if meta_parts else tr("Local file"))
 
-        display_reason = reason if reason else tr("Matches query")
+        display_reason = reason or tr("Matches query")
         self.reason_badge.setText(display_reason)
 
     def _on_open_clicked(self) -> None:
@@ -391,6 +378,7 @@ class PdfPreviewWidget(QWidget):
         name: str,
         page_number: int = 1,
         query: str = "",
+        *,
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
@@ -411,7 +399,7 @@ class PdfPreviewWidget(QWidget):
             return
 
         terms = extract_terms(query)
-        self._query_terms = terms if terms else [t for t in query.lower().split() if len(t) > 1]
+        self._query_terms = terms or [t for t in query.lower().split() if len(t) > 1]
         self._doc = pymupdf.open(path)
         self._total_pages = len(self._doc)
         self._current_page = max(0, min(page_number - 1, self._total_pages - 1))
@@ -514,7 +502,7 @@ class WaveformWidget(QWidget):
         ]
         self.update()
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -587,6 +575,7 @@ class AudioPreviewWidget(QWidget):
         path: str,
         name: str,
         loc: float = 0.0,
+        *,
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
@@ -678,6 +667,7 @@ class VideoPreviewWidget(QWidget):
         path: str,
         name: str,
         loc: float = 0.0,
+        *,
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
@@ -775,7 +765,7 @@ class LineNumberGutter(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(self.editor.gutter_width(), 0)
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         self.editor.paint_gutter(event)
 
 
@@ -813,7 +803,7 @@ class CodeEditor(QPlainTextEdit):
         cr = self.contentsRect()
         self.gutter.setGeometry(QRect(cr.left(), cr.top(), self.gutter_width(), cr.height()))
 
-    def paint_gutter(self, event) -> None:
+    def paint_gutter(self, event: QPaintEvent) -> None:
         painter = QPainter(self.gutter)
         painter.fillRect(event.rect(), QColor("#1A1D24"))
 
@@ -872,7 +862,10 @@ class CodePreviewWidget(QWidget):
         return target_path.read_text(encoding="utf-8", errors="replace")
 
     @staticmethod
-    def _highlight_query_terms(doc, query: str) -> tuple[list[QTextEdit.ExtraSelection], QTextCursor | None]:
+    def _highlight_query_terms(
+        doc: QTextDocument,
+        query: str,
+    ) -> tuple[list[QTextEdit.ExtraSelection], QTextCursor | None]:
         if not query:
             return [], None
         selections: list[QTextEdit.ExtraSelection] = []
@@ -894,7 +887,7 @@ class CodePreviewWidget(QWidget):
         return selections, first_match_cursor
 
     @staticmethod
-    def _find_excerpt_cursor(doc, excerpt: str) -> QTextCursor | None:
+    def _find_excerpt_cursor(doc: QTextDocument, excerpt: str) -> QTextCursor | None:
         if not excerpt:
             return None
         clean_excerpt = excerpt.replace("«", "").replace("»", "").replace("…", "").strip()
@@ -911,6 +904,7 @@ class CodePreviewWidget(QWidget):
         path: str,
         name: str,
         line: int = 0,
+        *,
         size: int = 0,
         mtime: float = 0.0,
         reason: str = "",
@@ -938,7 +932,7 @@ class CodePreviewWidget(QWidget):
                 cursor = QTextCursor(block)
             line_selection = QTextEdit.ExtraSelection()
             line_selection.format.setBackground(QColor(250, 204, 21, 90))
-            line_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            line_selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)  # noqa: FBT003
             line_selection.cursor = cursor
             selections.append(line_selection)
 
@@ -1019,24 +1013,24 @@ class PreviewPane(QStackedWidget):
             self.setCurrentIndex(1)
         elif kind == FileKind.PDF or suffix == ".pdf":
             page = int(loc) if loc > 0 else 1
-            self.pdf_view.load_pdf(path, name, page, clean_query, size, mtime, reason)
+            self.pdf_view.load_pdf(path, name, page, clean_query, size=size, mtime=mtime, reason=reason)
             self.setCurrentIndex(2)
         elif kind == FileKind.AUDIO or suffix in _AUDIO_SUFFIXES:
-            self.audio_view.load_audio(path, name, loc, size, mtime, reason)
+            self.audio_view.load_audio(path, name, loc, size=size, mtime=mtime, reason=reason)
             self.setCurrentIndex(3)
         elif kind == FileKind.VIDEO or suffix in _VIDEO_SUFFIXES:
-            self.video_view.load_video(path, name, loc, size, mtime, reason)
+            self.video_view.load_video(path, name, loc, size=size, mtime=mtime, reason=reason)
             self.setCurrentIndex(4)
         else:
-            is_code_view = kind == FileKind.CODE or (kind != FileKind.DOC and suffix in _CODE_SUFFIXES)
+            is_code_view = kind == FileKind.CODE
             target_line = focus if is_code_view else 0
             self.code_view.load_code(
                 path,
                 name,
                 target_line,
-                size,
-                mtime,
-                reason,
+                size=size,
+                mtime=mtime,
+                reason=reason,
                 query=clean_query,
                 excerpt=item.excerpt,
                 wrap_lines=not is_code_view,

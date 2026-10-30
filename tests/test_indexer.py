@@ -23,11 +23,19 @@ from semsearch.services.indexer import IndexQueueTier, IndexService, _code_place
 
 
 class MockOllama(OllamaClient):
-    def embed(self, model: str, inputs: list[str | dict[str, str]], truncate: bool = True) -> list[list[float]]:
+    def embed(
+        self,
+        _model: str,
+        inputs: list[str | dict[str, str]],
+        *,
+        truncate: bool = True,
+        num_ctx: int | None = None,
+    ) -> list[list[float]]:
+        del truncate, num_ctx
         return [[0.1] * DIM for _ in inputs]
 
 
-def test_process_file_with_ollama_vectors(tmp_path: Path):
+def test_process_file_with_ollama_vectors(tmp_path: Path) -> None:
     doc_path = tmp_path / "notes.md"
     doc_path.write_text("# Chapter 1\nThis is a long document with interesting notes.", encoding="utf-8")
 
@@ -54,7 +62,7 @@ def test_process_file_with_ollama_vectors(tmp_path: Path):
     assert mat.shape[1] == DIM
 
 
-def test_multi_tier_priority_ordering(tmp_path: Path):
+def test_multi_tier_priority_ordering(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")
     config = AppConfig(code_enabled=True, code_folders=[str(tmp_path / "code")])
@@ -111,7 +119,7 @@ def test_multi_tier_priority_ordering(tmp_path: Path):
     assert rec4.id == fid_part
 
 
-def test_partial_continuation_flow(tmp_path: Path, monkeypatch):
+def test_partial_continuation_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = Database(tmp_path / "index.sqlite")
 
     pdf_file = tmp_path / "big_report.pdf"
@@ -122,7 +130,8 @@ def test_partial_continuation_flow(tmp_path: Path, monkeypatch):
 
     call_count = 0
 
-    def mock_extract_pdf(path, start_page=0, max_pages=30):
+    def mock_extract_pdf(_path: str, start_page: int = 0, max_pages: int = 30) -> tuple[list[ExtractedSegment], bool]:
+        del max_pages
         nonlocal call_count
         call_count += 1
         if start_page == 0:
@@ -169,7 +178,7 @@ def test_partial_continuation_flow(tmp_path: Path, monkeypatch):
     assert rec_after_pass2.info["last_page"] == 50
 
 
-def test_service_lifecycle_pause_resume_status(tmp_path: Path):
+def test_service_lifecycle_pause_resume_status(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     service = IndexService(db=db)
 
@@ -194,7 +203,7 @@ def test_service_lifecycle_pause_resume_status(tmp_path: Path):
     assert service._worker_thread is None
 
 
-def test_modified_file_requeuing(tmp_path: Path):
+def test_modified_file_requeuing(tmp_path: Path) -> None:
     doc_path = tmp_path / "modified.txt"
     doc_path.write_text("initial content", encoding="utf-8")
 
@@ -210,7 +219,16 @@ def test_modified_file_requeuing(tmp_path: Path):
     )
     fid = db.insert_file(cand)
     db.insert_segment(
-        fid, SegmentKind.CHUNK, Modality.TEXT, 0, 0, "initial content", None, "modified.txt", "initial content", ""
+        fid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0,
+        0,
+        excerpt="initial content",
+        vec=None,
+        name="modified.txt",
+        body="initial content",
+        original="",
     )
     db.update_file_state(fid, FileState.DONE)
 
@@ -229,7 +247,7 @@ def test_modified_file_requeuing(tmp_path: Path):
     assert len(cursor.fetchall()) == 0
 
 
-def test_extraction_failure_handling(tmp_path: Path, monkeypatch):
+def test_extraction_failure_handling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     doc_path = tmp_path / "broken.md"
     doc_path.write_text("# Corrupt", encoding="utf-8")
 
@@ -245,7 +263,7 @@ def test_extraction_failure_handling(tmp_path: Path, monkeypatch):
     )
     fid = db.insert_file(cand)
 
-    def failing_extract(path):
+    def failing_extract(_path: str) -> list[ExtractedSegment]:
         raise RuntimeError("Extraction failed due to parser crash")
 
     monkeypatch.setattr("semsearch.services.indexer.extract_doc", failing_extract)
@@ -263,7 +281,7 @@ def test_extraction_failure_handling(tmp_path: Path, monkeypatch):
     assert "Extraction failed due to parser crash" in (updated_rec.detail or "")
 
 
-def test_crawl_and_sync_resets_activity_to_idle(tmp_path: Path):
+def test_crawl_and_sync_resets_activity_to_idle(tmp_path: Path) -> None:
     doc_folder = tmp_path / "docs"
     doc_folder.mkdir()
     (doc_folder / "note.txt").write_text("hello world", encoding="utf-8")
@@ -293,7 +311,7 @@ def test_crawl_and_sync_resets_activity_to_idle(tmp_path: Path):
     assert code_db.stats()["files"] == 1
 
 
-def test_crawl_and_sync_early_returns_when_code_db_none(tmp_path: Path, monkeypatch):
+def test_crawl_and_sync_early_returns_when_code_db_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify early return when is_code is True but code_db is None."""
     db = Database(tmp_path / "index.sqlite")
     code_folder = tmp_path / "code"
@@ -309,7 +327,7 @@ def test_crawl_and_sync_early_returns_when_code_db_none(tmp_path: Path, monkeypa
     mock_crawl.assert_not_called()
 
 
-def test_crawl_and_sync_early_returns_when_stopped(tmp_path: Path, monkeypatch):
+def test_crawl_and_sync_early_returns_when_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify early return when service is already stopped."""
     db = Database(tmp_path / "index.sqlite")
     doc_folder = tmp_path / "docs"
@@ -325,7 +343,7 @@ def test_crawl_and_sync_early_returns_when_stopped(tmp_path: Path, monkeypatch):
     mock_crawl.assert_not_called()
 
 
-def test_crawl_and_sync_preserves_indexing_state(tmp_path: Path):
+def test_crawl_and_sync_preserves_indexing_state(tmp_path: Path) -> None:
     """Verify crawl_and_sync does not overwrite INDEXING activity to SYNCING or IDLE."""
     doc_folder = tmp_path / "docs"
     doc_folder.mkdir()
@@ -340,7 +358,7 @@ def test_crawl_and_sync_preserves_indexing_state(tmp_path: Path):
     assert db.stats()["files"] == 1
 
 
-def test_crawl_and_sync_preserves_paused_state(tmp_path: Path):
+def test_crawl_and_sync_preserves_paused_state(tmp_path: Path) -> None:
     """Verify crawl_and_sync preserves PAUSED status and activity."""
     doc_folder = tmp_path / "docs"
     doc_folder.mkdir()
@@ -358,7 +376,7 @@ def test_crawl_and_sync_preserves_paused_state(tmp_path: Path):
     assert db.stats()["files"] == 1
 
 
-def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch):
+def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify root crawling loop terminates early when stop_event is set."""
     folder1 = tmp_path / "f1"
     folder2 = tmp_path / "f2"
@@ -373,7 +391,14 @@ def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch):
 
     crawled_roots: list[str] = []
 
-    def mock_crawl(root: str, is_code: bool = False):
+    def mock_crawl(
+        root: str,
+        *,
+        is_code: bool = False,
+        excluded_folders: object = None,
+        excluded_types: object = None,
+    ) -> list[Candidate]:
+        del is_code, excluded_folders, excluded_types
         crawled_roots.append(root)
         service._stop_event.set()
         return []
@@ -383,7 +408,7 @@ def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch):
     assert len(crawled_roots) == 1
 
 
-def test_get_next_file_code_db_id_collision(tmp_path: Path):
+def test_get_next_file_code_db_id_collision(tmp_path: Path) -> None:
     """Reproduce ID collision between index.db and code.db in _new_files_queue."""
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")
@@ -448,7 +473,7 @@ def test_get_next_file_code_db_id_collision(tmp_path: Path):
     assert rec2.path == str(p_gen.resolve())
 
 
-def test_get_next_file_code_db_skips_non_pending_without_affecting_general_db(tmp_path: Path):
+def test_get_next_file_code_db_skips_non_pending_without_affecting_general_db(tmp_path: Path) -> None:
     """Verify that a non-pending file in code_db does not match a pending file with same ID in db."""
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")
@@ -491,7 +516,7 @@ def test_get_next_file_code_db_skips_non_pending_without_affecting_general_db(tm
     assert rec.path == str(p_gen.resolve())
 
 
-def test_get_next_file_code_file_skips_when_code_db_none_without_matching_general_db(tmp_path: Path):
+def test_get_next_file_code_file_skips_when_code_db_none_without_matching_general_db(tmp_path: Path) -> None:
     """Verify that a code queue item does not fall back to general db when code_db is None."""
     db = Database(tmp_path / "index.sqlite")
     p_gen = tmp_path / "general.md"
@@ -515,7 +540,7 @@ def test_get_next_file_code_file_skips_when_code_db_none_without_matching_genera
     assert rec.id == fid_gen
 
 
-def test_enqueue_file_folder_prefix_containment(tmp_path: Path):
+def test_enqueue_file_folder_prefix_containment(tmp_path: Path) -> None:
     """Verify that directory prefix string matching does not confuse sibling folders."""
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")
@@ -538,7 +563,7 @@ def test_enqueue_file_folder_prefix_containment(tmp_path: Path):
     assert code_db.find_by_id(1) is None
 
 
-def test_process_file_ollama_embed_failure_marks_failed(tmp_path: Path):
+def test_process_file_ollama_embed_failure_marks_failed(tmp_path: Path) -> None:
     doc_path = tmp_path / "failing.md"
     doc_path.write_text("Some text for embedding", encoding="utf-8")
 
@@ -574,7 +599,7 @@ def test_process_file_ollama_embed_failure_marks_failed(tmp_path: Path):
     assert len(content_segments) == 0
 
 
-def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     doc_path = tmp_path / "crash.md"
     doc_path.write_text("Content to process", encoding="utf-8")
 
@@ -593,12 +618,12 @@ def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeyp
 
     call_count = 0
 
-    def failing_process_file(file_record, target_db):
+    def failing_process_file(_file_record: object, _target_db: Database) -> bool:
         nonlocal call_count
         call_count += 1
         raise RuntimeError("Unexpected extraction crash")
 
-    service.process_file = failing_process_file
+    service.process_file = failing_process_file  # type: ignore[method-assign]
     monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
 
     file_rec = db.find_by_id(fid)
@@ -617,7 +642,9 @@ def test_worker_loop_process_file_exception_marks_failed(tmp_path: Path, monkeyp
     assert "Unexpected extraction crash" in updated_rec.detail
 
 
-def test_worker_loop_code_db_process_file_exception_marks_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_worker_loop_code_db_process_file_exception_marks_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     code_folder = tmp_path / "code"
     code_folder.mkdir()
     code_path = code_folder / "crash.py"
@@ -640,12 +667,12 @@ def test_worker_loop_code_db_process_file_exception_marks_failed(tmp_path: Path,
 
     call_count = 0
 
-    def failing_process_file(file_record, target_db):
+    def failing_process_file(_file_record: object, _target_db: Database) -> bool:
         nonlocal call_count
         call_count += 1
         raise RuntimeError("Code processing failure")
 
-    service.process_file = failing_process_file
+    service.process_file = failing_process_file  # type: ignore[method-assign]
     monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
 
     service._worker_loop()
@@ -658,7 +685,7 @@ def test_worker_loop_code_db_process_file_exception_marks_failed(tmp_path: Path,
     assert "Code processing failure" in updated_rec.detail
 
 
-def test_code_place_nested_git_repo(tmp_path: Path):
+def test_code_place_nested_git_repo(tmp_path: Path) -> None:
     """Verify _code_place walks up to .git before parent code_folders and prefixes title with repo name."""
     develop = tmp_path / "Develop"
     repo_dir = develop / "semsearch"
@@ -672,7 +699,9 @@ def test_code_place_nested_git_repo(tmp_path: Path):
     assert title == "src/semsearch/services/searcher.py"
 
 
-def test_worker_loop_shrinks_memory_and_blocks_until_work_arrives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_worker_loop_shrinks_memory_and_blocks_until_work_arrives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verify _worker_loop shrinks memory on db and code_db when transitioning to IDLE and wakes on enqueue_file."""
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")
@@ -726,7 +755,7 @@ def test_worker_loop_shrinks_memory_and_blocks_until_work_arrives(tmp_path: Path
     assert service._worker_thread is None
 
 
-def test_get_status_skips_sqlite_stats_when_idle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_get_status_skips_sqlite_stats_when_idle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify get_status() returns cached counters without calling db.stats() while activity is IDLE."""
     db = Database(tmp_path / "index.sqlite")
     code_db = Database(tmp_path / "code.sqlite")

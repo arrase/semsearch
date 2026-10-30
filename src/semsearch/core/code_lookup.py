@@ -73,6 +73,9 @@ _USERS: set[str] = {
 
 _COMMENT_STARTS: tuple[str, ...] = ("//", "#", "/*", "*", "--", '"""', "'''", "<!--", ";")
 _NON_VAR_DEFINERS: set[str] = _DEFINERS - {"let", "var", "const", "val"}
+_STRONG_DEFINITION = 2
+_MIN_WORD_LEN = 2
+_MAX_SUMMARY_LEN = 160
 
 
 def extract_identifier(query: str) -> list[str] | None:
@@ -93,7 +96,7 @@ def extract_identifier(query: str) -> list[str] | None:
         return None
 
     words = [w for w in re.split(r"[^a-zA-Z0-9]+", clean.lower()) if w]
-    return words if words else None
+    return words or None
 
 
 def identifier_phrase(words: list[str]) -> str:
@@ -166,7 +169,7 @@ def find_definition(name: str, text: str, first_line: int = 1) -> tuple[int, int
             strength = _definition_strength(before, after, line)
             if strength > (best[1] if best else 0):
                 best = (first_line + offset, strength)
-            if strength == 2:
+            if strength == _STRONG_DEFINITION:
                 return best
 
     return best
@@ -193,7 +196,7 @@ def _has_word_part(word: str, line: str) -> bool:
 
 def find_first_line_with_words(words: list[str], text: str, first_line: int = 1) -> int | None:
     """Find first relevant line containing query words, prioritizing definitions over comments."""
-    clean_words = [w.lower() for w in words if len(w) >= 2]
+    clean_words = [w.lower() for w in words if len(w) >= _MIN_WORD_LEN]
     if not clean_words:
         return None
 
@@ -253,4 +256,4 @@ def code_summary(text: str) -> str:
             first_code_line = line
 
     line = definition_line or first_code_line or clean_lines[0]
-    return (line[:160] + "…") if len(line) > 160 else line
+    return (line[:_MAX_SUMMARY_LEN] + "…") if len(line) > _MAX_SUMMARY_LEN else line

@@ -23,7 +23,7 @@ from semsearch.gui.preview import (
 )
 
 
-def test_format_helpers():
+def test_format_helpers() -> None:
     """Verify size and tilde formatting helpers."""
     assert format_file_size(500) == "500 B"
     assert format_file_size(2048) == "2.0 KB"
@@ -33,8 +33,9 @@ def test_format_helpers():
     assert format_tilde_path(home_path).startswith("~/")
 
 
-def test_image_preview_widget(tmp_path: Path, qapp: QApplication):
+def test_image_preview_widget(tmp_path: Path, qapp: QApplication) -> None:
     """Verify ImagePreviewWidget scales image and updates metadata."""
+    del qapp
     img_path = tmp_path / "sample.png"
     img = Image.new("RGB", (400, 300), color="blue")
     img.save(img_path)
@@ -48,8 +49,9 @@ def test_image_preview_widget(tmp_path: Path, qapp: QApplication):
     assert widget.meta_card.name_label.text() == "sample.png"
 
 
-def test_pdf_preview_widget(tmp_path: Path, qapp: QApplication):
+def test_pdf_preview_widget(tmp_path: Path, qapp: QApplication) -> None:
     """Verify PdfPreviewWidget renders page and highlights keywords with navigation."""
+    del qapp
     pdf_path = tmp_path / "sample.pdf"
     doc = pymupdf.open()
     page1 = doc.new_page()
@@ -74,8 +76,9 @@ def test_pdf_preview_widget(tmp_path: Path, qapp: QApplication):
     assert widget.prev_btn.isEnabled()
 
 
-def test_audio_preview_widget(qapp: QApplication):
+def test_audio_preview_widget(qapp: QApplication) -> None:
     """Verify AudioPreviewWidget waveform visualization and scrub updates."""
+    del qapp
     widget = AudioPreviewWidget()
     widget.load_audio("/tmp/track.mp3", "track.mp3", loc=45.0, size=1024 * 1024)
 
@@ -87,8 +90,9 @@ def test_audio_preview_widget(qapp: QApplication):
     assert widget.waveform._progress == pytest.approx(0.5, 0.01)
 
 
-def test_video_preview_widget(qapp: QApplication):
+def test_video_preview_widget(qapp: QApplication) -> None:
     """Verify VideoPreviewWidget poster thumbnail and scrub."""
+    del qapp
     widget = VideoPreviewWidget()
     widget.load_video("/tmp/clip.mp4", "clip.mp4", loc=30.0, size=2 * 1024 * 1024)
 
@@ -97,8 +101,9 @@ def test_video_preview_widget(qapp: QApplication):
     assert widget.scrub_slider.value() > 0
 
 
-def test_code_preview_widget(tmp_path: Path, qapp: QApplication):
+def test_code_preview_widget(tmp_path: Path, qapp: QApplication) -> None:
     """Verify CodePreviewWidget loads code and configures line gutter and highlight."""
+    del qapp
     code_path = tmp_path / "sample.py"
     code_path.write_text("def hello():\n    return 42\n\nprint(hello())\n", encoding="utf-8")
 
@@ -110,8 +115,9 @@ def test_code_preview_widget(tmp_path: Path, qapp: QApplication):
     assert widget.editor.gutter_width() > 0
 
 
-def test_preview_pane_stacked_routing(tmp_path: Path, qapp: QApplication):
+def test_preview_pane_stacked_routing(tmp_path: Path, qapp: QApplication) -> None:
     """Verify PreviewPane routes multimodal items correctly across stacked indices."""
+    del qapp
     pane = PreviewPane()
     assert pane.currentIndex() == 0
 
@@ -154,8 +160,9 @@ def test_preview_pane_stacked_routing(tmp_path: Path, qapp: QApplication):
     assert pane.currentIndex() == 0
 
 
-def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication):
+def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication) -> None:
     """Verify CodePreviewWidget extracts text from binary documents (.docx, .odt) rather than raw bytes."""
+    del qapp
     # 1. Non-existent file
     widget = CodePreviewWidget()
     widget.load_code(str(tmp_path / "nonexistent.docx"), "nonexistent.docx")
@@ -219,8 +226,9 @@ def test_code_preview_widget_document_formats(tmp_path: Path, qapp: QApplication
     assert "<h1>" not in html_content
 
 
-def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
+def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication) -> None:
     """Verify PreviewPane routes document files to code/text preview with extracted text and only term highlights."""
+    del qapp
     docx_path = tmp_path / "report.docx"
     doc = Document()
     doc.add_paragraph("Annual report content.")
@@ -238,8 +246,9 @@ def test_preview_pane_document_routing(tmp_path: Path, qapp: QApplication):
     assert pane.code_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
 
 
-def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApplication):
+def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApplication) -> None:
     """Verify FileKind.DOC (.md) omits full-width yellow line highlight while FileKind.CODE with line > 0 retains it."""
+    del qapp
     md_path = tmp_path / "Bienvenido.md"
     md_path.write_text(
         "Esta es su nueva *bóveda*.\n\nSegunda línea con contenido sobre un pozo profundo.\n", encoding="utf-8"
@@ -272,12 +281,13 @@ def test_preview_pane_doc_and_code_highlight_behavior(tmp_path: Path, qapp: QApp
     assert pane.code_view.editor.lineWrapMode() == QPlainTextEdit.LineWrapMode.NoWrap
 
 
-def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
+def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify MetadataCard Open and Show in Files action buttons and action_triggered signals."""
-    opened = []
-    revealed = []
-    card_triggers = []
-    pane_triggers = []
+    del qapp
+    opened: list[str] = []
+    revealed: list[str] = []
+    card_triggers: list[bool] = []
+    pane_triggers: list[bool] = []
     monkeypatch.setattr("semsearch.gui.preview.open_file", opened.append)
     monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", revealed.append)
 
@@ -299,8 +309,9 @@ def test_metadata_card_actions(tmp_path: Path, qapp: QApplication, monkeypatch):
     assert len(pane_triggers) == 2
 
 
-def test_preview_pane_clear_releases_resources(tmp_path: Path, qapp: QApplication):
+def test_preview_pane_clear_releases_resources(tmp_path: Path, qapp: QApplication) -> None:
     """Verify PreviewPane.clear() closes open pymupdf.Document and clears pixmaps and editor buffers."""
+    del qapp
     pane = PreviewPane()
 
     # Load Image

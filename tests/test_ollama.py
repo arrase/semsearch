@@ -42,6 +42,7 @@ def test_get_tags_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
 
     def mock_connect_error(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         raise httpx.ConnectError("Connection refused")
 
     monkeypatch.setattr(httpx, "get", mock_connect_error)
@@ -49,6 +50,7 @@ def test_get_tags_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         client.get_tags()
 
     def mock_timeout_error(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         raise httpx.TimeoutException("Timed out")
 
     monkeypatch.setattr(httpx, "get", mock_timeout_error)
@@ -56,6 +58,7 @@ def test_get_tags_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         client.get_tags()
 
     def mock_server_error(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(500, text="Internal Server Error")
 
     monkeypatch.setattr(httpx, "get", mock_server_error)
@@ -66,7 +69,8 @@ def test_get_tags_errors(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_show_model_success_and_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
         if json.get("name") == "nonexistent":
             return httpx.Response(404, text="model not found")
         return httpx.Response(200, json={"capabilities": ["vision"], "details": {"family": "clip"}})
@@ -118,6 +122,7 @@ def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(
             200,
             json={
@@ -130,7 +135,8 @@ def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
         name = json.get("name")
         if name == "llama3:latest":
             return httpx.Response(200, json={"capabilities": ["text"]})
@@ -149,13 +155,14 @@ def test_list_multimodal_models(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_embed_batching_and_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient(max_batch_size=2)
 
-    recorded_batches: list[list] = []
+    recorded_batches: list[list[object]] = []
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
         if url.endswith("/api/show"):
             return httpx.Response(200, json={"details": {"context_length": 262144}})
         assert timeout == 120.0
         batch = json["input"]
+        assert isinstance(batch, list)
         recorded_batches.append(batch)
         # return dummy vector for each item
         embeddings = [[0.1, 0.2] for _ in batch]
@@ -163,7 +170,7 @@ def test_embed_batching_and_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(httpx, "post", mock_post)
 
-    inputs = [
+    inputs: list[str | dict[str, str]] = [
         "pre-prompted text query",
         {"image": "base64_data_1"},
         {"audio": "base64_data_2"},
@@ -183,7 +190,8 @@ def test_embed_empty_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
     assert client.embed("test", []) == []
 
-    def mock_error(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_error(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, json, timeout
         return httpx.Response(404, text="model not found")
 
     monkeypatch.setattr(httpx, "post", mock_error)
@@ -194,7 +202,8 @@ def test_embed_empty_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_validate_model(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
         name = json.get("name")
         if name == "vision-model":
             return httpx.Response(200, json={"capabilities": ["vision"]})
@@ -217,8 +226,9 @@ def test_is_multimodal_fallback_to_show_model(monkeypatch: pytest.MonkeyPatch) -
     client = OllamaClient()
     called_models: list[str] = []
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
-        name = json.get("name")
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
+        name = str(json.get("name", ""))
         called_models.append(name)
         if name == "custom-model":
             return httpx.Response(200, json={"capabilities": ["vision"]})
@@ -272,10 +282,12 @@ def test_get_model_context_length(monkeypatch: pytest.MonkeyPatch) -> None:
     show_calls: list[str] = []
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
-        name = json.get("name", "")
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
+        name = str(json.get("name", ""))
         show_calls.append(name)
         if name == "embeddinggemma-2:latest":
             return httpx.Response(
@@ -312,12 +324,14 @@ def test_get_model_context_length(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_embed_passes_num_ctx_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded_payloads: list[dict] = []
+    recorded_payloads: list[dict[str, object]] = []
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(200, json={"models": []})
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del timeout
         if url.endswith("/api/show"):
             if json.get("name") == "unknown-ctx":
                 return httpx.Response(200, json={})
@@ -352,11 +366,13 @@ def test_resolve_model_name_caches_lookup(monkeypatch: pytest.MonkeyPatch) -> No
     tags_calls = 0
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         nonlocal tags_calls
         tags_calls += 1
         return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del json, timeout
         if url.endswith("/api/show"):
             return httpx.Response(200, json={"details": {"context_length": 8192}})
         return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
@@ -376,6 +392,7 @@ def test_resolve_model_name_skips_cache_on_error(monkeypatch: pytest.MonkeyPatch
     tags_calls = 0
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         nonlocal tags_calls
         tags_calls += 1
         if tags_calls == 1:
@@ -392,12 +409,13 @@ def test_resolve_model_name_skips_cache_on_error(monkeypatch: pytest.MonkeyPatch
 
 
 def test_preload_sends_empty_input_with_resolved_and_explicit_num_ctx(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded_payloads: list[dict] = []
+    recorded_payloads: list[dict[str, object]] = []
 
     def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
 
-    def mock_post(url: str, json: dict, timeout: float) -> httpx.Response:
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
         if url.endswith("/api/show"):
             if json.get("name") == "unknown-ctx":
                 return httpx.Response(200, json={})

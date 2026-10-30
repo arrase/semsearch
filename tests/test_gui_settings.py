@@ -16,14 +16,14 @@ from semsearch.gui.settings import (
 
 
 @pytest.fixture
-def mock_ollama():
+def mock_ollama() -> MagicMock:
     client = MagicMock()
     client.list_multimodal_models.return_value = ["embeddinggemma-2", "llava"]
     return client
 
 
 @pytest.fixture
-def mock_db(tmp_path: Path):
+def mock_db(tmp_path: Path) -> MagicMock:
     db = MagicMock()
     db_file = tmp_path / "index.db"
     db_file.write_text("dummy", encoding="utf-8")
@@ -33,7 +33,7 @@ def mock_db(tmp_path: Path):
     return db
 
 
-def test_autostart_toggle(tmp_path: Path, monkeypatch):
+def test_autostart_toggle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify autostart desktop file creation with absolute executable path and removal."""
     test_autostart = tmp_path / "autostart" / "semsearch.desktop"
     monkeypatch.setattr("semsearch.gui.settings.AUTOSTART_DIR", test_autostart.parent)
@@ -41,16 +41,19 @@ def test_autostart_toggle(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda _: "/home/user/.local/bin/semsearch")
 
     assert not is_autostart_enabled()
-    set_autostart_enabled(True)
+    set_autostart_enabled(enabled=True)
     assert is_autostart_enabled()
     assert "Exec=/home/user/.local/bin/semsearch --daemon" in test_autostart.read_text(encoding="utf-8")
 
-    set_autostart_enabled(False)
+    set_autostart_enabled(enabled=False)
     assert not is_autostart_enabled()
 
 
-def test_settings_dialog_load_and_tabs(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
+def test_settings_dialog_load_and_tabs(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
     """Verify settings loaded into dialog tabs."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     cfg_mgr.config.folders = ["/home/user/Documents"]
@@ -76,8 +79,11 @@ def test_settings_dialog_load_and_tabs(tmp_path: Path, mock_ollama, mock_db, qap
     assert dialog.general_tab.hotkey_edit.text() == "ctrl+shift+space"
 
 
-def test_settings_dialog_test_connection_multimodal_filtering(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
+def test_settings_dialog_test_connection_multimodal_filtering(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
     """Verify testing connection populates model dropdown strictly with multimodal models."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
@@ -91,8 +97,11 @@ def test_settings_dialog_test_connection_multimodal_filtering(tmp_path: Path, mo
     assert dialog.storage_tab.model_combo.currentText() == "embeddinggemma-2"
 
 
-def test_settings_dialog_save_settings(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
+def test_settings_dialog_save_settings(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
     """Verify changes in dialog are saved back to ConfigManager."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
@@ -117,8 +126,9 @@ def test_settings_dialog_save_settings(tmp_path: Path, mock_ollama, mock_db, qap
     assert saved.hotkey == "ctrl+alt+space"
 
 
-def test_settings_dialog_test_connection_error_handling(tmp_path: Path, mock_db, qapp: QApplication):
+def test_settings_dialog_test_connection_error_handling(tmp_path: Path, mock_db: MagicMock, qapp: QApplication) -> None:
     """Verify Ollama connection error is handled gracefully in status label."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     mock_ollama = MagicMock()
@@ -129,8 +139,9 @@ def test_settings_dialog_test_connection_error_handling(tmp_path: Path, mock_db,
     assert "Connection failed" in dialog.storage_tab.status_label.text()
 
 
-def test_settings_dialog_code_db_stats_aggregation(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_code_db_stats_aggregation(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify update_database_stats aggregates metrics and disk size from both db and code_db."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -156,8 +167,9 @@ def test_settings_dialog_code_db_stats_aggregation(tmp_path: Path, mock_ollama, 
     assert "3.0 KB" in label_text
 
 
-def test_settings_dialog_stats_no_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_stats_no_databases(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify stats label when both db and code_db are None."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -166,8 +178,9 @@ def test_settings_dialog_stats_no_databases(tmp_path: Path, mock_ollama, qapp: Q
     assert dialog.storage_tab.stats_label.text() == "Database metrics unavailable"
 
 
-def test_settings_dialog_vacuum_both_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_vacuum_both_databases(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify _vacuum_database executes VACUUM on both db and code_db and refreshes stats."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -186,8 +199,11 @@ def test_settings_dialog_vacuum_both_databases(tmp_path: Path, mock_ollama, qapp
     mock_code_db.vacuum.assert_called_once()
 
 
-def test_settings_dialog_reindex_requested_signal_forwarding(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
+def test_settings_dialog_reindex_requested_signal_forwarding(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
     """Verify clicking reindex button emits reindex_requested signal from tab and dialog."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -204,8 +220,9 @@ def test_settings_dialog_reindex_requested_signal_forwarding(tmp_path: Path, moc
     dialog_spy.assert_called_once()
 
 
-def test_settings_dialog_stats_code_db_only(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_stats_code_db_only(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify update_database_stats works when db is None but code_db is present."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -225,8 +242,9 @@ def test_settings_dialog_stats_code_db_only(tmp_path: Path, mock_ollama, qapp: Q
     assert "1.0 KB" in label_text
 
 
-def test_settings_dialog_vacuum_db_only(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_vacuum_db_only(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify _vacuum_database executes VACUUM on db when code_db is None without error."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -240,8 +258,9 @@ def test_settings_dialog_vacuum_db_only(tmp_path: Path, mock_ollama, qapp: QAppl
     mock_db.vacuum.assert_called_once()
 
 
-def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify _vacuum_database executes VACUUM on real SQLite database instances."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -256,8 +275,11 @@ def test_settings_dialog_vacuum_real_databases(tmp_path: Path, mock_ollama, qapp
     assert "8.0 KB" in dialog.storage_tab.stats_label.text()
 
 
-def test_settings_dialog_num_ctx_validation_against_model(tmp_path: Path, mock_ollama, mock_db, qapp: QApplication):
+def test_settings_dialog_num_ctx_validation_against_model(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
     """Verify context window validation against Ollama model's maximum context_length."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     mock_ollama.get_model_context_length.return_value = 8192

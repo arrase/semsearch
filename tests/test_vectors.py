@@ -13,12 +13,12 @@ from semsearch.core.vectors import (
 )
 
 
-def test_dim_constant():
+def test_dim_constant() -> None:
     """Verify standard embedding vector dimension."""
     assert DIM == 768
 
 
-def test_l2_normalize_1d():
+def test_l2_normalize_1d() -> None:
     """Verify L2 normalization for 1D vectors."""
     vec = np.array([3.0, 4.0], dtype=np.float32)
     normed = l2_normalize(vec)
@@ -30,7 +30,7 @@ def test_l2_normalize_1d():
     assert np.array_equal(l2_normalize(zero_vec), zero_vec)
 
 
-def test_l2_normalize_2d():
+def test_l2_normalize_2d() -> None:
     """Verify L2 normalization for 2D matrices along row axis."""
     matrix = np.array(
         [
@@ -47,7 +47,7 @@ def test_l2_normalize_2d():
     assert np.allclose(normed[2], [0.6, 0.8, 0.0])
 
 
-def test_float16_bytes_roundtrip():
+def test_float16_bytes_roundtrip() -> None:
     """Verify serialization to and from float16 bytes."""
     rng = np.random.default_rng(42)
     vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
@@ -60,7 +60,7 @@ def test_float16_bytes_roundtrip():
     assert np.allclose(recovered.astype(np.float32), vec, atol=1e-3)
 
 
-def test_cosine_similarity():
+def test_cosine_similarity() -> None:
     """Verify cosine similarity calculation against doc matrices."""
     q = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     docs = np.array(
@@ -80,13 +80,13 @@ def test_cosine_similarity():
     assert len(cosine_similarity(q, empty_docs)) == 0
 
 
-def test_z_score_normalize_empty():
+def test_z_score_normalize_empty() -> None:
     """Verify Z-score normalization handles empty inputs."""
     res = z_score_normalize(np.array([], dtype=np.float32), [])
     assert len(res) == 0
 
 
-def test_z_score_normalize_small_modality_uses_global_mean():
+def test_z_score_normalize_small_modality_uses_global_mean() -> None:
     """Verify small modality groups (< 20 items) fall back to global mean."""
     cosines = np.array([0.5, 0.7, 0.9], dtype=np.float32)
     modalities = [Modality.TEXT, Modality.IMAGE, Modality.TEXT]
@@ -97,7 +97,7 @@ def test_z_score_normalize_small_modality_uses_global_mean():
     assert np.isclose(np.mean(z), 0.0, atol=1e-5)
 
 
-def test_z_score_normalize_large_modality_uses_modality_mean():
+def test_z_score_normalize_large_modality_uses_modality_mean() -> None:
     """Verify modality groups with >= 20 items use their own modality mean."""
     # 25 text items around 0.8
     text_scores = np.full(25, 0.8, dtype=np.float32)
@@ -114,7 +114,7 @@ def test_z_score_normalize_large_modality_uses_modality_mean():
     assert np.allclose(z, 0.0)
 
 
-def test_z_score_normalize_small_image_uses_global_mean_without_penalty():
+def test_z_score_normalize_small_image_uses_global_mean_without_penalty() -> None:
     """Verify small image group (< 20 items) uses global mean without subtracting an artificial offset."""
     text_scores = np.full(25, 0.30, dtype=np.float32)
     image_scores = np.array([0.42, 0.25], dtype=np.float32)
@@ -127,7 +127,7 @@ def test_z_score_normalize_small_image_uses_global_mean_without_penalty():
     assert z[26] < 0.0
 
 
-def test_z_score_normalize_sets_scale_excludes_deep_segments():
+def test_z_score_normalize_sets_scale_excludes_deep_segments() -> None:
     """Verify sets_scale=False segments do not skew mean or standard deviation."""
     scale_scores = np.linspace(0.20, 0.40, 20, dtype=np.float32)
     deep_scores = np.full(50, 0.90, dtype=np.float32)
@@ -140,7 +140,7 @@ def test_z_score_normalize_sets_scale_excludes_deep_segments():
     assert np.all(z[20:] > 5.0)
 
 
-def test_z_score_normalize_clamps_low_variance_noise_to_sigma_floor():
+def test_z_score_normalize_clamps_low_variance_noise_to_sigma_floor() -> None:
     """Verify low-variance noise queries with std < 0.045 are clamped by the 0.045 sigma floor."""
     # 10 items around 0.56 with one slight noise outlier at 0.64
     cosines = np.array([0.56] * 9 + [0.64], dtype=np.float32)
@@ -152,7 +152,7 @@ def test_z_score_normalize_clamps_low_variance_noise_to_sigma_floor():
     assert z[-1] < 2.2
 
 
-def test_z_score_normalize_multi_hit_outlier_resistance():
+def test_z_score_normalize_multi_hit_outlier_resistance() -> None:
     """Verify two strong matches in a 20-item corpus both pass z >= 2.2 without top-hit sigma masking."""
     bg = np.array(
         [0.55, 0.56, 0.57, 0.58, 0.59, 0.54, 0.56, 0.57, 0.58, 0.60, 0.55, 0.57, 0.58, 0.59, 0.56, 0.57, 0.58, 0.59],

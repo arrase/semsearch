@@ -2,6 +2,7 @@
 
 import os
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from semsearch.core.types import FileKind, FileState, Modality, SegmentKind
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Database:
+def db(tmp_path: Path) -> Iterator[Database]:
     """Create a temporary database instance."""
     db_path = tmp_path / "test_crawler.sqlite"
     database = Database(db_path)
@@ -27,7 +28,7 @@ def db(tmp_path: Path) -> Database:
     database.close()
 
 
-def test_rules_secret_detection():
+def test_rules_secret_detection() -> None:
     """Verify detection of secret and credential files."""
     assert is_secret("/home/user/.env") is True
     assert is_secret("/home/user/.env.local") is True
@@ -39,7 +40,7 @@ def test_rules_secret_detection():
     assert is_secret("/home/user/src/main.py") is False
 
 
-def test_rules_code_project_root(tmp_path: Path):
+def test_rules_code_project_root(tmp_path: Path) -> None:
     """Verify code project root detection."""
     proj = tmp_path / "my_project"
     proj.mkdir()
@@ -49,7 +50,7 @@ def test_rules_code_project_root(tmp_path: Path):
     assert is_code_project_root(str(proj)) is True
 
 
-def test_rules_classify_file():
+def test_rules_classify_file() -> None:
     """Verify file kind classification."""
     assert classify_file("photo.jpg") == FileKind.IMAGE
     assert classify_file("Screenshot 2026-10-12.png") == FileKind.SCREENSHOT
@@ -63,7 +64,7 @@ def test_rules_classify_file():
     assert classify_file("archive.zip") is None
 
 
-def test_rules_should_skip(tmp_path: Path):
+def test_rules_should_skip(tmp_path: Path) -> None:
     """Verify should_skip logic across general and code modes."""
     # Ignored directory
     skip, reason = should_skip("/tmp/repo/node_modules/pkg/index.js", is_code_mode=False)
@@ -126,7 +127,7 @@ def test_rules_should_skip(tmp_path: Path):
         assert "data format" in reason
 
 
-def test_rules_dataset_folder():
+def test_rules_dataset_folder() -> None:
     """Verify dataset detection for 300+ machine-named files."""
     # 300 machine named image files
     machine_files = [f"/tmp/dataset/frame_{i:04d}.png" for i in range(350)]
@@ -141,7 +142,7 @@ def test_rules_dataset_folder():
     assert is_dataset_folder(small_files) is False
 
 
-def test_crawl_folder_finds_files(tmp_path: Path):
+def test_crawl_folder_finds_files(tmp_path: Path) -> None:
     """Verify crawl_folder scans valid files and skips secrets / ignored dirs."""
     root = tmp_path / "test_root"
     root.mkdir()
@@ -169,7 +170,7 @@ def test_crawl_folder_finds_files(tmp_path: Path):
     assert str((venv / "module.py").resolve()) not in paths
 
 
-def test_sync_candidates_add_change_move_delete(db: Database, tmp_path: Path):
+def test_sync_candidates_add_change_move_delete(db: Database, tmp_path: Path) -> None:
     """Verify complete reconciliation: addition, modification, move by inode, deletion."""
     test_dir = tmp_path / "files"
     test_dir.mkdir()
@@ -229,7 +230,7 @@ def test_sync_candidates_add_change_move_delete(db: Database, tmp_path: Path):
     assert db.find_by_path(str(file_a.resolve())) is None
 
 
-def test_delete_entire_subfolder_cascades_in_db(db: Database, tmp_path: Path):
+def test_delete_entire_subfolder_cascades_in_db(db: Database, tmp_path: Path) -> None:
     """Verify deleting an entire subfolder deletes its files from DB and cascades to segments."""
     root = tmp_path / "subfolder_test"
     root.mkdir()
@@ -282,7 +283,7 @@ def test_delete_entire_subfolder_cascades_in_db(db: Database, tmp_path: Path):
     assert cursor.fetchone()[0] == 0
 
 
-def test_multi_root_scoping_and_vanished_root(db: Database, tmp_path: Path):
+def test_multi_root_scoping_and_vanished_root(db: Database, tmp_path: Path) -> None:
     """Verify syncing one root does not delete files from another, and vanished roots are preserved."""
     root_a = tmp_path / "root_a"
     root_a.mkdir()
@@ -317,7 +318,7 @@ def test_multi_root_scoping_and_vanished_root(db: Database, tmp_path: Path):
     assert db.find_by_path(str(fb.resolve())) is not None
 
 
-def test_move_and_modify(db: Database, tmp_path: Path):
+def test_move_and_modify(db: Database, tmp_path: Path) -> None:
     """Verify that moving and altering a file re-queues it as pending and counts in changed."""
     work_dir = tmp_path / "move_mod"
     work_dir.mkdir()
@@ -353,7 +354,7 @@ def test_move_and_modify(db: Database, tmp_path: Path):
     assert db.find_by_path(str(orig_file.resolve())) is None
 
 
-def test_crawl_folder_root_never_treated_as_dataset(tmp_path: Path):
+def test_crawl_folder_root_never_treated_as_dataset(tmp_path: Path) -> None:
     """Verify user-selected root folder itself is never skipped as a dataset."""
     root = tmp_path / "photos_root"
     root.mkdir()
@@ -377,7 +378,7 @@ def test_crawl_folder_root_never_treated_as_dataset(tmp_path: Path):
     assert len(candidates_with_nested) == 350
 
 
-def test_crawl_and_sync_with_excluded_folders_and_types(db: Database, tmp_path: Path):
+def test_crawl_and_sync_with_excluded_folders_and_types(tmp_path: Path) -> None:
     """Verify crawl_folder and sync_candidates respect excluded_folders and excluded_types."""
     root = tmp_path / "excl_root"
     root.mkdir()

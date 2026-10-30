@@ -8,8 +8,9 @@ from semsearch.core.types import EngineActivity, EngineStatus
 from semsearch.gui.tray import SystemTrayManager, render_tray_icon
 
 
-def test_render_tray_icon_states(qapp: QApplication):
+def test_render_tray_icon_states(qapp: QApplication) -> None:
     """Verify icon generation across idle, indexing, and paused states."""
+    del qapp
     icon_idle = render_tray_icon(0.0, is_indexing=False, is_paused=False)
     assert not icon_idle.isNull()
     assert icon_idle.pixmap(64, 64).width() == 64
@@ -21,8 +22,9 @@ def test_render_tray_icon_states(qapp: QApplication):
     assert not icon_paused.isNull()
 
 
-def test_system_tray_manager_menu_actions(qapp: QApplication):
+def test_system_tray_manager_menu_actions(qapp: QApplication) -> None:
     """Verify menu action signal wiring."""
+    del qapp
     manager = SystemTrayManager()
 
     panel_spy = MagicMock()
@@ -43,8 +45,9 @@ def test_system_tray_manager_menu_actions(qapp: QApplication):
     quit_spy.assert_called_once()
 
 
-def test_system_tray_manager_status_updates(qapp: QApplication):
+def test_system_tray_manager_status_updates(qapp: QApplication) -> None:
     """Verify tray icon text and tooltip update according to EngineStatus."""
+    del qapp
     mock_indexer = MagicMock()
     mock_indexer.status = EngineStatus(
         activity=EngineActivity.INDEXING,
@@ -83,8 +86,9 @@ def test_system_tray_manager_status_updates(qapp: QApplication):
     assert "Idle - 120 indexed" in manager.status_action.text()
 
 
-def test_system_tray_manager_periodic_poll_timer(qapp: QApplication):
+def test_system_tray_manager_periodic_poll_timer(qapp: QApplication) -> None:
     """Verify periodic QTimer is configured and updates status periodically."""
+    del qapp
     mock_indexer = MagicMock()
     mock_indexer.status = EngineStatus(
         activity=EngineActivity.INDEXING,
@@ -110,15 +114,17 @@ def test_system_tray_manager_periodic_poll_timer(qapp: QApplication):
     assert "Indexing: 50%" in manager.tray_icon.toolTip()
 
 
-def test_system_tray_manager_no_indexer(qapp: QApplication):
+def test_system_tray_manager_no_indexer(qapp: QApplication) -> None:
     """Verify SystemTrayManager without index_service does not initialize poll timer."""
+    del qapp
     manager = SystemTrayManager(index_service=None)
     assert manager._poll_timer is None
     manager._poll_status()
 
 
-def test_system_tray_manager_skips_unchanged_status_updates(qapp: QApplication):
+def test_system_tray_manager_skips_unchanged_status_updates(qapp: QApplication) -> None:
     """Verify repeated update_status calls with unchanged state skip icon rendering and D-Bus updates."""
+    del qapp
     mock_indexer = MagicMock()
     idle_status = EngineStatus(
         activity=EngineActivity.IDLE,

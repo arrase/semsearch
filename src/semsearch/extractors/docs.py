@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from docx import Document
+from docx.table import Table, _Cell
 
 from semsearch.core.search_text import has_words
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
@@ -61,15 +62,15 @@ def _read_odt(path: str) -> str:
     return "\n\n".join(paragraphs)
 
 
-def _extract_docx_table_rows(table) -> list[str]:
-    seen_cells = set()
+def _extract_docx_table_rows(table: Table) -> list[str]:
+    seen_cells: set[_Cell] = set()
     rows: list[str] = []
     for row in table.rows:
         row_parts: list[str] = []
         for cell in row.cells:
-            if cell._tc in seen_cells:
+            if cell in seen_cells:
                 continue
-            seen_cells.add(cell._tc)
+            seen_cells.add(cell)
             text = cell.text.strip()
             if text:
                 row_parts.append(text)

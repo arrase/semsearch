@@ -52,7 +52,7 @@ def is_autostart_enabled() -> bool:
     return AUTOSTART_FILE.is_file()
 
 
-def set_autostart_enabled(enabled: bool) -> None:
+def set_autostart_enabled(*, enabled: bool) -> None:
     """Create or remove autostart desktop entry."""
     if enabled:
         AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
@@ -82,8 +82,17 @@ class FoldersTab(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
-        self.folders_group = QGroupBox(tr("Indexed Folders"))
-        folders_layout = QVBoxLayout(self.folders_group)
+        self.folders_group = self._build_folders_group()
+        self.excl_group = self._build_exclusions_group()
+        self.power_group = self._build_power_group()
+
+        layout.addWidget(self.folders_group, stretch=1)
+        layout.addWidget(self.excl_group)
+        layout.addWidget(self.power_group)
+
+    def _build_folders_group(self) -> QGroupBox:
+        group = QGroupBox(tr("Indexed Folders"))
+        folders_layout = QVBoxLayout(group)
         self.folders_list = QListWidget()
         self.folders_list.setMinimumHeight(110)
         btn_row = QHBoxLayout()
@@ -97,10 +106,11 @@ class FoldersTab(QWidget):
 
         folders_layout.addWidget(self.folders_list, stretch=1)
         folders_layout.addLayout(btn_row)
-        layout.addWidget(self.folders_group, stretch=1)
+        return group
 
-        self.excl_group = QGroupBox(tr("Exclusions"))
-        excl_layout = QFormLayout(self.excl_group)
+    def _build_exclusions_group(self) -> QGroupBox:
+        group = QGroupBox(tr("Exclusions"))
+        excl_layout = QFormLayout(group)
         excl_layout.setSpacing(8)
         self.skipped_folders_edit = QLineEdit()
         self.skipped_folders_edit.setPlaceholderText(
@@ -112,10 +122,11 @@ class FoldersTab(QWidget):
         self.skipped_ext_label = QLabel(tr("Skipped Extensions:"))
         excl_layout.addRow(self.skipped_folders_label, self.skipped_folders_edit)
         excl_layout.addRow(self.skipped_ext_label, self.skipped_ext_edit)
-        layout.addWidget(self.excl_group)
+        return group
 
-        self.power_group = QGroupBox(tr("Power && Indexing Schedule"))
-        power_layout = QVBoxLayout(self.power_group)
+    def _build_power_group(self) -> QGroupBox:
+        group = QGroupBox(tr("Power && Indexing Schedule"))
+        power_layout = QVBoxLayout(group)
         power_layout.setSpacing(8)
         self.battery_check = QCheckBox(tr("Index while on battery power"))
 
@@ -138,7 +149,7 @@ class FoldersTab(QWidget):
 
         power_layout.addWidget(self.battery_check)
         power_layout.addLayout(schedule_row)
-        layout.addWidget(self.power_group)
+        return group
 
     def retranslate_ui(self) -> None:
         """Refresh translated labels in FoldersTab."""
@@ -357,7 +368,7 @@ class StorageModelTab(QWidget):
             models = self.ollama.list_multimodal_models()
             self.populate_multimodal_models(models)
             self.validate_num_ctx()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — GUI connection test boundary displays error message instead of crashing dialog
             self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
             self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
 
@@ -630,7 +641,7 @@ class SettingsDialog(QDialog):
         selected_lang = self.general_tab.language_combo.currentData()
         if selected_lang:
             cfg.language = selected_lang
-        set_autostart_enabled(self.general_tab.autostart_check.isChecked())
+        set_autostart_enabled(enabled=self.general_tab.autostart_check.isChecked())
 
         self.config_manager.save()
         self.settings_saved.emit()

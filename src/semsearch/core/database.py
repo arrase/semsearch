@@ -6,8 +6,11 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from types import TracebackType
+from typing import Any, TypedDict
 
 import numpy as np
+import numpy.typing as npt
 
 from semsearch.core.search_text import extract_snippet, normalize_search_text
 from semsearch.core.types import (
@@ -23,13 +26,26 @@ SCHEMA_VERSION = 5
 MAIN_DB_FILE = "index.sqlite"
 CODE_DB_FILE = "code.sqlite"
 FILE_COLUMNS = "id, path, kind, size, mtime, inode, device, state, detail, info, indexed_at"
+_MIN_FTS_WORD_LEN = 2
+
+
+class FtsMatchRow(TypedDict):
+    """Structured result row from FTS5 BM25 search."""
+
+    segment_id: int
+    file_id: int | None
+    name: str
+    body: str
+    original: str
+    rank: float
+    snippet: str
+    loc: float
+    excerpt: str
 
 
 def _folder_text(path_obj: Path) -> str:
     home = str(Path.home())
-    parent_str = str(path_obj.parent)
-    if parent_str.startswith(home):
-        parent_str = parent_str[len(home) :]
+    parent_str = str(path_obj.parent).removeprefix(home)
     parts = [p for p in parent_str.split("/") if p]
     return " ".join(parts)
 
@@ -118,7 +134,12 @@ class Database:
     def __enter__(self) -> "Database":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
     def vacuum(self) -> None:
@@ -351,13 +372,14 @@ class Database:
         file_id: int,
         kind: SegmentKind,
         modality: Modality,
-        loc: float,
-        loc_end: float,
-        excerpt: str,
-        vec: bytes | None,
-        name: str,
-        body: str,
-        original: str,
+        loc: float = 0.0,
+        loc_end: float = 0.0,
+        *,
+        excerpt: str = "",
+        vec: bytes | None = None,
+        name: str = "",
+        body: str = "",
+        original: str = "",
     ) -> int:
         """Insert a content segment with optional vector and FTS entry."""
         with self._lock:
@@ -473,7 +495,7 @@ class Database:
         file_id: int,
         state: FileState,
         detail: str = "",
-        info: dict | None = None,
+        info: dict[str, object] | None = None,
     ) -> None:
         """Update file processing state, details, and metadata."""
         with self._lock:
@@ -489,14 +511,14 @@ class Database:
             )
             self._conn.commit()
 
-    def get_all_vectors(self) -> tuple[list[int], list[int], list[Modality], np.ndarray]:
+    def get_all_vectors(self) -> tuple[list[int], list[int], list[Modality], npt.NDArray[np.float32]]:
         """Return segment_ids, file_ids, modalities, and stacked vectors matrix."""
         seg_ids, file_ids, modalities, matrix, _ = self.get_all_vectors_with_scale()
         return seg_ids, file_ids, modalities, matrix
 
     def get_all_vectors_with_scale(
         self,
-    ) -> tuple[list[int], list[int], list[Modality], np.ndarray, list[bool]]:
+    ) -> tuple[list[int], list[int], list[Modality], npt.NDArray[np.float32], list[bool]]:
         """Return segment_ids, file_ids, modalities, stacked vectors matrix, and sets_scale mask."""
         with self._lock:
             cursor = self._conn.cursor()
@@ -537,10 +559,10 @@ class Database:
     def _build_fts_match_expr(stripped: str) -> str:
         if '"' in stripped or "*" in stripped or " OR " in stripped:
             return stripped
-        words = [w for w in re.findall(r"\w+", stripped) if len(w) >= 2] or [stripped]
+        words = [w for w in re.findall(r"\w+", stripped) if len(w) >= _MIN_FTS_WORD_LEN] or [stripped]
         return " OR ".join(f'"{w}"*' for w in words)
 
-    def fts_search(self, query: str, limit: int = 100, terms: list[str] | None = None) -> list[dict]:
+    def fts_search(self, query: str, limit: int = 100, terms: list[str] | None = None) -> list[FtsMatchRow]:
         """Perform full-text search using BM25 ranking with boosted filename weight."""
         stripped = query.strip()
         if not stripped:
@@ -570,22 +592,22 @@ class Database:
             except sqlite3.Error:
                 return []
 
-        results: list[dict] = []
+        results: list[FtsMatchRow] = []
         for row in rows:
             orig = row[4]
             raw_snip = row[6] or ""
             snip = extract_snippet(orig, terms) if orig and terms else None
             results.append(
                 {
-                    "segment_id": row[0],
-                    "file_id": row[1],
-                    "name": row[2],
-                    "body": row[3],
-                    "original": orig,
-                    "rank": row[5],
-                    "snippet": snip or raw_snip,
-                    "loc": row[7] if row[7] is not None else 0.0,
-                    "excerpt": row[8] or "",
+                    "segment_id": int(row[0]),
+                    "file_id": int(row[1]) if row[1] is not None else None,
+                    "name": str(row[2] or ""),
+                    "body": str(row[3] or ""),
+                    "original": str(orig or ""),
+                    "rank": float(row[5]),
+                    "snippet": str(snip or raw_snip),
+                    "loc": float(row[7]) if row[7] is not None else 0.0,
+                    "excerpt": str(row[8] or ""),
                 }
             )
         return results
@@ -645,7 +667,7 @@ class Database:
                 "vectors": vectors_count,
             }
 
-    def _row_to_file_record(self, row: tuple) -> FileRecord:
+    def _row_to_file_record(self, row: tuple[Any, ...]) -> FileRecord:
         return FileRecord(
             id=row[0],
             path=row[1],

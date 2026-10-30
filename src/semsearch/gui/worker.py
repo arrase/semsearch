@@ -18,6 +18,7 @@ class SearchWorker(QThread):
         search_service: SearchService,
         query: str,
         limit: int = 100,
+        *,
         is_code: bool = False,
     ) -> None:
         super().__init__()
@@ -41,8 +42,7 @@ class SearchWorker(QThread):
         if self.is_stopped:
             return
         with self._search_lock:
-            if self.is_stopped:
-                return
-            results = self.search_service.search(self.query, limit=self.limit, is_code=self.is_code)
-        if not self.is_stopped:
-            self.results_ready.emit(self.query, results)
+            if not self.is_stopped:
+                results = self.search_service.search(self.query, limit=self.limit, is_code=self.is_code)
+                if not self.is_stopped:
+                    self.results_ready.emit(self.query, results)

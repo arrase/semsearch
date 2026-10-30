@@ -204,7 +204,7 @@ class ModelPage(QWizardPage):
                 self.model_combo.addItem("embeddinggemma-2")
                 self.status_label.setText(tr("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled."))
                 self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — GUI connection test boundary displays error message instead of crashing wizard
             self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
             self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
 
@@ -257,8 +257,8 @@ class CodePage(QWizardPage):
         layout.addWidget(self.code_container)
         layout.addStretch()
 
-    def _on_toggle_code(self, checked: bool) -> None:
-        self.code_container.setEnabled(checked)
+    def _on_toggle_code(self) -> None:
+        self.code_container.setEnabled(self.code_enable_check.isChecked())
 
     def _add_repo(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, tr("Select Code Root Directory"))

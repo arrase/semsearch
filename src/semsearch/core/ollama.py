@@ -32,6 +32,10 @@ MULTIMODAL_INDICATORS = {
     "embeddinggemma",
 }
 
+_HTTP_NOT_FOUND = 404
+_HTTP_BAD_REQUEST = 400
+_MIN_PARAMETER_PARTS = 3
+
 
 def format_query_prompt(text: str) -> str:
     """Format general document query prompt."""
@@ -58,6 +62,7 @@ class OllamaClient:
         timeout: float = 30.0,
         embed_timeout: float = 120.0,
         max_batch_size: int = 32,
+        *,
         default_model: str = "embeddinggemma-2",
         num_ctx: int = 0,
     ) -> None:
@@ -90,17 +95,19 @@ class OllamaClient:
         except httpx.HTTPError as err:
             raise OllamaError(f"HTTP error: {err}") from err
 
-        if response.status_code == 404 and model_name:
+        if response.status_code == _HTTP_NOT_FOUND and model_name:
             raise OllamaModelError(f"Model not found: {model_name}")
-        if response.status_code >= 400:
+        if response.status_code >= _HTTP_BAD_REQUEST:
             raise OllamaError(f"Ollama error ({response.status_code}): {response.text}")
 
-        return response.json()
+        data: dict[str, Any] = response.json()
+        return data
 
     def get_tags(self) -> list[dict[str, Any]]:
         """Query available models from GET /api/tags."""
         data = self._request("/api/tags", timeout=self.timeout)
-        return data.get("models", [])
+        models: list[dict[str, Any]] = data.get("models", [])
+        return models
 
     def show_model(self, model: str) -> dict[str, Any]:
         """Query model details and capabilities from POST /api/show."""
@@ -130,7 +137,7 @@ class OllamaClient:
         for line in modelfile.splitlines():
             parts = line.strip().split()
             if (
-                len(parts) >= 3
+                len(parts) >= _MIN_PARAMETER_PARTS
                 and parts[0].upper() == "PARAMETER"
                 and parts[1].lower() == "num_ctx"
                 and parts[2].isdigit()
@@ -217,7 +224,7 @@ class OllamaClient:
         except OllamaError:
             return preferred
 
-        names = [item.get("name") or item.get("model", "") for item in tags]
+        names = [str(item.get("name") or item.get("model", "")) for item in tags]
         if preferred in names:
             self._resolved_model_cache[cache_key] = preferred
             return preferred
@@ -279,6 +286,7 @@ class OllamaClient:
         self,
         model: str,
         inputs: list[str | dict[str, str]],
+        *,
         truncate: bool = True,
         num_ctx: int | None = None,
     ) -> list[list[float]]:
