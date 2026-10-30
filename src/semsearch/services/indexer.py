@@ -39,6 +39,11 @@ class IndexQueueTier(StrEnum):
     LONG_FILES = "long_files"
 
 
+_MIN_TITLE_PARTS = 2
+_MAX_NEW_FILES_QUEUE = 50
+_DOC_CHUNK_BATCH_SIZE = 40
+
+
 def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str | None, str]:
     """Determine repo and title path for code files matching project root markers first."""
     path_obj = Path(path).resolve()
@@ -67,7 +72,7 @@ def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str |
             return str(repo), path_obj.name
 
     parts = path_obj.parts
-    title = "/".join(parts[-2:]) if len(parts) >= 2 else path_obj.name
+    title = "/".join(parts[-_MIN_TITLE_PARTS:]) if len(parts) >= _MIN_TITLE_PARTS else path_obj.name
     return None, title
 
 
@@ -139,7 +144,7 @@ class IndexService:
             return False
         return any(resolved_path.is_relative_to(Path(cf).resolve()) for cf in self.config.code_folders)
 
-    def _is_excluded_general_ext(self, ext: str, is_code: bool) -> bool:
+    def _is_excluded_general_ext(self, ext: str, *, is_code: bool) -> bool:
         if is_code or not self.config.excluded_types:
             return False
         norm_excl = {t.lstrip(".").strip().lower() for t in self.config.excluded_types if t.strip()}
@@ -162,7 +167,7 @@ class IndexService:
 
         is_code = self._is_code_file_path(resolved_path)
         ext = resolved_path.suffix.lstrip(".").lower()
-        if self._is_excluded_general_ext(ext, is_code):
+        if self._is_excluded_general_ext(ext, is_code=is_code):
             return
 
         target_db = self.code_db if is_code and self.code_db is not None else self.db
@@ -188,7 +193,7 @@ class IndexService:
         fid = self._upsert_candidate(target_db, rec, cand)
 
         with self._lock:
-            if tier == IndexQueueTier.NEW_FILES and len(self._new_files_queue) < 50:
+            if tier == IndexQueueTier.NEW_FILES and len(self._new_files_queue) < _MAX_NEW_FILES_QUEUE:
                 item = (fid, is_code)
                 if item not in self._new_files_queue:
                     self._new_files_queue.append(item)
@@ -196,7 +201,7 @@ class IndexService:
         self._update_status_counts()
         self._work_event.set()
 
-    def _crawl_single_root(self, root: str, is_code: bool, excl_types: list[str] | None) -> list[Candidate]:
+    def _crawl_single_root(self, root: str, *, is_code: bool, excl_types: list[str] | None) -> list[Candidate]:
         if self.config.excluded_folders or (excl_types and excl_types != ["heic"]):
             return crawl_folder(
                 root,
@@ -206,7 +211,7 @@ class IndexService:
             )
         return crawl_folder(root, is_code=is_code)
 
-    def crawl_and_sync(self, roots: list[str] | None = None, is_code: bool = False) -> None:
+    def crawl_and_sync(self, roots: list[str] | None = None, *, is_code: bool = False) -> None:
         """Crawl folders and synchronize database records."""
         if self._stop_event.is_set() or (is_code and not self.code_db):
             return
@@ -222,7 +227,7 @@ class IndexService:
         for root in scan_roots:
             if self._stop_event.is_set():
                 break
-            candidates = self._crawl_single_root(root, is_code, excl_types)
+            candidates = self._crawl_single_root(root, is_code=is_code, excl_types=excl_types)
             sync_candidates(target_db, candidates, roots=[root])
 
         self._update_status_counts()
@@ -273,53 +278,48 @@ class IndexService:
         self,
         file_record: FileRecord,
         start_offset: int = 0,
-    ) -> tuple[list[ExtractedSegment], bool, dict]:
+    ) -> tuple[list[ExtractedSegment], bool, dict[str, object]]:
         path = file_record.path
         kind = file_record.kind
-        info = dict(file_record.info)
+        info: dict[str, object] = dict(file_record.info)
 
-        if kind == FileKind.IMAGE:
-            return [extract_image(path, is_screenshot=False)], True, info
-        if kind == FileKind.SCREENSHOT:
-            return [extract_image(path, is_screenshot=True)], True, info
+        if kind in (FileKind.IMAGE, FileKind.SCREENSHOT):
+            return [extract_image(path, is_screenshot=(kind == FileKind.SCREENSHOT))], True, info
         if kind == FileKind.PDF:
             segments, complete = extract_pdf(path, start_page=start_offset, max_pages=30)
             info["last_page"] = start_offset + len(segments)
             return segments, complete, info
         if kind == FileKind.DOC:
             all_segments = extract_doc(path)
-            if len(all_segments) > 40:
-                end_chunk = min(start_offset + 40, len(all_segments))
+            if len(all_segments) > _DOC_CHUNK_BATCH_SIZE:
+                end_chunk = min(start_offset + _DOC_CHUNK_BATCH_SIZE, len(all_segments))
                 batch = all_segments[start_offset:end_chunk]
                 info["last_chunk"] = end_chunk
                 return batch, end_chunk >= len(all_segments), info
             return all_segments, True, info
-        if kind == FileKind.AUDIO:
-            return extract_audio(path), True, info
-        if kind == FileKind.VIDEO:
-            return extract_video(path), True, info
-        if kind == FileKind.CODE:
-            if path.endswith(".ipynb"):
-                return extract_notebook(path), True, info
-            return extract_code(path), True, info
-
-        return [], True, info
+        if kind in (FileKind.AUDIO, FileKind.VIDEO):
+            segments = extract_audio(path) if kind == FileKind.AUDIO else extract_video(path)
+            return segments, True, info
+        segments = extract_notebook(path) if path.endswith(".ipynb") else extract_code(path)
+        return segments, True, info
 
     @staticmethod
     def _get_resume_offset(file_record: FileRecord) -> int:
         if file_record.state != FileState.PARTIAL:
             return 0
         if file_record.kind == FileKind.PDF:
-            return file_record.info.get("last_page", 0)
-        if file_record.kind == FileKind.DOC:
-            return file_record.info.get("last_chunk", 0)
-        return 0
+            val = file_record.info.get("last_page", 0)
+        elif file_record.kind == FileKind.DOC:
+            val = file_record.info.get("last_chunk", 0)
+        else:
+            return 0
+        return int(val) if isinstance(val, (int, float)) else 0
 
     def _build_embed_inputs(
         self,
         file_record: FileRecord,
         segments: list[ExtractedSegment],
-        info: dict,
+        info: dict[str, object],
     ) -> list[str | dict[str, str]]:
         if file_record.kind == FileKind.CODE:
             repo, title = _code_place(file_record.path, self.config.code_folders)
@@ -342,7 +342,7 @@ class IndexService:
         self,
         file_record: FileRecord,
         segments: list[ExtractedSegment],
-        info: dict,
+        info: dict[str, object],
     ) -> list[bytes | None]:
         if self.ollama is None or not segments:
             return [None] * len(segments)
@@ -369,7 +369,7 @@ class IndexService:
         try:
             segments, is_complete, info = self._extract_segments(file_record, start_offset=start_offset)
             vectors = self._embed_segments(file_record, segments, info)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — boundary handler so corrupt files or model errors mark file FAILED without crashing indexer
             target_db.update_file_state(file_record.id, FileState.FAILED, detail=str(exc))
             return False
 
@@ -425,7 +425,7 @@ class IndexService:
 
             try:
                 self.process_file(file_rec, target_db)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — worker loop safety net so unexpected errors do not kill background thread
                 target_db.update_file_state(file_rec.id, FileState.FAILED, detail=str(exc))
             self._update_status_counts()
 

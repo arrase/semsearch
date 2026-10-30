@@ -16,7 +16,7 @@ from semsearch.core.types import (
 )
 
 
-def test_default_config_values():
+def test_default_config_values() -> None:
     """Verify default AppConfig attribute values."""
     config = AppConfig()
     assert config.folders == []
@@ -36,7 +36,7 @@ def test_default_config_values():
     assert config.onboarded is False
 
 
-def test_config_manager_load_and_save(tmp_path: Path):
+def test_config_manager_load_and_save(tmp_path: Path) -> None:
     """Verify ConfigManager loads defaults, saves to file, and reads back changes."""
     cfg_file = tmp_path / "config.json"
     mgr = ConfigManager(config_path=cfg_file)
@@ -55,7 +55,7 @@ def test_config_manager_load_and_save(tmp_path: Path):
     assert new_mgr.config.code_enabled is True
 
 
-def test_core_enums():
+def test_core_enums() -> None:
     """Verify domain enums values."""
     assert FileKind.SCREENSHOT.value == "screenshot"
     assert FileKind.IMAGE.value == "image"
@@ -81,7 +81,7 @@ def test_core_enums():
     assert EngineActivity.IDLE.value == "idle"
 
 
-def test_core_dataclasses():
+def test_core_dataclasses() -> None:
     """Verify instantiation of core dataclasses."""
     candidate = Candidate(
         path="/tmp/test.pdf",
@@ -141,7 +141,7 @@ def test_core_dataclasses():
     assert status.total == 15
 
 
-def test_search_hit_reasons():
+def test_search_hit_reasons() -> None:
     """Verify SearchHit.reason for meaning, keyword, and name matches."""
     hit_page = SearchHit(
         path="/tmp/doc.pdf",
@@ -163,7 +163,7 @@ def test_search_hit_reasons():
     assert hit_audio.reason == "Matches words"
 
 
-def test_config_manager_filters_unknown_fields(tmp_path: Path):
+def test_config_manager_filters_unknown_fields(tmp_path: Path) -> None:
     """Verify ConfigManager ignores extraneous fields in config file."""
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text('{"extra_key": "ignore_me", "model": "test-embed"}', encoding="utf-8")

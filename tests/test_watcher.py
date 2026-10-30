@@ -19,16 +19,16 @@ from semsearch.services.watcher import DebounceBucket, FileSystemWatcher, SemSea
 
 
 class MockIndexService:
-    def __init__(self, db: Database, code_db: Database | None = None):
+    def __init__(self, db: Database, code_db: Database | None = None) -> None:
         self.db = db
         self.code_db = code_db
         self.enqueued: list[str] = []
 
-    def enqueue_file(self, path: str):
+    def enqueue_file(self, path: str) -> None:
         self.enqueued.append(path)
 
 
-def test_debounce_bucket_quiet_window():
+def test_debounce_bucket_quiet_window() -> None:
     bucket = DebounceBucket(quiet_window=0.75)
 
     bucket.add("/path/to/doc.pdf", now=100.0)
@@ -46,7 +46,7 @@ def test_debounce_bucket_quiet_window():
     assert bucket.is_ready(now=102.0) is False
 
 
-def test_debounce_bucket_max_ceiling():
+def test_debounce_bucket_max_ceiling() -> None:
     # Ceiling 600s, quiet 60s
     bucket = DebounceBucket(quiet_window=60.0, max_ceiling=600.0)
 
@@ -60,7 +60,7 @@ def test_debounce_bucket_max_ceiling():
     assert bucket.is_ready(now=1600.0) is True
 
 
-def test_event_handler_filtering_and_routing(tmp_path: Path):
+def test_event_handler_filtering_and_routing(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig(excluded_types=["heic"])
@@ -92,7 +92,7 @@ def test_event_handler_filtering_and_routing(tmp_path: Path):
     assert str(valid_file) in bucket.paths
 
 
-def test_event_handler_move_and_delete(tmp_path: Path):
+def test_event_handler_move_and_delete(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig()
@@ -124,7 +124,7 @@ def test_event_handler_move_and_delete(tmp_path: Path):
     assert db.find_by_path(str(new_file)) is None
 
 
-def test_watcher_start_stop(tmp_path: Path):
+def test_watcher_start_stop(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     indexer = MockIndexService(db=db)
     watch_dir = tmp_path / "watched"
@@ -143,7 +143,7 @@ def test_watcher_start_stop(tmp_path: Path):
     assert watcher._timer_thread is None
 
 
-def test_directory_deletion_cascades_indexed_files(tmp_path: Path):
+def test_directory_deletion_cascades_indexed_files(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig()
@@ -176,7 +176,7 @@ def test_directory_deletion_cascades_indexed_files(tmp_path: Path):
     assert len(db.find_files_under(str(subfolder))) == 0
 
 
-def test_directory_move_updates_indexed_files(tmp_path: Path):
+def test_directory_move_updates_indexed_files(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig()
@@ -241,7 +241,7 @@ def test_directory_move_updates_indexed_files(tmp_path: Path):
     assert str((ignored_dir / "nested" / "doc2.md").resolve()) not in bucket.paths
 
 
-def test_directory_move_empty_and_skipped_folders(tmp_path: Path):
+def test_directory_move_empty_and_skipped_folders(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig()
@@ -277,7 +277,7 @@ def test_directory_move_empty_and_skipped_folders(tmp_path: Path):
     assert len(db.find_files_under(str(dest_modules))) == 0
 
 
-def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Path):
+def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     bucket = DebounceBucket(quiet_window=0.75)
     config = AppConfig()
@@ -325,7 +325,7 @@ def test_directory_move_does_not_affect_sibling_with_like_wildcard(tmp_path: Pat
     assert dash_rec.id == fid_dash
 
 
-def test_debounce_bucket_has_pending_and_wake_event():
+def test_debounce_bucket_has_pending_and_wake_event() -> None:
     wake_event = threading.Event()
     bucket = DebounceBucket(quiet_window=0.75, wake_event=wake_event)
 
@@ -341,7 +341,7 @@ def test_debounce_bucket_has_pending_and_wake_event():
     assert bucket.has_pending() is False
 
 
-def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event(tmp_path: Path):
+def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
     indexer = MockIndexService(db=db)
     watch_dir = tmp_path / "watched"

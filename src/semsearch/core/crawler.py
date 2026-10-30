@@ -12,7 +12,9 @@ from semsearch.core.rules import (
     is_path_excluded,
     should_skip,
 )
-from semsearch.core.types import Candidate, FileKind, FileState
+from semsearch.core.types import Candidate, FileKind, FileRecord, FileState
+
+_MTIME_TOLERANCE = 0.001
 
 
 @dataclass
@@ -26,7 +28,7 @@ class SyncReport:
     unchanged: int = 0
 
 
-def _should_recurse_dir(entry: os.DirEntry, excluded_folders: list[str] | set[str] | None) -> bool:
+def _should_recurse_dir(entry: os.DirEntry[str], excluded_folders: list[str] | set[str] | None) -> bool:
     return (
         entry.name not in SKIPPED_FOLDER_NAMES
         and not entry.name.startswith(".")
@@ -38,9 +40,9 @@ def _should_recurse_dir(entry: os.DirEntry, excluded_folders: list[str] | set[st
 def _scan_dir_entries(
     current_dir: Path,
     excluded_folders: list[str] | set[str] | None,
-) -> tuple[list[Path], list[os.DirEntry]]:
+) -> tuple[list[Path], list[os.DirEntry[str]]]:
     subdirs: list[Path] = []
-    dir_files: list[os.DirEntry] = []
+    dir_files: list[os.DirEntry[str]] = []
     try:
         with os.scandir(current_dir) as it:
             for entry in it:
@@ -55,7 +57,8 @@ def _scan_dir_entries(
 
 
 def _build_candidate(
-    entry: os.DirEntry,
+    entry: os.DirEntry[str],
+    *,
     is_code: bool,
     excluded_folders: list[str] | set[str] | None,
     excluded_types: list[str] | set[str] | None,
@@ -85,6 +88,7 @@ def _build_candidate(
 
 def crawl_folder(
     root: str,
+    *,
     is_code: bool = False,
     excluded_folders: list[str] | set[str] | None = None,
     excluded_types: list[str] | set[str] | None = None,
@@ -110,7 +114,12 @@ def crawl_folder(
             ]
 
         for entry in dir_files:
-            candidate = _build_candidate(entry, is_code, excluded_folders, excluded_types)
+            candidate = _build_candidate(
+                entry,
+                is_code=is_code,
+                excluded_folders=excluded_folders,
+                excluded_types=excluded_types,
+            )
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -122,8 +131,8 @@ def _is_under_root(path: str, root: str) -> bool:
     return path == root or path.startswith(prefix)
 
 
-def _sync_existing_path(db: Database, existing, candidate: Candidate, report: SyncReport) -> None:
-    if existing.size != candidate.size or abs(existing.mtime - candidate.mtime) > 0.001:
+def _sync_existing_path(db: Database, existing: FileRecord, candidate: Candidate, report: SyncReport) -> None:
+    if existing.size != candidate.size or abs(existing.mtime - candidate.mtime) > _MTIME_TOLERANCE:
         db.requeue_file(existing.id, candidate)
         report.changed += 1
     elif existing.kind != candidate.kind:
@@ -138,8 +147,9 @@ def _sync_existing_path(db: Database, existing, candidate: Candidate, report: Sy
 
 def _sync_existing_inode(
     db: Database,
-    existing,
+    existing: FileRecord,
     candidate: Candidate,
+    *,
     seen_paths: set[str],
     moved_from: set[str],
     report: SyncReport,
@@ -149,7 +159,7 @@ def _sync_existing_inode(
         moved_from.add(existing.path)
         if (
             existing.size != candidate.size
-            or abs(existing.mtime - candidate.mtime) > 0.001
+            or abs(existing.mtime - candidate.mtime) > _MTIME_TOLERANCE
             or existing.kind != candidate.kind
         ):
             db.requeue_file(existing.id, candidate)
@@ -202,9 +212,9 @@ def sync_candidates(
                 db,
                 by_inode[(candidate.device, candidate.inode)],
                 candidate,
-                seen_paths,
-                moved_from,
-                report,
+                seen_paths=seen_paths,
+                moved_from=moved_from,
+                report=report,
             )
         else:
             db.insert_file(candidate)

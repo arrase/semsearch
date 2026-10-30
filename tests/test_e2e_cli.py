@@ -29,6 +29,7 @@ def test_cli_flags_parsing() -> None:
 
 
 def test_single_instance_socket_lock(qapp: QApplication) -> None:
+    del qapp
     server_name = get_ipc_server_name()
     QLocalServer.removeServer(server_name)
 

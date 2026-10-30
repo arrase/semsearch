@@ -32,7 +32,7 @@ from semsearch.services.indexer import _code_place
 from semsearch.services.searcher import SearchService
 
 
-def test_search_text_normalization():
+def test_search_text_normalization() -> None:
     # NFKC fullwidth to ASCII
     assert normalize_search_text("\uff21\uff22\uff23") == "ABC"
 
@@ -49,7 +49,7 @@ def test_search_text_normalization():
     assert normalize_search_text("\u0622\u0623\u0625\u0671") == "\u0627\u0627\u0627\u0627"
 
 
-def test_inflects_scripts():
+def test_inflects_scripts() -> None:
     # Indic script
     assert inflects("কুমির") is True
     # Arabic script
@@ -58,7 +58,7 @@ def test_inflects_scripts():
     assert inflects("computer") is False
 
 
-def test_has_words_filter():
+def test_has_words_filter() -> None:
     # Regular text has words
     assert has_words("This is a standard paragraph of textual content.") is True
     # Data dump of mostly digits has no words
@@ -68,7 +68,7 @@ def test_has_words_filter():
     assert has_words("   \n\t  ") is False
 
 
-def test_term_extraction_and_stopwords():
+def test_term_extraction_and_stopwords() -> None:
     terms = extract_terms("Find the screenshot of financial statement in pdf")
     # "the", "of", "in", "screenshot", "pdf" are stopwords/kind words
     assert "financial" in terms
@@ -78,26 +78,26 @@ def test_term_extraction_and_stopwords():
     assert "the" not in terms
 
 
-def test_kind_hints_detection():
+def test_kind_hints_detection() -> None:
     hints = extract_kind_hints("show photo of the mountains and clip of race")
     assert FileKind.IMAGE in hints
     assert FileKind.VIDEO in hints
 
 
-def test_make_fts_patterns_inflection_wildcard():
+def test_make_fts_patterns_inflection_wildcard() -> None:
     patterns = make_fts_patterns(["invoice", "কুমির", "مدرس"], prefix_last=False)
     assert patterns[0] == '"invoice"'
     assert patterns[1] == '"কুমির"*'  # Inflected Indic gets prefix wildcard
     assert patterns[2] == '"مدرس"*'  # Inflected Arabic gets prefix wildcard
 
 
-def test_is_lookup_logic():
+def test_is_lookup_logic() -> None:
     assert is_lookup(["ERR404"]) is True
     assert is_lookup(["123456"]) is True
     assert is_lookup(["simple", "terms"]) is False
 
 
-def test_code_identifier_extraction():
+def test_code_identifier_extraction() -> None:
     assert extract_identifier("quantize_row_q8_0_ref") == ["quantize", "row", "q8", "0", "ref"]
     assert extract_identifier("retryWithBackoff()") == ["retrywithbackoff"]
     assert extract_identifier("models.User.find") == ["models", "user", "find"]
@@ -105,12 +105,12 @@ def test_code_identifier_extraction():
     assert extract_identifier("regular query text") is None
 
 
-def test_identifier_phrase():
+def test_identifier_phrase() -> None:
     words = ["quantize", "row", "q8"]
     assert identifier_phrase(words) == '"quantize row q8"'
 
 
-def test_find_definition_strengths():
+def test_find_definition_strengths() -> None:
     text = (
         "import os\n"
         "\n"
@@ -132,7 +132,7 @@ def test_find_definition_strengths():
     assert cls_res[1] == 2
 
 
-def test_find_first_line_with_words():
+def test_find_first_line_with_words() -> None:
     text = (
         "# Commentary about server initialization\n"
         "# Another comment line\n"
@@ -145,15 +145,16 @@ def test_find_first_line_with_words():
     assert line == 4  # def start_server() has definer token
 
 
-def test_prompts_document_formatting():
+def test_prompts_document_formatting() -> None:
     assert format_doc_prompt("specs", "content text") == "title: specs | text: content text"
     assert format_doc_prompt("", "content text") == "title: none | text: content text"
 
 
-def test_ollama_client_resolve_model_name(monkeypatch: pytest.MonkeyPatch):
+def test_ollama_client_resolve_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OllamaClient()
 
-    def mock_get(url: str, timeout: float):
+    def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
         return httpx.Response(
             200,
             json={"models": [{"name": "hf.co/ggml-org/embeddinggemma-2-GGUF:BF16"}]},
@@ -170,7 +171,7 @@ def test_ollama_client_resolve_model_name(monkeypatch: pytest.MonkeyPatch):
     assert resolved_fuzzy == "hf.co/ggml-org/embeddinggemma-2-GGUF:BF16"
 
 
-def test_multi_segment_coverage_preserves_document(tmp_path: Path):
+def test_multi_segment_coverage_preserves_document(tmp_path: Path) -> None:
     """Verify terms distributed across different segments of the same file achieve 100% coverage."""
     db = Database(tmp_path / "coverage.sqlite")
     c = Candidate(path="/tmp/large_manual.pdf", kind=FileKind.PDF, size=5000, mtime=1.0, inode=10, device=1)
@@ -226,7 +227,7 @@ def test_multi_segment_coverage_preserves_document(tmp_path: Path):
     assert hit.score > 0.0
 
 
-def test_code_identifier_phrase_match_and_definition_jump(tmp_path: Path):
+def test_code_identifier_phrase_match_and_definition_jump(tmp_path: Path) -> None:
     """Verify searching for identifier jumps to segment and line of definition."""
     code_path = tmp_path / "math_ops.py"
     code_path.write_text(
@@ -263,7 +264,7 @@ def test_code_identifier_phrase_match_and_definition_jump(tmp_path: Path):
     assert hit.focus == 4.0  # Line 4 is where quantize_row_q8_0 is defined
 
 
-def test_asymmetry_embedding_payload_formatting(tmp_path: Path):
+def test_asymmetry_embedding_payload_formatting(tmp_path: Path) -> None:
     """Verify document/PDF payloads format as title: {file_stem} | text: {text}
 
     and code payloads format as title: {repo_relative_path} | text: {text}.

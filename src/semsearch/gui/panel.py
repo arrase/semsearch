@@ -4,7 +4,7 @@ import contextlib
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from semsearch.config import AppConfig
+from semsearch.core.database import Database, FtsMatchRow
 from semsearch.core.ollama import OllamaError
 from semsearch.core.search_text import extract_terms, make_fts_patterns
 from semsearch.core.types import FileKind, SearchHit
@@ -171,6 +172,15 @@ class SearchPanel(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
+        container_layout.addWidget(self._build_header_widget())
+
+        self.content_widget = self._build_content_widget()
+        self.content_widget.setVisible(False)
+        container_layout.addWidget(self.content_widget, stretch=1)
+
+        outer_layout.addWidget(self.container)
+
+    def _build_header_widget(self) -> QWidget:
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(14, 8, 14, 8)
@@ -198,11 +208,11 @@ class SearchPanel(QWidget):
         header_layout.addWidget(self.search_icon)
         header_layout.addWidget(self.search_input, stretch=1)
         header_layout.addWidget(self.status_badge)
+        return header_widget
 
-        container_layout.addWidget(header_widget)
-
-        self.content_widget = QWidget()
-        content_outer = QVBoxLayout(self.content_widget)
+    def _build_content_widget(self) -> QWidget:
+        content_widget = QWidget()
+        content_outer = QVBoxLayout(content_widget)
         content_outer.setContentsMargins(0, 0, 0, 0)
         content_outer.setSpacing(0)
 
@@ -251,11 +261,7 @@ class SearchPanel(QWidget):
         footer_layout.addStretch()
 
         content_outer.addWidget(footer)
-
-        self.content_widget.setVisible(False)
-        container_layout.addWidget(self.content_widget, stretch=1)
-
-        outer_layout.addWidget(self.container)
+        return content_widget
 
     def retranslate_ui(self) -> None:
         """Refresh translated panel strings."""
@@ -316,10 +322,13 @@ class SearchPanel(QWidget):
         self._semantic_timer.start(120)
 
     @staticmethod
-    def _fts_rows_to_hits(fts_rows: list[dict], target_db) -> list[SearchHit]:
+    def _fts_rows_to_hits(fts_rows: list[FtsMatchRow], target_db: Database) -> list[SearchHit]:
         best_by_file: dict[int, SearchHit] = {}
         for r in fts_rows:
-            fid = int(r["file_id"])
+            raw_fid = r["file_id"]
+            if raw_fid is None:
+                continue
+            fid = int(raw_fid)
             score = float(-r["rank"])
             if fid in best_by_file and best_by_file[fid].score >= score:
                 continue
@@ -452,7 +461,7 @@ class SearchPanel(QWidget):
                 self.result_list.setCurrentItem(item)
                 break
 
-    def _on_selection_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+    def _on_selection_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
             return
         hit = current.data(Qt.ItemDataRole.UserRole)
@@ -470,20 +479,12 @@ class SearchPanel(QWidget):
             execute_hit_action(hit, self.config)
             self.hide_panel()
 
-    def eventFilter(self, watched, event) -> bool:
-        """Handle keyboard navigation across search input and results list."""
-        if event.type() != event.Type.KeyPress:
-            return super().eventFilter(watched, event)
-
-        key_event: QKeyEvent = event
+    def _handle_key_press(self, key_event: QKeyEvent) -> bool:
         key = key_event.key()
         modifiers = key_event.modifiers()
 
-        if key == Qt.Key.Key_Down:
-            self._move_selection(1)
-            return True
-        if key == Qt.Key.Key_Up:
-            self._move_selection(-1)
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            self._move_selection(1 if key == Qt.Key.Key_Down else -1)
             return True
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._activate_current_item(modifiers)
@@ -498,7 +499,12 @@ class SearchPanel(QWidget):
         if key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
             self._copy_selected_path()
             return True
+        return False
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Handle keyboard navigation across search input and results list."""
+        if isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress and self._handle_key_press(event):
+            return True
         return super().eventFilter(watched, event)
 
     def _move_selection(self, step: int) -> None:
@@ -516,9 +522,9 @@ class SearchPanel(QWidget):
             next_row += step
 
     def _activate_current_item(self, modifiers: Qt.KeyboardModifier) -> None:
-        current = self.result_list.currentItem()
-        if current is None:
+        if self.result_list.currentRow() < 0:
             return
+        current = self.result_list.currentItem()
 
         if current.data(Qt.ItemDataRole.UserRole + 1) == "toggle":
             self.weaker_expanded = not self.weaker_expanded
@@ -534,8 +540,8 @@ class SearchPanel(QWidget):
             self.hide_panel()
 
     def _copy_selected_path(self) -> None:
-        current = self.result_list.currentItem()
-        if current is not None:
+        if self.result_list.currentRow() >= 0:
+            current = self.result_list.currentItem()
             hit = current.data(Qt.ItemDataRole.UserRole)
             if isinstance(hit, SearchHit):
                 copy_file_to_clipboard(hit.path)
@@ -569,9 +575,8 @@ class SearchPanel(QWidget):
     def hide_panel(self) -> None:
         """Dismiss search panel and release UI/database buffers."""
         self._stop_workers()
-        self.search_input.blockSignals(True)
-        self.search_input.clear()
-        self.search_input.blockSignals(False)
+        with QSignalBlocker(self.search_input):
+            self.search_input.clear()
         self._last_query = ""
         self._current_result_set = ResultSet()
         self.status_badge.setText("")

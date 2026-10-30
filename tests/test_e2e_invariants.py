@@ -77,6 +77,7 @@ def test_multimodal_model_default_and_filtering_invariant(tmp_path: Path) -> Non
 
 
 def test_gui_component_parity(qapp: QApplication, tmp_path: Path) -> None:
+    del qapp
     mock_search = MagicMock()
     mock_search.search.return_value = MagicMock(ranked=[], weaker=[])
     cfg = AppConfig()

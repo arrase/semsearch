@@ -1,7 +1,7 @@
 """Linux power supply detection and operating hours scheduler."""
 
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from semsearch.config import AppConfig
@@ -52,7 +52,7 @@ class PowerScheduler:
             return True
 
         if now_minutes is None:
-            now = datetime.now()
+            now = datetime.now(tz=UTC).astimezone()
             now_minutes = now.hour * 60 + now.minute
 
         start = self.config.index_schedule_start

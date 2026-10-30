@@ -93,13 +93,13 @@ def extract_code(path: str, chunk_chars: int = 1800, overlap_lines: int = 2) -> 
     return _chunk_lines(lines, chunk_chars=chunk_chars, overlap_lines=overlap_lines)
 
 
-def _parse_notebook_cells(cells: list[dict]) -> list[tuple[int, str]]:
+def _parse_notebook_cells(cells: list[dict[str, object]]) -> list[tuple[int, str]]:
     numbered_cells: list[tuple[int, str]] = []
     for idx, cell in enumerate(cells, start=1):
         if cell.get("cell_type") not in ("code", "markdown"):
             continue
         source = cell.get("source", [])
-        cell_text = "".join(source) if isinstance(source, list) else str(source)
+        cell_text = "".join(str(line) for line in source) if isinstance(source, list) else str(source)
         if not cell_text.strip():
             continue
         if not cell_text.endswith("\n"):

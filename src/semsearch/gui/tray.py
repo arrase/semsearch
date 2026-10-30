@@ -12,7 +12,12 @@ from semsearch.services.indexer import IndexService
 _PAUSE_INDEXING_LABEL = "Pause Indexing"
 
 
-def render_tray_icon(percent: float = 0.0, is_indexing: bool = False, is_paused: bool = False) -> QIcon:
+def render_tray_icon(
+    percent: float = 0.0,
+    *,
+    is_indexing: bool = False,
+    is_paused: bool = False,
+) -> QIcon:
     """Render dynamic 64x64 pixmap icon for system tray."""
     pixmap = QPixmap(64, 64)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -106,7 +111,7 @@ class SystemTrayManager(QObject):
         self.tray_icon.setIcon(render_tray_icon(0.0, is_indexing=False, is_paused=False))
         self.tray_icon.setToolTip("SemSearch")
 
-        self._last_rendered_state: tuple | None = None
+        self._last_rendered_state: tuple[EngineActivity, bool, int, int, int] | None = None
         self._poll_timer: QTimer | None = None
         if self.index_service is not None:
             self._poll_timer = QTimer(self)

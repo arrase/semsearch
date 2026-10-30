@@ -5,6 +5,7 @@ import base64
 import io
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -53,47 +54,46 @@ class E2ESemanticMockOllama:
         self.code_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
         self.default_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
 
-    def embed(self, model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
-        results: list[list[float]] = []
-        for inp in inputs:
-            if isinstance(inp, dict):
-                if "image" in inp:
-                    raw = base64.b64decode(inp["image"])
-                    with Image.open(io.BytesIO(raw)) as im:
-                        if im.size == (640, 480):
-                            results.append(self.sunset_vec.tolist())
-                        elif im.size == (320, 240):
-                            results.append(self.video_vec.tolist())
-                        else:
-                            results.append(self.default_vec.tolist())
-                elif "audio" in inp:
-                    raw = base64.b64decode(inp["audio"])
-                    if len(raw) > 500000:
-                        results.append(self.speech_vec.tolist())
-                    else:
-                        results.append(self.video_audio_vec.tolist())
-                else:
-                    results.append(self.default_vec.tolist())
-            else:
-                text = str(inp).lower()
-                clean = (
-                    text.replace("task: search result | query: ", "")
-                    .replace("task: code retrieval | query: ", "")
-                    .strip()
-                )
-                if any(w in clean for w in ("sunset", "golden", "landscape")):
-                    results.append(self.sunset_vec.tolist())
-                elif any(w in clean for w in ("video", "smpte", "bars")):
-                    results.append(self.video_vec.tolist())
-                elif any(w in clean for w in ("speech", "voice", "tone")):
-                    results.append(self.speech_vec.tolist())
-                elif any(w in clean for w in ("brief", "strategy", "executive")):
-                    results.append(self.brief_vec.tolist())
-                elif any(w in clean for w in ("retry", "backoff", "token", "bucket")):
-                    results.append(self.code_vec.tolist())
-                else:
-                    results.append(self.default_vec.tolist())
-        return results
+    def embed(self, _model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
+        return [self._embed_single(inp) for inp in inputs]
+
+    def _embed_single(self, inp: str | dict[str, str]) -> list[float]:
+        if isinstance(inp, dict):
+            return self._embed_media(inp)
+        return self._embed_text(str(inp))
+
+    def _embed_media(self, inp: dict[str, str]) -> list[float]:
+        if "image" in inp:
+            raw = base64.b64decode(inp["image"])
+            with Image.open(io.BytesIO(raw)) as im:
+                if im.size == (640, 480):
+                    return self.sunset_vec.tolist()
+                if im.size == (320, 240):
+                    return self.video_vec.tolist()
+            return self.default_vec.tolist()
+        if "audio" in inp:
+            raw = base64.b64decode(inp["audio"])
+            return self.speech_vec.tolist() if len(raw) > 500000 else self.video_audio_vec.tolist()
+        return self.default_vec.tolist()
+
+    def _embed_text(self, text: str) -> list[float]:
+        clean = (
+            text.lower()
+            .replace("task: search result | query: ", "")
+            .replace("task: code retrieval | query: ", "")
+            .strip()
+        )
+        keyword_groups = [
+            (("sunset", "golden", "landscape"), self.sunset_vec),
+            (("video", "smpte", "bars"), self.video_vec),
+            (("speech", "voice", "tone"), self.speech_vec),
+            (("brief", "strategy", "executive"), self.brief_vec),
+            (("retry", "backoff", "token", "bucket"), self.code_vec),
+        ]
+        for words, vec in keyword_groups:
+            if any(w in clean for w in words):
+                return vec.tolist()
+        return self.default_vec.tolist()
 
 
 def _build_and_index_testbed(
@@ -262,11 +262,11 @@ def test_weaker_matches_folding_e2e(tmp_path: Path) -> None:
         Modality.TEXT,
         1.0,
         1.0,
-        "Executive Strategy overview report",
-        None,
-        "weak_doc.txt",
-        "Executive Strategy overview report",
-        "",
+        excerpt="Executive Strategy overview report",
+        vec=None,
+        name="weak_doc.txt",
+        body="Executive Strategy overview report",
+        original="",
     )
 
     res = searcher.search("Executive Strategy Brief client deployment")
@@ -281,7 +281,7 @@ def test_weaker_matches_folding_e2e(tmp_path: Path) -> None:
 def test_desktop_actions_e2e(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
-    def mock_popen(args: list[str], **kwargs) -> None:
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
         launched.append(args)
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -305,7 +305,7 @@ def test_desktop_actions_e2e(monkeypatch: pytest.MonkeyPatch) -> None:
     assert launched[-1] == ["mpv", "--start=20", "/media/sound.wav"]
 
     # 4. Fallback default handler
-    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
     hit_doc = SearchHit(path="/docs/readme.txt", kind=FileKind.DOC, score=1.0)
     assert execute_hit_action(hit_doc) is True
     assert launched[-1] == ["xdg-open", "/docs/readme.txt"]

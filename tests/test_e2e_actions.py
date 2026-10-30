@@ -1,6 +1,7 @@
 """End-to-end desktop deep-linking action dispatch tests."""
 
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,7 @@ from semsearch.services.actions import (
 def test_code_editor_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
-    def mock_popen(args: list[str], **kwargs) -> None:
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
         launched.append(args)
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -51,7 +52,7 @@ def test_code_editor_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_document_viewer_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
-    def mock_popen(args: list[str], **kwargs) -> None:
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
         launched.append(args)
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -77,7 +78,7 @@ def test_document_viewer_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> N
 def test_media_player_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
-    def mock_popen(args: list[str], **kwargs) -> None:
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
         launched.append(args)
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -95,7 +96,7 @@ def test_media_player_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None
     assert launched[-1] == ["vlc", "--start-time=75", "/media/demo.mp4"]
 
     # 3. Fallback to default handler
-    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
     assert execute_hit_action(hit_video) is True
     assert launched[-1] == ["xdg-open", "/media/demo.mp4"]
 
@@ -103,7 +104,7 @@ def test_media_player_actions_deep_link(monkeypatch: pytest.MonkeyPatch) -> None
 def test_file_manager_reveal_action(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
-    def mock_popen(args: list[str], **kwargs) -> None:
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
         launched.append(args)
 
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
@@ -116,7 +117,7 @@ def test_file_manager_reveal_action(monkeypatch: pytest.MonkeyPatch) -> None:
         "shutil.which",
         lambda cmd: cmd if cmd == "dbus-send" else None,
     )
-    monkeypatch.setattr(subprocess, "run", lambda args, **kwargs: CompletedProc())
+    monkeypatch.setattr(subprocess, "run", lambda _args, **_kwargs: CompletedProc())
     assert reveal_in_file_manager("/home/user/document.txt") is True
 
     # 2. Dolphin selection fallback

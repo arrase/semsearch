@@ -22,9 +22,10 @@ def _launch(args: list[str]) -> bool:
     """Launch detached background process."""
     try:
         subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
     except OSError:
         return False
+    else:
+        return True
 
 
 def open_file(path: str) -> bool:
@@ -120,9 +121,10 @@ def copy_to_clipboard(text: str) -> bool:
             try:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
                 proc.communicate(input=text.encode("utf-8"))
-                return proc.returncode == 0
             except OSError:
                 pass
+            else:
+                return proc.returncode == 0
     return False
 
 

@@ -4,13 +4,13 @@ from semsearch.core.rules import classify_file, should_skip
 from semsearch.core.types import FileKind
 
 
-def test_spanish_screenshot_classification():
+def test_spanish_screenshot_classification() -> None:
     """Verify Spanish screenshot filenames classify as FileKind.SCREENSHOT."""
     assert classify_file("/home/user/Pictures/Captura de pantalla_20260927_044528.png") == FileKind.SCREENSHOT
     assert classify_file("/home/user/Pictures/captura_01.jpg") == FileKind.SCREENSHOT
 
 
-def test_code_mode_markdown_classification():
+def test_code_mode_markdown_classification() -> None:
     """Verify markdown and rst files classify as CODE in code mode and DOC in general mode."""
     assert classify_file("/repo/README.md", is_code_mode=False) == FileKind.DOC
     assert classify_file("/repo/README.md", is_code_mode=True) == FileKind.CODE
@@ -18,7 +18,7 @@ def test_code_mode_markdown_classification():
     assert skip is False
 
 
-def test_should_skip_exclusions():
+def test_should_skip_exclusions() -> None:
     """Verify should_skip honors excluded_folders and excluded_types."""
     skip, reason = should_skip(
         "/home/user/Documents/notes.txt",

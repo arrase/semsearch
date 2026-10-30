@@ -26,7 +26,7 @@ from semsearch.services.searcher import ResultSet
 
 
 @pytest.fixture
-def mock_search_service():
+def mock_search_service() -> MagicMock:
     service = MagicMock()
     service.db.path = "/tmp/test.db"
     # Mock lexical FTS search
@@ -46,8 +46,9 @@ def mock_search_service():
     return service
 
 
-def test_panel_geometry_and_flags(mock_search_service, qapp: QApplication):
+def test_panel_geometry_and_flags(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify window flags, initial collapsed geometry, and contrast styling."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     flags = panel.windowFlags()
     assert flags & Qt.WindowType.FramelessWindowHint
@@ -63,8 +64,9 @@ def test_panel_geometry_and_flags(mock_search_service, qapp: QApplication):
     assert ThemeColors.TEXT_SECONDARY in panel.status_badge.styleSheet()
 
 
-def test_panel_expansion_on_query(mock_search_service, qapp: QApplication):
+def test_panel_expansion_on_query(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify panel expands when results match."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show()
     panel.search_input.setText("sample")
@@ -81,7 +83,7 @@ def test_panel_expansion_on_query(mock_search_service, qapp: QApplication):
     assert not panel.content_widget.isVisible()
 
 
-def test_panel_semantic_debounce_timer(mock_search_service, qapp: QApplication):
+def test_panel_semantic_debounce_timer(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify semantic debounce timer triggers hybrid search."""
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("hello")
@@ -95,7 +97,7 @@ def test_panel_semantic_debounce_timer(mock_search_service, qapp: QApplication):
     mock_search_service.search.assert_called_with("hello", limit=50, is_code=False)
 
 
-def test_weaker_matches_folding_toggle(mock_search_service, qapp: QApplication):
+def test_weaker_matches_folding_toggle(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify folding toggle row expands weaker matches."""
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("doc")
@@ -121,7 +123,7 @@ def test_weaker_matches_folding_toggle(mock_search_service, qapp: QApplication):
     assert panel.result_list.count() > initial_count
 
 
-def test_keyboard_navigation_and_actions(mock_search_service, qapp: QApplication):
+def test_keyboard_navigation_and_actions(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify arrow navigation, Enter activation, Shift+Enter reveal, Ctrl+C copy, and Escape."""
     panel = SearchPanel(mock_search_service, AppConfig())
     assert panel.footer_hint.text() == "↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"
@@ -180,8 +182,9 @@ def test_keyboard_navigation_and_actions(mock_search_service, qapp: QApplication
         mock_hide.assert_called_once()
 
 
-def test_panel_instant_lexical_with_real_database(qapp: QApplication, tmp_path: Path):
+def test_panel_instant_lexical_with_real_database(qapp: QApplication, tmp_path: Path) -> None:
     """Verify instant lexical search works with real Database FTS output without artificial mock keys."""
+    del qapp
     db_path = tmp_path / "panel_real.sqlite"
     db = Database(db_path)
     file_id = db.insert_file(Candidate("/data/source/auth_service.py", FileKind.CODE, 1024, 1.0, 10, 1))
@@ -230,8 +233,9 @@ def test_panel_instant_lexical_with_real_database(qapp: QApplication, tmp_path: 
     db.close()
 
 
-def test_panel_instant_lexical_negative_bm25_contract(qapp: QApplication):
+def test_panel_instant_lexical_negative_bm25_contract(qapp: QApplication) -> None:
     """Verify negative BM25 rank inversion and hit extraction matching Database.fts_search contract."""
+    del qapp
     service = MagicMock()
     service.code_db = None
     # Dict matching Database.fts_search contract with negative BM25 rank
@@ -256,8 +260,9 @@ def test_panel_instant_lexical_negative_bm25_contract(qapp: QApplication):
     assert hit.excerpt == "«handler» function"
 
 
-def test_panel_instant_lexical_none_values_and_score_sorting(qapp: QApplication):
+def test_panel_instant_lexical_none_values_and_score_sorting(qapp: QApplication) -> None:
     """Verify panel handles 0.0 rank, sorting out-of-order FTS hits by score descending."""
+    del qapp
     service = MagicMock()
     service.code_db = None
     service.db.fts_search.return_value = [
@@ -269,7 +274,7 @@ def test_panel_instant_lexical_none_values_and_score_sorting(qapp: QApplication)
         {"file_id": 3, "rank": 0.0, "snippet": "zero rank", "segment_id": 3, "loc": 0.0, "excerpt": ""},
     ]
 
-    def mock_find(fid: int):
+    def mock_find(fid: int) -> MagicMock:
         rec = MagicMock()
         rec.path = f"/tmp/file_{fid}.py"
         rec.kind = FileKind.CODE
@@ -301,7 +306,7 @@ def test_panel_instant_lexical_none_values_and_score_sorting(qapp: QApplication)
     assert weaker[0].keyword_rank == 0
 
 
-def test_panel_async_worker_execution_on_debounce_timer(mock_search_service, qapp: QApplication):
+def test_panel_async_worker_execution_on_debounce_timer(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify semantic debounce timer triggers async SearchWorker without blocking keystroke thread."""
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("async_query")
@@ -321,8 +326,9 @@ def test_panel_async_worker_execution_on_debounce_timer(mock_search_service, qap
     assert panel.is_expanded
 
 
-def test_panel_async_worker_discards_stale_query(mock_search_service, qapp: QApplication):
+def test_panel_async_worker_discards_stale_query(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify background worker results for an outdated query are ignored."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("fresh_query")
 
@@ -334,8 +340,9 @@ def test_panel_async_worker_discards_stale_query(mock_search_service, qapp: QApp
     assert panel._current_result_set.ranked != [stale_hit]
 
 
-def test_panel_clearing_text_stops_active_worker(mock_search_service, qapp: QApplication):
+def test_panel_clearing_text_stops_active_worker(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify clearing search input stops both debounce timer and active background worker."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("hello")
     panel._semantic_timer.timeout.emit()
@@ -350,8 +357,9 @@ def test_panel_clearing_text_stops_active_worker(mock_search_service, qapp: QApp
     assert panel.result_list.count() == 0
 
 
-def test_panel_clean_close_with_active_worker(mock_search_service, qapp: QApplication):
+def test_panel_clean_close_with_active_worker(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify closing SearchPanel while worker is running cleans up without crashing."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.search_input.setText("hello")
     panel._semantic_timer.timeout.emit()
@@ -362,8 +370,9 @@ def test_panel_clean_close_with_active_worker(mock_search_service, qapp: QApplic
     assert worker.is_stopped
 
 
-def test_panel_instant_lexical_deduplication_and_double_click(qapp: QApplication):
+def test_panel_instant_lexical_deduplication_and_double_click(qapp: QApplication) -> None:
     """Verify instant lexical search deduplicates multiple segments per file_id and double-click opens hit."""
+    del qapp
     service = MagicMock()
     service.code_db = None
     service.db.fts_search.return_value = [
@@ -394,12 +403,13 @@ def test_panel_instant_lexical_deduplication_and_double_click(qapp: QApplication
         mock_hide.assert_called_once()
 
 
-def test_panel_slow_worker_lifecycle_no_crash(mock_search_service, qapp: QApplication):
+def test_panel_slow_worker_lifecycle_no_crash(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify stopping a slow SearchWorker retains it in _active_workers until finished without QThread crash."""
     started = threading.Event()
     unblock = threading.Event()
 
-    def slow_search(query: str, limit: int = 50, is_code: bool = False):
+    def slow_search(query: str, *, limit: int = 50, is_code: bool = False) -> ResultSet:
+        del limit, is_code
         if query == "slow_query":
             started.set()
             unblock.wait(timeout=2.0)
@@ -431,8 +441,9 @@ def test_panel_slow_worker_lifecycle_no_crash(mock_search_service, qapp: QApplic
     assert len(panel._active_workers) == 0
 
 
-def test_panel_hide_releases_memory_and_ui_state(mock_search_service, qapp: QApplication):
+def test_panel_hide_releases_memory_and_ui_state(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify hide_panel clears input, results, preview, collapses geometry, and calls shrink_memory."""
+    del qapp
     mock_search_service.code_db = MagicMock()
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show()
@@ -455,8 +466,9 @@ def test_panel_hide_releases_memory_and_ui_state(mock_search_service, qapp: QApp
     mock_search_service.code_db.shrink_memory.assert_called_once()
 
 
-def test_panel_dismisses_on_window_deactivate(mock_search_service, qapp: QApplication):
+def test_panel_dismisses_on_window_deactivate(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify SearchPanel automatically hides and releases resources on WindowDeactivate."""
+    del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show_panel()
     panel.search_input.setText("sample")
@@ -471,7 +483,7 @@ def test_panel_dismisses_on_window_deactivate(mock_search_service, qapp: QApplic
     mock_search_service.db.shrink_memory.assert_called_once()
 
 
-def test_panel_stays_visible_on_internal_child_focus(mock_search_service, qapp: QApplication):
+def test_panel_stays_visible_on_internal_child_focus(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify moving focus between child widgets inside SearchPanel keeps the panel visible."""
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show_panel()
@@ -489,10 +501,13 @@ def test_panel_stays_visible_on_internal_child_focus(mock_search_service, qapp: 
     assert panel.is_expanded
 
 
-def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QApplication, monkeypatch):
+def test_panel_dismisses_on_preview_action_buttons(
+    mock_search_service: MagicMock, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verify clicking Open or Show in Files inside the preview pane dismisses the panel."""
-    opened = []
-    revealed = []
+    del qapp
+    opened: list[str] = []
+    revealed: list[str] = []
     monkeypatch.setattr("semsearch.gui.preview.open_file", opened.append)
     monkeypatch.setattr("semsearch.gui.preview.reveal_in_file_manager", revealed.append)
     mock_search_service.db.fts_search.return_value[0]["rank"] = -1.0
@@ -515,13 +530,16 @@ def test_panel_dismisses_on_preview_action_buttons(mock_search_service, qapp: QA
     assert not panel.isVisible()
 
 
-def test_panel_skips_obsolete_intermediate_workers_during_slow_search(mock_search_service, qapp: QApplication):
+def test_panel_skips_obsolete_intermediate_workers_during_slow_search(
+    mock_search_service: MagicMock, qapp: QApplication
+) -> None:
     """Verify intermediate debounced workers stopped while waiting on _search_lock skip search()."""
     first_started = threading.Event()
     unblock_first = threading.Event()
     executed_queries: list[str] = []
 
-    def slow_search(query: str, limit: int, is_code: bool):
+    def slow_search(query: str, *, limit: int = 50, is_code: bool = False) -> ResultSet:
+        del limit, is_code
         executed_queries.append(query)
         if query == "query_1":
             first_started.set()
@@ -550,8 +568,9 @@ def test_panel_skips_obsolete_intermediate_workers_during_slow_search(mock_searc
     assert executed_queries == ["query_1", "query_3"]
 
 
-def test_panel_show_triggers_background_model_preload(mock_search_service, qapp: QApplication):
+def test_panel_show_triggers_background_model_preload(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify show_panel() launches a daemon thread to preload the configured embedding model."""
+    del qapp
     mock_search_service.model = "embeddinggemma-2"
     panel = SearchPanel(mock_search_service, AppConfig())
 
@@ -563,13 +582,14 @@ def test_panel_show_triggers_background_model_preload(mock_search_service, qapp:
     mock_search_service.ollama.preload.assert_called_once_with("embeddinggemma-2")
 
 
-def test_panel_show_deduplicates_active_preload_thread(mock_search_service, qapp: QApplication):
+def test_panel_show_deduplicates_active_preload_thread(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify calling show_panel() while a preload thread is alive does not spawn a second thread."""
+    del qapp
     preload_started = threading.Event()
     unblock_preload = threading.Event()
     mock_search_service.model = "embeddinggemma-2"
 
-    def slow_preload(model: str) -> None:
+    def slow_preload(_model: str) -> None:
         preload_started.set()
         unblock_preload.wait(timeout=2.0)
 
@@ -590,8 +610,9 @@ def test_panel_show_deduplicates_active_preload_thread(mock_search_service, qapp
     first_thread.join(timeout=1.0)
 
 
-def test_panel_show_preload_ignores_ollama_error(mock_search_service, qapp: QApplication):
+def test_panel_show_preload_ignores_ollama_error(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify OllamaError during background preload is ignored without crashing."""
+    del qapp
     mock_search_service.model = "embeddinggemma-2"
     mock_search_service.ollama.preload.side_effect = OllamaConnectionError("Offline")
     panel = SearchPanel(mock_search_service, AppConfig())
@@ -603,8 +624,9 @@ def test_panel_show_preload_ignores_ollama_error(mock_search_service, qapp: QApp
     mock_search_service.ollama.preload.assert_called_once_with("embeddinggemma-2")
 
 
-def test_panel_hide_does_not_unload_model(mock_search_service, qapp: QApplication):
+def test_panel_hide_does_not_unload_model(mock_search_service: MagicMock, qapp: QApplication) -> None:
     """Verify hide_panel() does not send an unload request to Ollama."""
+    del qapp
     mock_search_service.model = "embeddinggemma-2"
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show_panel()

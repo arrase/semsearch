@@ -1,6 +1,7 @@
 """Unit tests for SQLite WAL database and FTS indexing."""
 
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,7 @@ from semsearch.core.types import (
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Database:
+def db(tmp_path: Path) -> Iterator[Database]:
     """Create a temporary database instance."""
     db_path = tmp_path / "test_index.sqlite"
     database = Database(db_path)
@@ -25,7 +26,7 @@ def db(tmp_path: Path) -> Database:
     database.close()
 
 
-def test_schema_initialization(db: Database):
+def test_schema_initialization(db: Database) -> None:
     """Verify pragmas, user_version, and table existence."""
     cursor = db._conn.cursor()
     cursor.execute("PRAGMA user_version;")
@@ -42,7 +43,7 @@ def test_schema_initialization(db: Database):
     assert "fts" in tables
 
 
-def test_meta_operations(db: Database):
+def test_meta_operations(db: Database) -> None:
     """Verify get and set metadata operations."""
     assert db.get_meta("fingerprint") is None
     db.set_meta("fingerprint", "ollama-gemma2")
@@ -51,7 +52,7 @@ def test_meta_operations(db: Database):
     assert db.get_meta("fingerprint") is None
 
 
-def test_insert_and_find_file(db: Database):
+def test_insert_and_find_file(db: Database) -> None:
     """Verify inserting file candidate and finding by path or inode."""
     candidate = Candidate(
         path="/home/user/docs/notes.md",
@@ -94,7 +95,7 @@ def test_insert_and_find_file(db: Database):
     assert fts_results[0]["name"] == "notes.md"
 
 
-def test_list_pending_order_and_limit(db: Database):
+def test_list_pending_order_and_limit(db: Database) -> None:
     """Verify pending files listing with priority ordering."""
     c1 = Candidate("/tmp/doc.txt", FileKind.DOC, 100, 10.0, 1, 1)
     c2 = Candidate("/tmp/shot.png", FileKind.SCREENSHOT, 200, 20.0, 2, 1)
@@ -115,7 +116,7 @@ def test_list_pending_order_and_limit(db: Database):
     assert len(db.list_pending(limit=2)) == 2
 
 
-def test_insert_segment_and_vector_retrieval(db: Database):
+def test_insert_segment_and_vector_retrieval(db: Database) -> None:
     """Verify segment insertion and vector matrix retrieval."""
     candidate = Candidate("/tmp/paper.pdf", FileKind.PDF, 2048, 10.0, 10, 1)
     file_id = db.insert_file(candidate)
@@ -146,7 +147,7 @@ def test_insert_segment_and_vector_retrieval(db: Database):
     assert matrix[0, 0] == 1.0
 
 
-def test_move_file(db: Database):
+def test_move_file(db: Database) -> None:
     """Verify moving file updates path and FTS name row without altering segments or vectors."""
     candidate = Candidate("/tmp/old_dir/photo.png", FileKind.IMAGE, 500, 10.0, 55, 1)
     file_id = db.insert_file(candidate)
@@ -181,7 +182,7 @@ def test_move_file(db: Database):
     assert len(db.fts_search("photo")) == 0
 
 
-def test_requeue_file(db: Database):
+def test_requeue_file(db: Database) -> None:
     """Verify requeuing drops content segments but keeps name segment."""
     candidate = Candidate("/tmp/code.py", FileKind.CODE, 100, 10.0, 77, 1)
     file_id = db.insert_file(candidate)
@@ -218,7 +219,7 @@ def test_requeue_file(db: Database):
     assert kinds == ["name"]
 
 
-def test_cascade_delete_file(db: Database):
+def test_cascade_delete_file(db: Database) -> None:
     """Verify deleting file cascades to segments and FTS."""
     candidate = Candidate("/tmp/doc.pdf", FileKind.PDF, 200, 10.0, 88, 1)
     file_id = db.insert_file(candidate)
@@ -249,7 +250,7 @@ def test_cascade_delete_file(db: Database):
     assert len(db.fts_search("confidential")) == 0
 
 
-def test_database_stats(db: Database):
+def test_database_stats(db: Database) -> None:
     """Verify stats counts."""
     c = Candidate("/tmp/test.txt", FileKind.DOC, 50, 10.0, 99, 1)
     file_id = db.insert_file(c)
@@ -273,7 +274,7 @@ def test_database_stats(db: Database):
     assert counts["vectors"] == 1
 
 
-def test_find_files_under(db: Database):
+def test_find_files_under(db: Database) -> None:
     """Verify querying files under a specific root prefix."""
     c1 = Candidate("/data/proj1/src/main.py", FileKind.CODE, 100, 10.0, 1, 1)
     c2 = Candidate("/data/proj1/README.md", FileKind.DOC, 200, 10.0, 2, 1)
@@ -325,7 +326,7 @@ def test_find_files_under(db: Database):
     assert len(all_files) == 9
 
 
-def test_fts_search_snippet_highlighting(db: Database):
+def test_fts_search_snippet_highlighting(db: Database) -> None:
     """Verify fts_search returns snippet with highlighted text markers."""
     candidate = Candidate("/tmp/document.txt", FileKind.DOC, 100, 10.0, 1, 1)
     file_id = db.insert_file(candidate)
@@ -351,7 +352,7 @@ def test_fts_search_snippet_highlighting(db: Database):
     assert "«fox»" in hit["snippet"]
 
 
-def test_fts_search_includes_loc_and_excerpt(db: Database):
+def test_fts_search_includes_loc_and_excerpt(db: Database) -> None:
     """Verify fts_search includes loc and excerpt fields with proper fallbacks and negative BM25 rank."""
     candidate = Candidate("/tmp/manual.pdf", FileKind.PDF, 2048, 10.0, 1, 1)
     file_id = db.insert_file(candidate)
@@ -414,14 +415,36 @@ def test_fts_search_includes_loc_and_excerpt(db: Database):
     assert hit_orphan["excerpt"] == ""
 
 
-def test_get_all_vectors_with_scale_and_file_segments(db: Database):
+def test_get_all_vectors_with_scale_and_file_segments(db: Database) -> None:
     """Verify get_all_vectors_with_scale marks only the first segment per (file, modality)."""
     c1 = Candidate("/tmp/multi.md", FileKind.DOC, 500, 10.0, 1, 1)
     fid1 = db.insert_file(c1)
     vec_bytes = np.ones(768, dtype=np.float16).tobytes()
 
-    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 0.0, 1.0, "chunk 0", vec_bytes, "", "chunk zero", "")
-    db.insert_segment(fid1, SegmentKind.CHUNK, Modality.TEXT, 1.0, 2.0, "chunk 1", vec_bytes, "", "chunk one", "")
+    db.insert_segment(
+        fid1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0.0,
+        1.0,
+        excerpt="chunk 0",
+        vec=vec_bytes,
+        name="",
+        body="chunk zero",
+        original="",
+    )
+    db.insert_segment(
+        fid1,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        1.0,
+        2.0,
+        excerpt="chunk 1",
+        vec=vec_bytes,
+        name="",
+        body="chunk one",
+        original="",
+    )
 
     seg_ids, _file_ids, _modalities, _matrix, sets_scale = db.get_all_vectors_with_scale()
     assert len(seg_ids) == 2
@@ -436,7 +459,7 @@ def test_get_all_vectors_with_scale_and_file_segments(db: Database):
     assert db.find_by_id(fid1).kind == FileKind.SCREENSHOT
 
 
-def test_fts_malformed_query_and_thread_safety(db: Database):
+def test_fts_malformed_query_and_thread_safety(db: Database) -> None:
     """Verify malformed FTS queries return empty list and concurrent threads do not fail."""
     assert db.fts_search('unclosed "quote') == []
 
@@ -446,11 +469,20 @@ def test_fts_malformed_query_and_thread_safety(db: Database):
         try:
             cid = db.insert_file(Candidate(f"/tmp/f_{idx}.txt", FileKind.DOC, 10, float(idx), idx + 100, 1))
             db.insert_segment(
-                cid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, f"body {idx}", None, f"f_{idx}.txt", f"body {idx}", ""
+                cid,
+                SegmentKind.CHUNK,
+                Modality.TEXT,
+                0.0,
+                0.0,
+                excerpt=f"body {idx}",
+                vec=None,
+                name=f"f_{idx}.txt",
+                body=f"body {idx}",
+                original="",
             )
             db.fts_search("body")
             db.stats()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - thread worker captures any failure for main-thread assertion
             errors.append(exc)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
@@ -463,7 +495,7 @@ def test_fts_malformed_query_and_thread_safety(db: Database):
     assert db.stats()["files"] == 8
 
 
-def test_shrink_memory_thread_safe_execution(db: Database):
+def test_shrink_memory_thread_safe_execution(db: Database) -> None:
     """Verify shrink_memory executes PRAGMA shrink_memory safely under lock without affecting stored records."""
     cid = db.insert_file(Candidate("/tmp/shrink.txt", FileKind.DOC, 42, 10.0, 500, 1))
     db.insert_segment(
@@ -472,11 +504,11 @@ def test_shrink_memory_thread_safe_execution(db: Database):
         Modality.TEXT,
         0.0,
         1.0,
-        "memory test",
-        np.ones(768, dtype=np.float16).tobytes(),
-        "shrink.txt",
-        "memory test content",
-        "",
+        excerpt="memory test",
+        vec=np.ones(768, dtype=np.float16).tobytes(),
+        name="shrink.txt",
+        body="memory test content",
+        original="",
     )
 
     errors: list[Exception] = []
@@ -486,7 +518,7 @@ def test_shrink_memory_thread_safe_execution(db: Database):
             for _ in range(5):
                 db.shrink_memory()
                 db.stats()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - thread worker captures any failure for main-thread assertion
             errors.append(exc)
 
     threads = [threading.Thread(target=worker) for _ in range(4)]

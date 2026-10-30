@@ -1,13 +1,20 @@
 """Vector mathematics, normalization, and similarity engine."""
 
+from typing import Any
+
 import numpy as np
+import numpy.typing as npt
 
 from semsearch.core.types import Modality
 
 DIM = 768
+_MIN_TRIM_SAMPLES = 10
+_MIN_MODALITY_BUCKET_SIZE = 20
+
+FloatArray = npt.NDArray[np.floating[Any]]
 
 
-def l2_normalize(vec: np.ndarray) -> np.ndarray:
+def l2_normalize(vec: FloatArray) -> FloatArray:
     """Compute L2 normalized representation for 1D vector or 2D matrix."""
     if vec.ndim == 1:
         norm = float(np.linalg.norm(vec))
@@ -17,7 +24,7 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return vec / norms
 
 
-def cosine_similarity(query_vec: np.ndarray, doc_matrix: np.ndarray) -> np.ndarray:
+def cosine_similarity(query_vec: FloatArray, doc_matrix: FloatArray) -> npt.NDArray[np.float32]:
     """Compute cosine similarity between a 1D query vector and a 2D document matrix."""
     if doc_matrix.size == 0 or len(doc_matrix) == 0:
         return np.empty((0,), dtype=np.float32)
@@ -31,35 +38,36 @@ def cosine_similarity(query_vec: np.ndarray, doc_matrix: np.ndarray) -> np.ndarr
     dots = np.dot(docs, query)
     denom = q_norm * d_norms
     denom = np.where(denom <= 0.0, 1.0, denom)
-    return (dots / denom).astype(np.float32)
+    result: npt.NDArray[np.float32] = (dots / denom).astype(np.float32)
+    return result
 
 
-def float16_to_bytes(vec: np.ndarray) -> bytes:
+def float16_to_bytes(vec: FloatArray) -> bytes:
     """Convert numpy array vector to float16 raw bytes."""
     return vec.astype(np.float16).tobytes()
 
 
-def bytes_to_float16(data: bytes) -> np.ndarray:
+def bytes_to_float16(data: bytes) -> npt.NDArray[np.float16]:
     """Convert float16 raw bytes back to numpy array."""
     return np.frombuffer(data, dtype=np.float16)
 
 
-def _trimmed_mean(values: np.ndarray) -> float:
+def _trimmed_mean(values: FloatArray) -> float:
     """Compute symmetric 10% trimmed mean when at least 10 items exist."""
     m = len(values)
     if m == 0:
         return 0.0
-    if m >= 10:
+    if m >= _MIN_TRIM_SAMPLES:
         k = m // 10
         return float(np.mean(np.sort(values)[k : m - k]))
     return float(np.mean(values))
 
 
 def z_score_normalize(
-    cosines: np.ndarray,
+    cosines: FloatArray,
     modalities: list[Modality],
-    sets_scale: list[bool] | np.ndarray | None = None,
-) -> np.ndarray:
+    sets_scale: list[bool] | npt.NDArray[np.bool_] | None = None,
+) -> npt.NDArray[np.float32]:
     """Compute modality-aware Z-score normalization over scale-eligible segments."""
     n = len(cosines)
     if n == 0:
@@ -83,14 +91,18 @@ def z_score_normalize(
     means: dict[Modality, float] = {}
     for mod in set(modalities):
         bucket = mod_buckets.get(mod, [])
-        means[mod] = _trimmed_mean(np.asarray(bucket, dtype=np.float64)) if len(bucket) >= 20 else global_mean
+        means[mod] = (
+            _trimmed_mean(np.asarray(bucket, dtype=np.float64))
+            if len(bucket) >= _MIN_MODALITY_BUCKET_SIZE
+            else global_mean
+        )
 
     centered = np.array(
         [scores[idx] - means[modalities[idx]] for idx in range(n)],
         dtype=np.float64,
     )
     scale_centered = centered[scale_mask]
-    if len(scale_centered) >= 10:
+    if len(scale_centered) >= _MIN_TRIM_SAMPLES:
         k_top = max(1, int(len(scale_centered) * 0.15))
         bg_centered = np.sort(scale_centered)[:-k_top]
     else:

@@ -11,14 +11,15 @@ from semsearch.gui.onboarding import OnboardingWizard
 
 
 @pytest.fixture
-def mock_ollama():
+def mock_ollama() -> MagicMock:
     client = MagicMock()
     client.list_multimodal_models.return_value = ["embeddinggemma-2"]
     return client
 
 
-def test_onboarding_wizard_pages_sequence(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_onboarding_wizard_pages_sequence(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
     """Verify 5-step page sequence in wizard."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     assert not cfg_mgr.config.onboarded
@@ -41,8 +42,11 @@ def test_onboarding_wizard_pages_sequence(tmp_path: Path, mock_ollama, qapp: QAp
     assert wizard.model_page.model_combo.currentText() == "embeddinggemma-2"
 
 
-def test_onboarding_wizard_completion_persists_config(tmp_path: Path, mock_ollama, qapp: QApplication):
+def test_onboarding_wizard_completion_persists_config(
+    tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication
+) -> None:
     """Verify finishing wizard marks onboarded=True and emits indexing signal."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
 
@@ -60,8 +64,9 @@ def test_onboarding_wizard_completion_persists_config(tmp_path: Path, mock_ollam
     assert reloaded_cfg.onboarded is True
 
 
-def test_onboarding_wizard_connection_error_handling(tmp_path: Path, qapp: QApplication):
+def test_onboarding_wizard_connection_error_handling(tmp_path: Path, qapp: QApplication) -> None:
     """Verify Ollama connection error is handled gracefully on onboarding model page."""
+    del qapp
     cfg_file = tmp_path / "config.json"
     cfg_mgr = ConfigManager(config_path=cfg_file)
     mock_ollama = MagicMock()

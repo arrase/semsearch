@@ -21,6 +21,18 @@ _STRIP_RANGES = [
 ]
 
 _ALEF_VARIANTS = {0x0622, 0x0623, 0x0625, 0x0671}
+_ZERO_WIDTH_SPACE = 0x200B
+_SUPERSCRIPT_ALEF = 0x0670
+_INDIC_START = 0x0900
+_INDIC_END = 0x0DFF
+_ARABIC_START = 0x0600
+_ARABIC_END = 0x06FF
+_COMBINING_MARK_START = 0x0300
+_COMBINING_MARK_END = 0x036F
+_MIN_TERM_LEN = 2
+_MIN_HINT_PREFIX_LEN = 3
+_MIN_LOOKUP_LEN = 4
+_MAX_TERM_MATCHES = 500
 
 STOPWORDS: set[str] = {
     "a",
@@ -300,14 +312,14 @@ def normalize_search_text(text: str) -> str:
 
     for char in compatible:
         val = ord(char)
-        if val == 0x200B:
+        if val == _ZERO_WIDTH_SPACE:
             result.append(" ")
             continue
         if val in _STRIP_SCALARS:
             continue
         if any(start <= val <= end for start, end in _STRIP_RANGES):
             continue
-        if val == 0x0670:
+        if val == _SUPERSCRIPT_ALEF:
             continue
         if val in _ALEF_VARIANTS:
             result.append("\u0627")
@@ -321,7 +333,7 @@ def inflects(word: str) -> bool:
     """Check if word belongs to scripts that attach endings (Indic or Arabic)."""
     for char in word:
         val = ord(char)
-        if 0x0900 <= val <= 0x0DFF or 0x0600 <= val <= 0x06FF:
+        if _INDIC_START <= val <= _INDIC_END or _ARABIC_START <= val <= _ARABIC_END:
             return True
     return False
 
@@ -348,13 +360,13 @@ def extract_terms(text: str) -> list[str]:
     terms: list[str] = []
     for token in raw_tokens:
         clean = token.strip()
-        if len(clean) >= 2 and clean not in STOPWORDS and clean not in seen:
+        if len(clean) >= _MIN_TERM_LEN and clean not in STOPWORDS and clean not in seen:
             seen.add(clean)
             terms.append(clean)
     return terms
 
 
-def make_fts_patterns(terms: list[str], prefix_last: bool = False) -> list[str]:
+def make_fts_patterns(terms: list[str], *, prefix_last: bool = False) -> list[str]:
     """Generate quoted FTS5 patterns with selective prefix wildcards."""
     patterns: list[str] = []
     for idx, term in enumerate(terms):
@@ -367,7 +379,9 @@ def is_lookup(terms: list[str]) -> bool:
     """Determine if query terms represent codes, IDs, or model identifiers."""
     if not terms:
         return False
-    return all(any(c.isdigit() for c in t) and (any(c.isalpha() for c in t) or len(t) >= 4) for t in terms)
+    return all(
+        any(c.isdigit() for c in t) and (any(c.isalpha() for c in t) or len(t) >= _MIN_LOOKUP_LEN) for t in terms
+    )
 
 
 def is_lookup_query(query: str, terms: list[str] | None = None) -> bool:
@@ -397,7 +411,7 @@ def extract_kind_hints(text: str) -> set[FileKind]:
             hints.add(KIND_WORDS[w])
         else:
             for kw, kind in KIND_WORDS.items():
-                if inflects(kw) and len(kw) >= 3 and w.startswith(kw):
+                if inflects(kw) and len(kw) >= _MIN_HINT_PREFIX_LEN and w.startswith(kw):
                     hints.add(kind)
                     break
     return hints
@@ -406,10 +420,12 @@ def extract_kind_hints(text: str) -> set[FileKind]:
 def _fold_latin_diacritics(text: str) -> str:
     """Normalize text and strip Latin combining diacritical marks (0x0300..0x036F)."""
     norm = normalize_search_text(text).lower()
-    return "".join(ch for ch in unicodedata.normalize("NFD", norm) if not (0x0300 <= ord(ch) <= 0x036F))
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", norm) if not (_COMBINING_MARK_START <= ord(ch) <= _COMBINING_MARK_END)
+    )
 
 
-def _resolve_match_bounds(text: str, orig_start: int, orig_end: int, prefix: bool) -> tuple[int, int] | None:
+def _resolve_match_bounds(text: str, orig_start: int, orig_end: int, *, prefix: bool) -> tuple[int, int] | None:
     if orig_start > 0 and _is_word_char(text[orig_start - 1]):
         return None
     if orig_end < len(text) and _is_word_char(text[orig_end]):
@@ -436,7 +452,7 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
 
     found: list[tuple[int, int]] = []
     cursor = 0
-    while len(found) < 500:
+    while len(found) < _MAX_TERM_MATCHES:
         pos = haystack.find(needle, cursor)
         if pos == -1:
             break
@@ -444,7 +460,7 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
         cursor = hit_end
         if not origin or hit_end > len(origin):
             continue
-        bounds = _resolve_match_bounds(text, origin[pos], origin[hit_end - 1] + 1, prefix)
+        bounds = _resolve_match_bounds(text, origin[pos], origin[hit_end - 1] + 1, prefix=prefix)
         if bounds is not None:
             found.append(bounds)
     return found
@@ -467,7 +483,7 @@ def extract_snippet(text: str, terms: list[str], max_words: int = 12) -> str | N
     if not text or not terms:
         return None
 
-    clean_terms = [t.strip() for t in terms if len(t.strip()) >= 2]
+    clean_terms = [t.strip() for t in terms if len(t.strip()) >= _MIN_TERM_LEN]
     if not clean_terms:
         return None
 

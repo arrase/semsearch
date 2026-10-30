@@ -1,6 +1,7 @@
 """Search engine with dual-query routing, hybrid DigUp ranking, and desktop gating."""
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from semsearch.core.code_lookup import (
     find_first_line_with_words,
     identifier_phrase,
 )
-from semsearch.core.database import Database
+from semsearch.core.database import Database, FtsMatchRow
 from semsearch.core.ollama import (
     OllamaClient,
     OllamaError,
@@ -35,6 +36,13 @@ from semsearch.core.types import (
 )
 from semsearch.core.vectors import cosine_similarity, z_score_normalize
 
+_STRONG_DEFINITION = 2
+_MIN_WORD_LEN = 2
+_MIN_WILDCARD_TERM_LEN = 3
+_MAX_FTS_WORD_FILES = 200
+_COVERAGE_SEMANTIC_Z_FLOOR = 1.5
+_MIN_COVERAGE_GATE = 0.5
+
 
 @dataclass
 class ResultSet:
@@ -43,7 +51,7 @@ class ResultSet:
     ranked: list[SearchHit] = field(default_factory=list)
     weaker: list[SearchHit] = field(default_factory=list)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[SearchHit]:
         return iter(self.ranked)
 
     def __len__(self) -> int:
@@ -84,7 +92,7 @@ class SearchService:
             line_num, strength = def_res
             if best_def is None or strength > best_def[2]:
                 best_def = (s_id, line_num, strength)
-            if strength == 2:
+            if strength == _STRONG_DEFINITION:
                 break
         return (best_def[0], float(best_def[1]), best_def[2]) if best_def is not None else None
 
@@ -104,7 +112,7 @@ class SearchService:
             line_num, strength = def_res
             if best_seg_def is None or strength > best_seg_def[2]:
                 best_seg_def = (seg_id_cand, line_num, strength)
-            if strength == 2:
+            if strength == _STRONG_DEFINITION:
                 break
         return (best_seg_def[0], float(best_seg_def[1]), best_seg_def[2]) if best_seg_def is not None else None
 
@@ -156,6 +164,7 @@ class SearchService:
         target_db: Database,
         file_rec: FileRecord,
         segment_id: int,
+        *,
         identifier: list[str] | None,
         clean_query: str,
         terms: list[str],
@@ -185,7 +194,7 @@ class SearchService:
 
         return segment_id, 0.0, 0
 
-    def _resolve_target_db_and_query(self, stripped: str, is_code: bool) -> tuple[Database | None, str, bool]:
+    def _resolve_target_db_and_query(self, stripped: str, *, is_code: bool) -> tuple[Database | None, str, bool]:
         is_code_prefix = stripped.lower().startswith("code:")
         effective_code = is_code or is_code_prefix
         if effective_code:
@@ -199,6 +208,7 @@ class SearchService:
     def _parse_search_terms(
         clean_query: str,
         hinted_kinds: set[FileKind],
+        *,
         is_code: bool,
     ) -> tuple[list[str], bool]:
         extracted_terms = extract_terms(clean_query)
@@ -207,13 +217,14 @@ class SearchService:
             return extracted_terms, pure_kind_query
         if pure_kind_query:
             return [], True
-        terms = [w.lower() for w in re.findall(r"\w+", clean_query) if len(w) >= 2]
+        terms = [w.lower() for w in re.findall(r"\w+", clean_query) if len(w) >= _MIN_WORD_LEN]
         return (terms or [clean_query.lower()]), False
 
     def _vector_search(
         self,
         target_db: Database,
         clean_query: str,
+        *,
         is_code: bool,
     ) -> dict[int, tuple[float, float, int]]:
         best: dict[int, tuple[float, float, int]] = {}
@@ -246,6 +257,7 @@ class SearchService:
         target_db: Database,
         terms: list[str],
         identifier: list[str] | None,
+        *,
         prefix_last: bool,
     ) -> list[str]:
         if identifier is not None:
@@ -254,7 +266,7 @@ class SearchService:
             return []
         patterns = make_fts_patterns(terms, prefix_last=prefix_last)
         for idx, p in enumerate(patterns):
-            if len(terms[idx]) >= 3 and not p.endswith("*") and not target_db.is_indexed(p):
+            if len(terms[idx]) >= _MIN_WILDCARD_TERM_LEN and not p.endswith("*") and not target_db.is_indexed(p):
                 patterns[idx] = p + "*"
         return patterns
 
@@ -263,27 +275,28 @@ class SearchService:
         target_db: Database,
         terms: list[str],
         identifier: list[str] | None,
+        *,
         prefix_last: bool,
         best: dict[int, tuple[float, float, int]],
-    ) -> tuple[dict[int, tuple[int, dict]], dict[int, float]]:
-        patterns = self._build_fts_patterns(target_db, terms, identifier, prefix_last)
+    ) -> tuple[dict[int, tuple[int, FtsMatchRow]], dict[int, float]]:
+        patterns = self._build_fts_patterns(target_db, terms, identifier, prefix_last=prefix_last)
         if not patterns:
             return {}, {}
 
         fts_rows = target_db.fts_search(" OR ".join(patterns), limit=1000, terms=terms)
-        words: list[dict] = []
+        words: list[FtsMatchRow] = []
         seen_files: set[int] = set()
         for r in fts_rows:
             fid = r["file_id"]
             if fid is not None and fid not in seen_files:
                 seen_files.add(fid)
                 words.append(r)
-                if len(words) >= 200:
+                if len(words) >= _MAX_FTS_WORD_FILES:
                     break
 
-        cov_fids = list(seen_files | {fid for fid, sem in best.items() if sem[0] >= 1.5})
+        cov_fids = list(seen_files | {fid for fid, sem in best.items() if sem[0] >= _COVERAGE_SEMANTIC_Z_FLOOR})
         coverage = target_db.compute_coverage(patterns, cov_fids) if cov_fids else {}
-        word_rank = {w["file_id"]: (idx + 1, w) for idx, w in enumerate(words)}
+        word_rank = {w["file_id"]: (idx + 1, w) for idx, w in enumerate(words) if w["file_id"] is not None}
         return word_rank, coverage
 
     @staticmethod
@@ -292,29 +305,30 @@ class SearchService:
         best: dict[int, tuple[float, float, int]],
         coverage: dict[int, float],
         hinted_kinds: set[FileKind],
+        *,
         pure_kind_query: bool,
     ) -> set[int]:
         if pure_kind_query:
             return {f_rec.id for f_rec in target_db.find_all_files() if f_rec.kind in hinted_kinds}
         candidates = {fid for fid, sem in best.items() if sem[0] >= SEMANTIC_Z_GATE}
-        candidates.update(fid for fid, cov in coverage.items() if cov >= 0.5)
+        candidates.update(fid for fid, cov in coverage.items() if cov >= _MIN_COVERAGE_GATE)
         return candidates
 
     @staticmethod
     def _compute_name_bonus(path: str, folded_terms: list[str], cov_val: float) -> float:
-        if not folded_terms or cov_val < 0.5:
+        if not folded_terms or cov_val < _MIN_COVERAGE_GATE:
             return 0.0
         stem_folded = _fold_latin_diacritics(Path(path).stem)
         matched_in_stem = sum(1 for ft in folded_terms if ft in stem_folded)
         if matched_in_stem <= 0:
             return 0.0
         name_ratio = matched_in_stem / len(folded_terms)
-        return 3.0 * (name_ratio**1.5)
+        return float(3.0 * (name_ratio**1.5))
 
     @staticmethod
     def _select_segment_id(
         sem: tuple[float, float, int] | None,
-        keyword: tuple[int, dict] | None,
+        keyword: tuple[int, FtsMatchRow] | None,
     ) -> int | None:
         if sem is not None and (sem[0] >= SEMANTIC_Z_GATE or keyword is None):
             return sem[2]
@@ -325,7 +339,8 @@ class SearchService:
         target_db: Database,
         f_rec: FileRecord,
         sem: tuple[float, float, int] | None,
-        keyword: tuple[int, dict] | None,
+        keyword: tuple[int, FtsMatchRow] | None,
+        *,
         identifier: list[str] | None,
         clean_query: str,
         terms: list[str],
@@ -345,7 +360,7 @@ class SearchService:
             words_here=words_here,
         )
         resolved_code_places[f_rec.id] = (res_seg_id, res_focus, strength)
-        if strength == 2:
+        if strength == _STRONG_DEFINITION:
             return 3.0
         return 1.5 if strength == 1 else 0.0
 
@@ -354,7 +369,8 @@ class SearchService:
         target_db: Database,
         fid: int,
         semantic: tuple[float, float, int] | None,
-        keyword: tuple[int, dict] | None,
+        keyword: tuple[int, FtsMatchRow] | None,
+        *,
         is_code: bool,
         pure_kind_query: bool,
         resolved_code_places: dict[int, tuple[int, float, int]],
@@ -376,14 +392,21 @@ class SearchService:
         fid: int,
         f_rec: FileRecord,
         score: float,
+        *,
         semantic: tuple[float, float, int] | None,
-        keyword: tuple[int, dict] | None,
+        keyword: tuple[int, FtsMatchRow] | None,
         is_code: bool,
         pure_kind_query: bool,
         resolved_code_places: dict[int, tuple[int, float, int]],
     ) -> SearchHit | None:
         segment_id, focus_line = self._resolve_hit_segment(
-            target_db, fid, semantic, keyword, is_code, pure_kind_query, resolved_code_places
+            target_db,
+            fid,
+            semantic,
+            keyword,
+            is_code=is_code,
+            pure_kind_query=pure_kind_query,
+            resolved_code_places=resolved_code_places,
         )
         if segment_id is None:
             return None
@@ -419,17 +442,18 @@ class SearchService:
         self,
         target_db: Database,
         candidates: set[int],
+        *,
         kinds: set[FileKind] | None,
         best: dict[int, tuple[float, float, int]],
         coverage: dict[int, float],
-        word_rank: dict[int, tuple[int, dict]],
+        word_rank: dict[int, tuple[int, FtsMatchRow]],
         hinted_kinds: set[FileKind],
         terms: list[str],
         identifier: list[str] | None,
         clean_query: str,
         is_code: bool,
-        is_lookup: bool,
     ) -> tuple[dict[int, float], dict[int, FileRecord], dict[int, tuple[int, float, int]]]:
+        is_lookup = (identifier is not None) or is_lookup_query(clean_query, terms=terms)
         word_weight = 1.0 if is_code else 2.0
         meaning_weight, words_weight = (0.5, word_weight * 2.0) if is_lookup else (1.0, word_weight)
         scored: dict[int, float] = {}
@@ -450,7 +474,14 @@ class SearchService:
             name_bonus = self._compute_name_bonus(f_rec.path, folded_terms, cov_val)
             def_bonus = (
                 self._compute_code_definition_bonus(
-                    target_db, f_rec, sem, word_rank.get(fid), identifier, clean_query, terms, resolved_code_places
+                    target_db,
+                    f_rec,
+                    sem,
+                    word_rank.get(fid),
+                    identifier=identifier,
+                    clean_query=clean_query,
+                    terms=terms,
+                    resolved_code_places=resolved_code_places,
                 )
                 if is_code
                 else 0.0
@@ -464,6 +495,7 @@ class SearchService:
         self,
         query: str,
         limit: int = 50,
+        *,
         is_code: bool = False,
         prefix_last: bool = False,
         kinds: set[FileKind] | None = None,
@@ -473,29 +505,40 @@ class SearchService:
         if not stripped:
             return ResultSet()
 
-        target_db, clean_query, is_code = self._resolve_target_db_and_query(stripped, is_code)
+        target_db, clean_query, is_code = self._resolve_target_db_and_query(stripped, is_code=is_code)
         if target_db is None:
             return ResultSet()
 
         hinted_kinds = extract_kind_hints(clean_query)
-        terms, pure_kind_query = self._parse_search_terms(clean_query, hinted_kinds, is_code)
+        terms, pure_kind_query = self._parse_search_terms(clean_query, hinted_kinds, is_code=is_code)
         identifier = extract_identifier(clean_query) if is_code else None
-        is_lookup = (identifier is not None) or is_lookup_query(clean_query, terms=terms)
 
         # 1. Vector Search
-        best = self._vector_search(target_db, clean_query, is_code)
+        best = self._vector_search(target_db, clean_query, is_code=is_code)
 
         # 2. Keyword Search
-        word_rank, coverage = self._keyword_search(target_db, terms, identifier, prefix_last, best)
+        word_rank, coverage = self._keyword_search(
+            target_db,
+            terms,
+            identifier,
+            prefix_last=prefix_last,
+            best=best,
+        )
 
         # 3. Quality Gating & Score Fusion
-        candidates = self._collect_candidates(target_db, best, coverage, hinted_kinds, pure_kind_query)
+        candidates = self._collect_candidates(
+            target_db,
+            best,
+            coverage,
+            hinted_kinds,
+            pure_kind_query=pure_kind_query,
+        )
         if not candidates:
             return ResultSet()
 
         scored, file_records, resolved_code_places = self._score_candidates(
-            target_db=target_db,
-            candidates=candidates,
+            target_db,
+            candidates,
             kinds=kinds,
             best=best,
             coverage=coverage,
@@ -505,7 +548,6 @@ class SearchService:
             identifier=identifier,
             clean_query=clean_query,
             is_code=is_code,
-            is_lookup=is_lookup,
         )
         if not scored:
             return ResultSet()
@@ -521,10 +563,10 @@ class SearchService:
             for fid in sorted_files
             if (
                 hit := self._assemble_hit(
-                    target_db=target_db,
-                    fid=fid,
-                    f_rec=file_records[fid],
-                    score=scored[fid],
+                    target_db,
+                    fid,
+                    file_records[fid],
+                    scored[fid],
                     semantic=best.get(fid),
                     keyword=word_rank.get(fid),
                     is_code=is_code,

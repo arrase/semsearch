@@ -7,20 +7,20 @@ from semsearch.services.scheduler import PowerScheduler
 
 
 class DummyIndexService:
-    def __init__(self):
+    def __init__(self) -> None:
         self.paused = False
         self.pause_reason = ""
 
-    def pause(self, reason: str = ""):
+    def pause(self, reason: str = "") -> None:
         self.paused = True
         self.pause_reason = reason
 
-    def resume(self):
+    def resume(self) -> None:
         self.paused = False
         self.pause_reason = ""
 
 
-def test_battery_detection_sysfs(tmp_path: Path):
+def test_battery_detection_sysfs(tmp_path: Path) -> None:
     sysfs = tmp_path / "power_supply"
     sysfs.mkdir()
 
@@ -44,7 +44,7 @@ def test_battery_detection_sysfs(tmp_path: Path):
     assert scheduler.is_on_battery() is False
 
 
-def test_battery_detection_no_battery(tmp_path: Path):
+def test_battery_detection_no_battery(tmp_path: Path) -> None:
     sysfs = tmp_path / "power_supply"
     sysfs.mkdir()
 
@@ -59,7 +59,7 @@ def test_battery_detection_no_battery(tmp_path: Path):
     assert scheduler.is_on_battery() is False
 
 
-def test_operating_hours_daytime_schedule():
+def test_operating_hours_daytime_schedule() -> None:
     dummy_indexer = DummyIndexService()
     config = AppConfig(
         index_schedule_enabled=True,
@@ -78,7 +78,7 @@ def test_operating_hours_daytime_schedule():
     assert scheduler.is_within_schedule(1110) is False
 
 
-def test_operating_hours_overnight_schedule():
+def test_operating_hours_overnight_schedule() -> None:
     dummy_indexer = DummyIndexService()
     config = AppConfig(
         index_schedule_enabled=True,
@@ -99,7 +99,7 @@ def test_operating_hours_overnight_schedule():
     assert scheduler.is_within_schedule(840) is False
 
 
-def test_evaluate_policy_and_update(tmp_path: Path):
+def test_evaluate_policy_and_update(tmp_path: Path) -> None:
     sysfs = tmp_path / "power_supply"
     sysfs.mkdir()
     bat0 = sysfs / "BAT0"

@@ -9,7 +9,7 @@ from semsearch.core.search_text import (
 from semsearch.core.types import FileKind
 
 
-def test_spanish_stopwords_and_kind_hints():
+def test_spanish_stopwords_and_kind_hints() -> None:
     """Verify Spanish stopwords are stripped and Spanish kind words map to FileKind."""
     assert extract_terms("captura de pantalla") == []
     assert extract_kind_hints("captura de pantalla") == {FileKind.SCREENSHOT}
@@ -26,7 +26,7 @@ def test_spanish_stopwords_and_kind_hints():
     }
 
 
-def test_diacritic_insensitive_term_matching_and_snippets():
+def test_diacritic_insensitive_term_matching_and_snippets() -> None:
     """Verify unaccented queries match and highlight accented Spanish text."""
     text = "Documento oficial de Autorización Juan Ezquerro e INFORMACIÓN FISCAL 2025."
     matches = find_term_matches("autorizacion", text)

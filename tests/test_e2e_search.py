@@ -37,47 +37,52 @@ class SemanticMockOllama:
         self.code_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
         self.default_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
 
-    def embed(self, model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
-        results: list[list[float]] = []
-        for inp in inputs:
-            if isinstance(inp, dict):
-                if "image" in inp:
-                    raw = base64.b64decode(inp["image"])
-                    with Image.open(io.BytesIO(raw)) as im:
-                        if im.size == (640, 480):
-                            results.append(self.sunset_vec.tolist())
-                        elif im.size == (320, 240):
-                            results.append(self.video_vec.tolist())
-                        else:
-                            results.append(self.default_vec.tolist())
-                elif "audio" in inp:
-                    results.append(self.audio_vec.tolist())
-                else:
-                    results.append(self.default_vec.tolist())
-            else:
-                text = str(inp).lower()
-                clean = (
-                    text.replace("task: search result | query: ", "")
-                    .replace("task: code retrieval | query: ", "")
-                    .strip()
-                )
-                if any(w in clean for w in ("sunset", "golden", "landscape")):
-                    results.append(self.sunset_vec.tolist())
-                elif any(w in clean for w in ("video", "smpte", "bars")):
-                    results.append(self.video_vec.tolist())
-                elif any(w in clean for w in ("speech", "voice", "tone")):
-                    results.append(self.audio_vec.tolist())
-                elif any(w in clean for w in ("brief", "strategy", "executive")):
-                    results.append(self.brief_vec.tolist())
-                elif any(w in clean for w in ("retry", "backoff", "token", "bucket")):
-                    results.append(self.code_vec.tolist())
-                else:
-                    results.append(self.default_vec.tolist())
-        return results
+    def embed(self, _model: str, inputs: list[str | dict[str, str]]) -> list[list[float]]:
+        return [self._embed_single(inp) for inp in inputs]
+
+    def _embed_single(self, inp: str | dict[str, str]) -> list[float]:
+        if isinstance(inp, dict):
+            return self._embed_media(inp)
+        return self._embed_text(str(inp))
+
+    def _embed_media(self, inp: dict[str, str]) -> list[float]:
+        if "image" in inp:
+            raw = base64.b64decode(inp["image"])
+            with Image.open(io.BytesIO(raw)) as im:
+                if im.size == (640, 480):
+                    return self.sunset_vec.tolist()
+                if im.size == (320, 240):
+                    return self.video_vec.tolist()
+            return self.default_vec.tolist()
+        if "audio" in inp:
+            return self.audio_vec.tolist()
+        return self.default_vec.tolist()
+
+    def _embed_text(self, text: str) -> list[float]:
+        clean = (
+            text.lower()
+            .replace("task: search result | query: ", "")
+            .replace("task: code retrieval | query: ", "")
+            .strip()
+        )
+        keyword_groups = [
+            (("sunset", "golden", "landscape"), self.sunset_vec),
+            (("video", "smpte", "bars"), self.video_vec),
+            (("speech", "voice", "tone"), self.audio_vec),
+            (("brief", "strategy", "executive"), self.brief_vec),
+            (("retry", "backoff", "token", "bucket"), self.code_vec),
+        ]
+        for words, vec in keyword_groups:
+            if any(w in clean for w in words):
+                return vec.tolist()
+        return self.default_vec.tolist()
+
+
+TestbedFixture = tuple[Path, dict[str, Path], Database, Database, SearchService, SemanticMockOllama]
 
 
 @pytest.fixture
-def indexed_testbed(tmp_path: Path):
+def indexed_testbed(tmp_path: Path) -> TestbedFixture:
     testbed_dir = tmp_path / "testbed"
     files = generate_testbed(testbed_dir)
 
@@ -114,7 +119,7 @@ def indexed_testbed(tmp_path: Path):
 # Section 3: Cross-Modal & Semantic Search Fidelity Verification
 
 
-def test_cross_modal_text_to_image_search(indexed_testbed):
+def test_cross_modal_text_to_image_search(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     # Natural language visual description targeting photo_sunset.jpg
     res = searcher.search("photo sunset golden landscape")
@@ -124,7 +129,7 @@ def test_cross_modal_text_to_image_search(indexed_testbed):
     assert top_hit.kind in (FileKind.IMAGE, FileKind.SCREENSHOT)
 
 
-def test_cross_modal_text_to_video_search(indexed_testbed):
+def test_cross_modal_text_to_video_search(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     # Query matching synthesized video test pattern
     res = searcher.search("video smpte color bars test")
@@ -134,15 +139,15 @@ def test_cross_modal_text_to_video_search(indexed_testbed):
     assert video_hits[0].segment in (SegmentKind.FRAME, SegmentKind.AUDIO)
 
 
-def test_search_evaluation_harness_live_ollama():
+def test_search_evaluation_harness_live_ollama() -> None:
     try:
         client = OllamaClient()
         tags = client.get_tags()
-        models = [t["name"] for t in tags if "embeddinggemma-2" in t.get("name", "")]
+        models = [t["name"] for t in tags if "embeddinggemma-2" in str(t.get("name", ""))]
         if not models:
             pytest.skip("embeddinggemma-2 model not installed in local Ollama")
-        res = client.embed(models[0], ["test semantic evaluation query"])
-    except Exception as exc:
+        res = client.embed(str(models[0]), ["test semantic evaluation query"])
+    except Exception as exc:  # noqa: BLE001 - skip live evaluation if local Ollama daemon is unreachable
         pytest.skip(f"Live Ollama instance not available: {exc}")
 
     assert len(res) == 1
@@ -152,7 +157,7 @@ def test_search_evaluation_harness_live_ollama():
 # Section 4: Lexical BM25 & Lookup Serial Search Verification
 
 
-def test_fts5_bm25_keyword_matching(indexed_testbed):
+def test_fts5_bm25_keyword_matching(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     res = searcher.search("Executive Strategy Brief")
     assert len(res.ranked) > 0
@@ -160,7 +165,7 @@ def test_fts5_bm25_keyword_matching(indexed_testbed):
     assert "Strategy" in res.ranked[0].excerpt or "Brief" in res.ranked[0].excerpt
 
 
-def test_identifier_and_serial_lookup_routing(indexed_testbed):
+def test_identifier_and_serial_lookup_routing(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     assert is_lookup_query("ERR-4096-FAIL") is True
     assert is_lookup_query("0xdeadbeef") is True
@@ -174,11 +179,22 @@ def test_identifier_and_serial_lookup_routing(indexed_testbed):
     assert "4096" in res_serial.ranked[0].excerpt
 
 
-def test_term_coverage_multi_term_and_prefix(tmp_path: Path):
+def test_term_coverage_multi_term_and_prefix(tmp_path: Path) -> None:
     db = Database(tmp_path / "cov.db")
     fid = db.insert_file(Candidate(path="/tmp/report.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=1, device=1))
     doc_text = "Quarterly Systems Architectural Report 2026"
-    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, 0.0, 0.0, doc_text, None, "report.txt", doc_text, "")
+    db.insert_segment(
+        fid,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        0.0,
+        0.0,
+        excerpt=doc_text,
+        vec=None,
+        name="report.txt",
+        body=doc_text,
+        original="",
+    )
 
     patterns = make_fts_patterns(["systems", "architectural", "report"])
     assert db.compute_coverage(patterns, [fid])[fid] == 1.0
@@ -195,7 +211,7 @@ def test_term_coverage_multi_term_and_prefix(tmp_path: Path):
 # Section 5: Code Search & Definition Line Anchor Verification
 
 
-def test_code_search_routing(indexed_testbed):
+def test_code_search_routing(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     # Query with code: prefix
     res = searcher.search("code: retry_with_backoff")
@@ -205,7 +221,7 @@ def test_code_search_routing(indexed_testbed):
     assert top.kind == FileKind.CODE
 
 
-def test_symbol_definition_line_anchoring(indexed_testbed):
+def test_symbol_definition_line_anchoring(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     # Function symbol definition anchor
     res_fn = searcher.search("code: retry_with_backoff")
@@ -218,7 +234,7 @@ def test_symbol_definition_line_anchoring(indexed_testbed):
     assert res_cls.ranked[0].focus == 13.0
 
 
-def test_jupyter_notebook_code_search(indexed_testbed):
+def test_jupyter_notebook_code_search(indexed_testbed: TestbedFixture) -> None:
     _, _files, _, _, searcher, _ = indexed_testbed
     res = searcher.search("code: calculate_metrics")
     assert len(res.ranked) > 0
@@ -231,7 +247,7 @@ def test_jupyter_notebook_code_search(indexed_testbed):
 # Section 6: Quality Gating & Weaker Matches Verification
 
 
-def test_quality_gating_filtering(tmp_path: Path):
+def test_quality_gating_filtering(tmp_path: Path) -> None:
     db = Database(tmp_path / "gating.db")
     c1_cand = Candidate(path="/tmp/doc1.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=1, device=1)
     f1 = db.insert_file(c1_cand)
@@ -241,11 +257,11 @@ def test_quality_gating_filtering(tmp_path: Path):
         Modality.TEXT,
         1.0,
         1.0,
-        "matching target keyword query",
-        None,
-        "doc1.txt",
-        "matching target keyword query",
-        "",
+        excerpt="matching target keyword query",
+        vec=None,
+        name="doc1.txt",
+        body="matching target keyword query",
+        original="",
     )
 
     c2_cand = Candidate(path="/tmp/doc2.txt", kind=FileKind.DOC, size=100, mtime=1.0, inode=2, device=2)
@@ -256,11 +272,11 @@ def test_quality_gating_filtering(tmp_path: Path):
         Modality.TEXT,
         1.0,
         1.0,
-        "completely unrelated data",
-        None,
-        "doc2.txt",
-        "only matching term present",
-        "",
+        excerpt="completely unrelated data",
+        vec=None,
+        name="doc2.txt",
+        body="only matching term present",
+        original="",
     )
 
     searcher = SearchService(db=db)
@@ -271,7 +287,7 @@ def test_quality_gating_filtering(tmp_path: Path):
     assert res.ranked[0].path == "/tmp/doc1.txt"
 
 
-def test_folded_weaker_matches_partitioning(indexed_testbed):
+def test_folded_weaker_matches_partitioning(indexed_testbed: TestbedFixture) -> None:
     _, _, db, _, searcher, _ = indexed_testbed
     # Insert a weakly matching document
     cand = Candidate(path="/tmp/weak.txt", kind=FileKind.DOC, size=50, mtime=1.0, inode=999, device=999)
@@ -282,11 +298,11 @@ def test_folded_weaker_matches_partitioning(indexed_testbed):
         Modality.TEXT,
         1.0,
         1.0,
-        "Architectural overview brief summary",
-        None,
-        "weak.txt",
-        "Architectural overview brief summary",
-        "",
+        excerpt="Architectural overview brief summary",
+        vec=None,
+        name="weak.txt",
+        body="Architectural overview brief summary",
+        original="",
     )
 
     res = searcher.search("Quarterly Systems Engineering and Architectural Report")
@@ -297,7 +313,7 @@ def test_folded_weaker_matches_partitioning(indexed_testbed):
         assert w.score < 0.5 * res.ranked[0].score
 
 
-def test_result_hit_properties(indexed_testbed):
+def test_result_hit_properties(indexed_testbed: TestbedFixture) -> None:
     _, _, _, _, searcher, _ = indexed_testbed
     results = searcher.search("Strategy Brief")
     assert len(results.ranked) > 0

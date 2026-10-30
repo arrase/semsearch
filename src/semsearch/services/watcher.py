@@ -79,6 +79,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
     def __init__(
         self,
         root: str,
+        *,
         is_code: bool,
         bucket: DebounceBucket,
         db: Database,
@@ -213,6 +214,7 @@ class FileSystemWatcher:
     def _schedule_folders(
         self,
         folders: list[str],
+        *,
         is_code: bool,
         target_db: Database,
         quiet_window: float,
