@@ -562,6 +562,23 @@ class Database:
         words = [w for w in re.findall(r"\w+", stripped) if len(w) >= _MIN_FTS_WORD_LEN] or [stripped]
         return " OR ".join(f'"{w}"*' for w in words)
 
+    @staticmethod
+    def _row_to_fts_match(row: sqlite3.Row, terms: list[str] | None) -> FtsMatchRow:
+        orig = row[4]
+        raw_snip = row[6] or ""
+        snip = extract_snippet(orig, terms) if orig and terms else None
+        return {
+            "segment_id": int(row[0]),
+            "file_id": int(row[1]) if row[1] is not None else None,
+            "name": str(row[2] or ""),
+            "body": str(row[3] or ""),
+            "original": str(orig or ""),
+            "rank": float(row[5]),
+            "snippet": str(snip or raw_snip),
+            "loc": float(row[7]) if row[7] is not None else 0.0,
+            "excerpt": str(row[8] or ""),
+        }
+
     def fts_search(self, query: str, limit: int = 100, terms: list[str] | None = None) -> list[FtsMatchRow]:
         """Perform full-text search using BM25 ranking with boosted filename weight."""
         stripped = query.strip()
@@ -592,25 +609,7 @@ class Database:
             except sqlite3.Error:
                 return []
 
-        results: list[FtsMatchRow] = []
-        for row in rows:
-            orig = row[4]
-            raw_snip = row[6] or ""
-            snip = extract_snippet(orig, terms) if orig and terms else None
-            results.append(
-                {
-                    "segment_id": int(row[0]),
-                    "file_id": int(row[1]) if row[1] is not None else None,
-                    "name": str(row[2] or ""),
-                    "body": str(row[3] or ""),
-                    "original": str(orig or ""),
-                    "rank": float(row[5]),
-                    "snippet": str(snip or raw_snip),
-                    "loc": float(row[7]) if row[7] is not None else 0.0,
-                    "excerpt": str(row[8] or ""),
-                }
-            )
-        return results
+        return [self._row_to_fts_match(row, terms) for row in rows]
 
     def is_indexed(self, pattern: str) -> bool:
         """Check if an FTS pattern matches any indexed document."""

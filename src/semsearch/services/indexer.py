@@ -307,12 +307,12 @@ class IndexService:
     def _get_resume_offset(file_record: FileRecord) -> int:
         if file_record.state != FileState.PARTIAL:
             return 0
-        key = (
-            "last_page"
-            if file_record.kind == FileKind.PDF
-            else ("last_chunk" if file_record.kind == FileKind.DOC else "")
-        )
-        val = file_record.info.get(key, 0) if key else 0
+        if file_record.kind == FileKind.PDF:
+            val = file_record.info.get("last_page", 0)
+        elif file_record.kind == FileKind.DOC:
+            val = file_record.info.get("last_chunk", 0)
+        else:
+            return 0
         return int(val) if isinstance(val, (int, float)) else 0
 
     def _build_embed_inputs(
