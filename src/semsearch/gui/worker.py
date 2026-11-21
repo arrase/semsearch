@@ -43,6 +43,11 @@ class SearchWorker(QThread):
             return
         with self._search_lock:
             if not self.is_stopped:
-                results = self.search_service.search(self.query, limit=self.limit, is_code=self.is_code)
+                results = self.search_service.search(
+                    self.query,
+                    limit=self.limit,
+                    is_code=self.is_code,
+                    prefix_last=True,
+                )
                 if not self.is_stopped:
                     self.results_ready.emit(self.query, results)

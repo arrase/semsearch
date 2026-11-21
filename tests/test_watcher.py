@@ -4,7 +4,10 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
+import pytest
 from watchdog.events import (
+    DirCreatedEvent,
     DirDeletedEvent,
     DirMovedEvent,
     FileCreatedEvent,
@@ -14,17 +17,19 @@ from watchdog.events import (
 
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
-from semsearch.core.types import Candidate, FileKind
+from semsearch.core.types import Candidate, FileKind, FileState, Modality, SegmentKind
+from semsearch.core.vectors import DIM, float16_to_bytes
+from semsearch.services.indexer import IndexQueueTier, IndexService
 from semsearch.services.watcher import DebounceBucket, FileSystemWatcher, SemSearchEventHandler
 
 
-class MockIndexService:
+class RecordingIndexService(IndexService):
     def __init__(self, db: Database, code_db: Database | None = None) -> None:
-        self.db = db
-        self.code_db = code_db
+        super().__init__(db=db, code_db=code_db)
         self.enqueued: list[str] = []
 
-    def enqueue_file(self, path: str) -> None:
+    def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
+        del tier
         self.enqueued.append(path)
 
 
@@ -126,7 +131,7 @@ def test_event_handler_move_and_delete(tmp_path: Path) -> None:
 
 def test_watcher_start_stop(tmp_path: Path) -> None:
     db = Database(tmp_path / "index.sqlite")
-    indexer = MockIndexService(db=db)
+    indexer = RecordingIndexService(db=db)
     watch_dir = tmp_path / "watched"
     watch_dir.mkdir()
 
@@ -139,8 +144,10 @@ def test_watcher_start_stop(tmp_path: Path) -> None:
     assert watcher._observer.is_alive()
 
     watcher.stop()
-    assert watcher._observer is None
-    assert watcher._timer_thread is None
+    observer_after: object = watcher._observer
+    timer_after: object = watcher._timer_thread
+    assert observer_after is None
+    assert timer_after is None
 
 
 def test_directory_deletion_cascades_indexed_files(tmp_path: Path) -> None:
@@ -341,9 +348,11 @@ def test_debounce_bucket_has_pending_and_wake_event() -> None:
     assert bucket.has_pending() is False
 
 
-def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event(tmp_path: Path) -> None:
+def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = Database(tmp_path / "index.sqlite")
-    indexer = MockIndexService(db=db)
+    indexer = RecordingIndexService(db=db)
     watch_dir = tmp_path / "watched"
     watch_dir.mkdir()
 
@@ -361,7 +370,7 @@ def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event
         stop_wait_calls += 1
         return orig_stop_wait(timeout)
 
-    watcher._stop_event.wait = counting_stop_wait
+    monkeypatch.setattr(watcher._stop_event, "wait", counting_stop_wait)
 
     thread = threading.Thread(target=watcher._debounce_loop, daemon=True)
     thread.start()
@@ -391,3 +400,125 @@ def test_watcher_debounce_loop_blocks_on_wake_event_when_idle_and_wakes_on_event
     watcher.stop()
     thread.join(timeout=1.0)
     assert not thread.is_alive()
+
+
+def test_selective_watches_skip_ignored_dirs_and_watch_new_subdirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify watcher schedules recursive=False only on eligible directories and handles new subdirs."""
+    watch_dir = tmp_path / "workspace"
+    (watch_dir / "docs" / "nested").mkdir(parents=True)
+    (watch_dir / "node_modules" / "pkg").mkdir(parents=True)
+    (watch_dir / ".git" / "objects").mkdir(parents=True)
+    (watch_dir / ".venv" / "lib").mkdir(parents=True)
+    (watch_dir / "ignored_custom" / "sub").mkdir(parents=True)
+
+    scheduled: list[tuple[str, bool, SemSearchEventHandler]] = []
+
+    class FakeObserver:
+        def schedule(self, handler: SemSearchEventHandler, path: str, *, recursive: bool = False) -> None:
+            scheduled.append((path, recursive, handler))
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    monkeypatch.setattr("semsearch.services.watcher.Observer", FakeObserver)
+
+    db = Database(tmp_path / "index.sqlite")
+    indexer = RecordingIndexService(db=db)
+    config = AppConfig(folders=[str(watch_dir)], excluded_folders=["ignored_custom"])
+    watcher = FileSystemWatcher(indexer, config)
+    watcher.start()
+
+    try:
+        watched_paths = {p for p, _rec, _h in scheduled}
+        assert all(rec is False for _p, rec, _h in scheduled)
+        assert str(watch_dir.resolve()) in watched_paths
+        assert str((watch_dir / "docs").resolve()) in watched_paths
+        assert str((watch_dir / "docs" / "nested").resolve()) in watched_paths
+        ignored_tokens = ("node_modules", ".git", ".venv", "ignored_custom")
+        assert not any(tok in p for p in watched_paths for tok in ignored_tokens)
+
+        # Dynamically created eligible directory tree gets watched
+        handler = scheduled[0][2]
+        new_sub = watch_dir / "fresh" / "deep"
+        new_sub.mkdir(parents=True)
+        handler.on_created(DirCreatedEvent(str(watch_dir / "fresh")))
+        assert str((watch_dir / "fresh").resolve()) in watcher._watched_dirs
+        assert str(new_sub.resolve()) in watcher._watched_dirs
+
+        # Dynamically created ignored directory is NOT watched
+        bad_dir = watch_dir / ".hidden_new"
+        bad_dir.mkdir()
+        handler.on_created(DirCreatedEvent(str(bad_dir)))
+        assert str(bad_dir.resolve()) not in watcher._watched_dirs
+    finally:
+        watcher.stop()
+
+
+def test_selective_watch_handles_inotify_oserror_gracefully(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify watcher catches OSError if kernel inotify watch limit is reached."""
+    watch_dir = tmp_path / "watched"
+    watch_dir.mkdir()
+
+    class FailingObserver:
+        def schedule(self, _handler: object, _path: str, *, recursive: bool = False) -> None:
+            del recursive
+            raise OSError("inotify watch limit reached")
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    monkeypatch.setattr("semsearch.services.watcher.Observer", FailingObserver)
+    db = Database(tmp_path / "index.sqlite")
+    watcher = FileSystemWatcher(RecordingIndexService(db=db), AppConfig(folders=[str(watch_dir)]))
+    watcher.start()
+    try:
+        assert len(watcher._watched_dirs) == 0
+    finally:
+        watcher.stop()
+
+
+def test_on_moved_unchanged_file_does_not_requeue_and_preserves_vectors(tmp_path: Path) -> None:
+    """Verify moving a file without modifying content updates DB path without re-enqueuing or losing vectors."""
+    db = Database(tmp_path / "index.sqlite")
+    bucket = DebounceBucket(quiet_window=0.75)
+    handler = SemSearchEventHandler(
+        root=str(tmp_path),
+        is_code=False,
+        bucket=bucket,
+        db=db,
+        config=AppConfig(),
+    )
+
+    old_file = tmp_path / "report.md"
+    old_file.write_text("Quarterly engineering review", encoding="utf-8")
+    st = old_file.stat()
+    fid = db.insert_file(Candidate(str(old_file), FileKind.DOC, st.st_size, st.st_mtime, st.st_ino, st.st_dev))
+    vec = float16_to_bytes(np.ones(DIM, dtype=np.float32))
+    db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, excerpt="review", vec=vec, body="Quarterly review")
+    db.update_file_state(fid, FileState.DONE)
+
+    new_file = tmp_path / "renamed_report.md"
+    old_file.rename(new_file)
+    handler.on_moved(FileMovedEvent(str(old_file), str(new_file)))
+
+    assert db.find_by_path(str(old_file)) is None
+    moved = db.find_by_path(str(new_file))
+    assert moved is not None
+    assert moved.id == fid
+    assert moved.state == FileState.DONE
+    assert str(new_file) not in bucket.paths
+    assert len(db.get_vector_snapshot().segment_ids) == 1

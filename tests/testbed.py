@@ -46,6 +46,20 @@ def create_synthetic_screenshot(path: Path) -> Path:
     return path
 
 
+def create_synthetic_svg(path: Path) -> Path:
+    """Generate a clean vector SVG graphic rasterizable by PyMuPDF."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">\n'
+        '  <rect x="0" y="0" width="240" height="160" rx="16" fill="#1e293b"/>\n'
+        '  <circle cx="80" cy="80" r="44" fill="#38bdf8"/>\n'
+        '  <polygon points="140,40 205,80 140,120" fill="#f59e0b"/>\n'
+        "</svg>\n"
+    )
+    path.write_text(svg, encoding="utf-8")
+    return path
+
+
 def create_synthetic_digital_pdf(path: Path) -> Path:
     """Generate a digital text PDF document containing over 200 characters."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +271,7 @@ def generate_testbed(target_dir: Path) -> dict[str, Path]:
     files: dict[str, Path] = {
         "photo_sunset": create_synthetic_image(images_dir / "photo_sunset.jpg"),
         "screenshot_code": create_synthetic_screenshot(images_dir / "screenshot_code.png"),
+        "vector_logo": create_synthetic_svg(images_dir / "vector_logo.svg"),
         "digital_report": create_synthetic_digital_pdf(pdfs_dir / "digital_report.pdf"),
         "scanned_diagram": create_synthetic_visual_pdf(pdfs_dir / "scanned_diagram.pdf"),
         "notes": create_synthetic_text_doc(docs_dir / "notes.txt"),

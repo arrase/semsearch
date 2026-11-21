@@ -1,87 +1,62 @@
 # desktop-gui Specification
 
 ## Purpose
-Provides desktop integration services including single-instance application locking, a dynamic system tray progress monitor, an onboarding wizard, multi-tab settings management, and global hotkey dispatching.
+Provides desktop application lifecycle services including secure single-instance locking and IPC, hybrid Wayland/X11 global hotkey dispatching, event-driven system tray progress monitoring, XDG-aware onboarding, reusable non-mutating settings widgets, clean resource shutdown, and lazy-loaded JSON internationalization.
 
 ## Requirements
 
-### Requirement: Single Instance Application Lock and IPC Invocation
-The desktop GUI MUST enforce a single running instance per user session via a local domain socket server. Launching `semsearch` without flags or with `--daemon` MUST anchor the application in the system tray and start background services without opening the quick search panel (unless onboarding is incomplete, which runs the wizard first), while `--panel` opens the search panel and `--settings` opens settings. Secondary processes MUST forward their command over the socket and exit with code zero.
+### Requirement: Secure Single-Instance Application Lock and AF_UNIX IPC
+`SemSearchApp` MUST register its desktop identity (`setDesktopFileName("semsearch")` and application SVG `QIcon`) and enforce a single running instance per user session inside an owner-private runtime directory (`$XDG_RUNTIME_DIR/semsearch`, fallback `/tmp/semsearch_<uid>`, mode `0o700`) using an exclusive non-blocking advisory lockfile (`instance.lock`, `fcntl.flock(LOCK_EX | LOCK_NB)`, mode `0o600`) and a local `AF_UNIX` socket (`ipc.sock`, `QLocalServer.SocketOption.UserAccessOption`, mode `0o600`). Secondary CLI invocations MUST forward commands (`TOGGLE`, `PANEL`, `SETTINGS`, `REINDEX`, `REINDEX_FORCE`, `DAEMON`) via Python `socket.AF_UNIX` (`forward_ipc_command()`) and exit with code `0`; the server MUST schedule accepted sockets for cleanup via `deleteLater()`.
 
-#### Scenario: Primary instance starts anchored in system tray without opening search panel
-- **WHEN** `semsearch` is launched without flags on an already onboarded installation
-- **THEN** the application displays the system tray icon, starts background indexing and the global hotkey listener, and keeps the quick search panel hidden until requested by the user
+#### Scenario: Preventing duplicate daemons and forwarding IPC commands
+- **WHEN** `semsearch --toggle`, `semsearch --panel`, `semsearch --settings`, or `semsearch reindex` runs while a primary instance holds `instance.lock`
+- **THEN** `forward_ipc_command()` sends the action over `ipc.sock` (`0o600`) and exits immediately, while the primary instance dispatches the action cleanly
 
-#### Scenario: Second instance activates running instance
-- **WHEN** a user executes `semsearch --panel` or `semsearch --settings` while an instance is already running
-- **THEN** the second instance transmits the command to the primary instance over the local socket and exits immediately
+### Requirement: Hybrid Global Hotkey Listener (Wayland XDG Portal + X11 pynput)
+`HotkeyListener` MUST support both Wayland and X11 desktop sessions:
+- On Wayland (`XDG_SESSION_TYPE=wayland` or `WAYLAND_DISPLAY` set), it MUST attempt registration via `PortalShortcutListener` using `org.freedesktop.portal.GlobalShortcuts` (`CreateSession`, `BindShortcuts`, `Activated` over `PySide6.QtDBus` with XDG trigger formatting such as `CTRL+SHIFT+space`).
+- On X11 (or when the portal is unavailable and `DISPLAY` is set), it MUST fall back to `pynput` `GlobalHotKeys` using `normalize_hotkey()` (mapping `super`/`meta`/`win`/`windows` -> `<cmd>`, `control` -> `<ctrl>`, `return` -> `<enter>`, `escape` -> `<esc>`).
+- `HotkeyListener` MUST expose `backend_name` (`"portal"`, `"pynput"`, `"none"`), `last_error`, and `status_changed` displayed live in **Settings → General**.
 
-#### Scenario: Primary instance activates search panel
-- **WHEN** the primary instance receives an IPC invocation message requesting the search panel
-- **THEN** the primary instance surfaces the quick search panel to the front and gives it keyboard focus
+#### Scenario: Wayland XDG GlobalShortcuts registration and X11 fallback
+- **WHEN** `HotkeyListener.start()` runs under Wayland with an available portal, versus under X11
+- **THEN** it binds via `org.freedesktop.portal.GlobalShortcuts` (`backend_name == "portal"`) on Wayland, falls back to `pynput` (`backend_name == "pynput"`) on X11, and reports any failure cleanly in Settings instead of silently ignoring errors
 
-### Requirement: System Tray Monitor with Dynamic Progress Ring
-The application MUST maintain an icon in the Linux system tray. While indexing is in progress, the tray icon MUST poll `index_service.get_status()` to render a circular progress ring reflecting live completion percentage. The tray manager MUST cache `_last_rendered_state` and skip icon painting, tooltip updates, and D-Bus updates when the polled state is unchanged. The tray icon MUST provide a context menu to toggle indexing pause/resume, open the quick search panel, open settings, and quit.
+### Requirement: Event-Driven System Tray and No-Tray Fallback
+`SystemTrayManager` MUST render HiDPI 128x128 (`devicePixelRatio = 2.0`) dynamic tray icons, cache `_last_rendered_state` to skip redundant repaints, stop `_poll_timer` when `EngineActivity.IDLE` (not paused) for zero idle polling, and resume polling immediately when `IndexService.add_work_listener` signals `_work_arrived` from background threads. When `QSystemTrayIcon.isSystemTrayAvailable()` is `False` and `--daemon` was not passed, `SemSearchApp.start()` MUST display the Quick Search Panel directly so the application remains usable on minimal window managers.
 
-#### Scenario: Visual progress ring during indexing
-- **WHEN** the indexing service is actively processing files
-- **THEN** the tray icon polls live status counts and displays a circular progress ring arc corresponding to the indexed fraction
+#### Scenario: Zero polling in IDLE and automatic wakeup on new work
+- **WHEN** `IndexService` transitions to `IDLE` and later receives a new file via `enqueue_file()`
+- **THEN** `SystemTrayManager` stops `_poll_timer` while `IDLE` and restarts it immediately upon receiving `_work_arrived`
 
-#### Scenario: Idle icon state when indexing completes
-- **WHEN** the indexing queue becomes empty and the engine transitions to idle
-- **THEN** the tray icon reverts to the static application brand emblem
+#### Scenario: Desktop session without system tray support
+- **WHEN** `SemSearchApp.start(daemon_mode=False)` launches on an onboarded environment where `QSystemTrayIcon.isSystemTrayAvailable()` is `False`
+- **THEN** the Quick Search Panel opens automatically instead of hiding invisibly
 
-#### Scenario: Pausing indexing from tray context menu
-- **WHEN** the user selects the "Pause Indexing" action in the tray context menu
-- **THEN** active indexing pauses immediately and the context menu item text updates to "Resume Indexing"
+### Requirement: XDG Onboarding Wizard and Clean Cancellation
+On first startup (`onboarded == False`), `OnboardingWizard` MUST discover existing XDG standard directories (`Documents`, `Pictures`, `Desktop`, `Downloads`) via `QStandardPaths.writableLocation(...)`, skipping missing or duplicate home-equivalent paths. If the user cancels or closes the onboarding wizard without accepting, `SemSearchApp.start()` MUST call `shutdown()` and exit cleanly without leaving a background process.
 
-#### Scenario: Suppressing redundant tray rendering and D-Bus updates when status is unchanged
-- **WHEN** `update_status()` is called repeatedly with an unchanged `EngineStatus` while waiting in the system tray
-- **THEN** `SystemTrayManager` skips `render_tray_icon()`, `setIcon()`, `setToolTip()`, and menu action text updates until the state changes or `retranslate_ui()` invalidates `_last_rendered_state`
+#### Scenario: Discovering localized XDG directories and cancelling onboarding cleanly
+- **WHEN** the onboarding wizard launches on a localized Linux desktop (e.g., `~/Documentos`, `~/Imágenes`) or the user cancels the wizard
+- **THEN** `discover_standard_folders()` presents only existing XDG directories, and cancelling terminates the application cleanly via `shutdown()`
 
-### Requirement: Multi-Tab Settings Configuration
-The settings interface MUST provide a dialog with four dedicated tabs: Folders, Code, Storage & Model, and General, with properly sized list views and spinbox controls. Saving settings MUST emit a notification that immediately updates the running application's configuration, file watcher descriptors, hotkeys, Ollama model settings, and background indexing queues.
+### Requirement: Reusable Non-Mutating Settings Widgets and Live Reconfiguration
+`OnboardingWizard` and `SettingsDialog` MUST share `FolderListEditor` and `OllamaModelPicker` (`gui/widgets.py`). `OllamaModelPicker` MUST test connections asynchronously (`OllamaConnectionWorker`) with a temporary closed `OllamaClient`, NEVER mutating the active shared `OllamaClient` before clicking **Save**, NEVER displaying a false `"✓ Connected"` claim upon opening Settings, and preserving the configured model selection. Saving Settings MUST apply language/RTL direction, `code_enabled` toggling (opening or closing `code.sqlite`), `ollama.base_url`/`num_ctx`, `search_service.model`, model fingerprint sync, `PowerScheduler.wake()`, watcher restart, hotkey listener restart, and folder crawl/orphan purge. **Optimize / Vacuum Database** MUST run asynchronously (`_VacuumWorker`) and **Re-index All Files** MUST invoke `reset_all_for_reindex()` followed by a full crawl.
 
-#### Scenario: Restricting model selection to multimodal embedding models
-- **WHEN** the user inspects the model dropdown in the Storage & Model tab
-- **THEN** the dropdown displays only models capable of multimodal embeddings and preserves the user's configured model selection
+#### Scenario: Testing an alternate Ollama host without mutating active services
+- **WHEN** a user enters a different Ollama URL in Settings and clicks **Test Connection** then **Cancel**
+- **THEN** the probe uses an isolated temporary `OllamaClient`, leaving the running daemon's `ollama.base_url`, active model, and index untouched
 
-#### Scenario: Selecting code editor preference
-- **WHEN** the user selects an editor in the Code settings tab
-- **THEN** the preference is saved and subsequent code search jumps invoke the selected editor
+### Requirement: Clean Graceful Shutdown of All Services and Resources
+`SemSearchApp.shutdown()` MUST unregister D-Bus desktop providers, stop `hotkey_listener`, `tray`, `scheduler`, `watcher`, and `index_service`, join any active crawl thread, shut down `panel` and `settings_dialog` (joining search/preview/vacuum workers), close `ollama`, `db`, and `code_db`, close/remove the IPC socket, release `instance.lock`, and quit the event loop.
 
-#### Scenario: Modifying searched directories
-- **WHEN** the user adds or removes a folder or exclusion in the Folders tab and saves
-- **THEN** the configuration file is updated, the file watcher updates its watch descriptors, and the indexing service re-synchronizes
+#### Scenario: Exiting SemSearch from tray or close event
+- **WHEN** `SemSearchApp.shutdown()` executes
+- **THEN** all worker threads, HTTP pools, SQLite connections, D-Bus registrations, and IPC sockets/locks are cleanly terminated and released
 
-### Requirement: Five-Step Initial Onboarding Wizard
-On first application startup where configuration indicates onboarding is incomplete, the application MUST launch a modal five-step wizard guiding the user through Welcome, Directory Selection, Ollama Multimodal Model Setup, Code Indexing Setup, and Completion with shortcut guidance.
+### Requirement: Lazy-Loaded JSON Internationalization (22 Locales + English)
+`semsearch.i18n` MUST load non-English translation catalogs lazily from `src/semsearch/i18n/locales/<lang>.json` (22 JSON files plus inline English for 23 supported languages, with RTL for `ar`, `fa`, `he`), caching only requested languages in `_loaded_catalogs`. `detect_system_language()` MUST inspect `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, and `LANG` in order, walking colon-separated `LANGUAGE` fallback lists (e.g., `ca:es:en`) until the first supported language matches before falling back to `LANG` / `locale.getlocale()` / `'en'`.
 
-#### Scenario: Launching onboarding on fresh installation
-- **WHEN** the application starts with `onboarded` set to false
-- **THEN** the five-step modal onboarding wizard displays automatically before the main tray or panel appears
-
-#### Scenario: Completing onboarding wizard
-- **WHEN** the user finishes the fifth step of the onboarding wizard
-- **THEN** the configuration is saved with `onboarded` set to true and initial directory crawling begins
-
-### Requirement: Global Desktop Hotkey Dispatching
-The application MUST capture the global shortcut Ctrl+Shift+Space across Linux X11 and Wayland sessions to toggle the visibility of the quick search panel.
-
-#### Scenario: Toggling search panel via global hotkey
-- **WHEN** the user presses Ctrl+Shift+Space anywhere in the desktop environment
-- **THEN** the quick search panel appears centered with keyboard focus if hidden, or dismisses if currently active
-
-### Requirement: Zero-Resource System Tray Idle Operation
-When the application is waiting in the system tray with no active indexing or search operations, it MUST NOT consume background CPU cycles, thread wakeups, SQLite queries, D-Bus updates, or retained UI preview memory unless strictly necessary.
-
-#### Scenario: Application idling in the system tray
-- **WHEN** the quick search panel is hidden and background indexing and filesystem debounce queues are empty
-- **THEN** worker threads remain blocked on events, no SQLite queries or D-Bus icon updates are emitted on unchanged tray ticks, and preview/result memory buffers are released
-
-### Requirement: Multimodal Preview Resource Release on Clear
-When `PreviewPane.clear()` is invoked, it MUST switch to the empty view and invoke `clear()` on `ImagePreviewWidget`, `PdfPreviewWidget`, `VideoPreviewWidget`, `AudioPreviewWidget`, and `CodePreviewWidget` to close open `pymupdf.Document` instances and release retained `QPixmap` buffers and editor text.
-
-#### Scenario: Releasing open PDF documents and pixmaps on preview clear
-- **WHEN** `PreviewPane.clear()` is called after previewing PDFs, images, videos, audio, or code files
-- **THEN** `PdfPreviewWidget` closes and clears `_doc` and `_rendered_pixmap`, `ImagePreviewWidget` and `VideoPreviewWidget` clear their `QPixmap` buffers, `AudioPreviewWidget` resets its path state, and `CodePreviewWidget` clears its editor text and extra selections
+#### Scenario: Lazy locale loading and colon-separated LANGUAGE fallback
+- **WHEN** `LANGUAGE="ca:es:en"` is set in the environment and `set_language("auto")` runs
+- **THEN** `detect_system_language()` resolves to `"es"` and `tr()` lazily loads and caches only `locales/es.json`

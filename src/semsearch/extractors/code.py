@@ -7,9 +7,18 @@ from pathlib import Path
 from semsearch.core.code_lookup import code_summary
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
+MAX_CODE_FILE_BYTES = 10 * 1024 * 1024
+
 DEFINITION_RE = re.compile(
     r"^\s*(?:async\s+)?(?:def|class|fn|function|func|pub\s+fn|struct|interface|type|trait|enum)\s+(\w+)"
 )
+
+
+def _read_bounded_text(path: str) -> str:
+    p = Path(path)
+    if p.stat().st_size > MAX_CODE_FILE_BYTES:
+        raise ValueError(f"Code file exceeds maximum safe size ({MAX_CODE_FILE_BYTES} bytes)")
+    return p.read_text(encoding="utf-8", errors="replace")
 
 
 def _find_focus(lines: list[str], start_line_num: int) -> int:
@@ -88,24 +97,42 @@ def _chunk_lines(lines: list[str], chunk_chars: int = 1800, overlap_lines: int =
 
 def extract_code(path: str, chunk_chars: int = 1800, overlap_lines: int = 2) -> list[ExtractedSegment]:
     """Extract code file into whole-line stretches with symbol definition detection."""
-    content = Path(path).read_text(encoding="utf-8", errors="replace")
+    content = _read_bounded_text(path)
     lines = content.splitlines(keepends=True)
     return _chunk_lines(lines, chunk_chars=chunk_chars, overlap_lines=overlap_lines)
 
 
-def _parse_notebook_cells(cells: list[dict[str, object]]) -> list[tuple[int, str]]:
+def _parse_notebook_cells(cells: list[object]) -> list[tuple[int, str]]:
     numbered_cells: list[tuple[int, str]] = []
     for idx, cell in enumerate(cells, start=1):
-        if cell.get("cell_type") not in ("code", "markdown"):
+        if not isinstance(cell, dict) or cell.get("cell_type") not in ("code", "markdown"):
             continue
-        source = cell.get("source", [])
-        cell_text = "".join(str(line) for line in source) if isinstance(source, list) else str(source)
+        source = cell.get("source")
+        if isinstance(source, list):
+            cell_text = "".join(str(line) for line in source)
+        elif isinstance(source, str):
+            cell_text = source
+        else:
+            continue
         if not cell_text.strip():
             continue
         if not cell_text.endswith("\n"):
             cell_text += "\n"
         numbered_cells.append((idx, cell_text))
     return numbered_cells
+
+
+def _load_notebook_cells(raw: str) -> list[tuple[int, str]]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    cells = data.get("cells")
+    if not isinstance(cells, list):
+        return []
+    return _parse_notebook_cells(cells)
 
 
 def _make_cells_segment(batch_texts: list[str], first_cell: int, last_cell: int) -> ExtractedSegment:
@@ -123,9 +150,8 @@ def _make_cells_segment(batch_texts: list[str], first_cell: int, last_cell: int)
 
 def extract_notebook(path: str, chunk_chars: int = 1800) -> list[ExtractedSegment]:
     """Extract code and markdown cells from Jupyter Notebook as 1-based CELLS segments, stripping outputs."""
-    raw = Path(path).read_text(encoding="utf-8", errors="replace")
-    data = json.loads(raw)
-    numbered_cells = _parse_notebook_cells(data.get("cells", []))
+    raw = _read_bounded_text(path)
+    numbered_cells = _load_notebook_cells(raw)
     if not numbered_cells:
         return []
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 ICONS_DIR = Path(__file__).parent / "icons"
 CHEVRON_ICON = ICONS_DIR / "chevron-down.svg"
@@ -21,7 +21,7 @@ class ThemeColors:
     BORDER_LIGHT = "rgba(255, 255, 255, 0.16)"
     TEXT_PRIMARY = "#F3F4F6"
     TEXT_SECONDARY = "#9CA3AF"
-    TEXT_MUTED = "#6B7280"
+    TEXT_MUTED = "#94A3B8"
     BRAND_START = "#6366F1"
     BRAND_END = "#8B5CF6"
     LEAF = "#10B981"
@@ -38,8 +38,8 @@ class ThemeLayout:
     PANEL_HEIGHT_EXPANDED = 480
     PANEL_RADIUS = 18
 
-    LIST_WIDTH = 330
-    PREVIEW_WIDTH = 418
+    LIST_WIDTH = 328
+    PREVIEW_WIDTH = 416
 
 
 FONT_FAMILY_UI = "Inter, Noto Sans, Ubuntu, sans-serif"
@@ -106,6 +106,11 @@ def build_qss() -> str:
         color: #FFFFFF;
     }}
 
+    QMenu::item:disabled {{
+        color: {ThemeColors.TEXT_MUTED};
+        background-color: transparent;
+    }}
+
     QMenu::separator {{
         height: 1px;
         background: {ThemeColors.BORDER};
@@ -132,8 +137,6 @@ def build_qss() -> str:
 
     QGroupBox::title {{
         subcontrol-origin: margin;
-        subcontrol-position: top left;
-        left: 12px;
         padding: 0 6px;
         color: {ThemeColors.TEXT_SECONDARY};
     }}
@@ -388,6 +391,6 @@ def build_qss() -> str:
     """
 
 
-def apply_theme(widget: QWidget) -> None:
-    """Apply standard QSS theme to a widget or window."""
-    widget.setStyleSheet(build_qss())
+def apply_theme(target: QWidget | QApplication) -> None:
+    """Apply standard QSS theme to a widget, window, or QApplication."""
+    target.setStyleSheet(build_qss())

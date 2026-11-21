@@ -8,6 +8,7 @@ from semsearch.services.actions import (
     open_file,
     open_media_at,
     open_pdf_at,
+    open_terminal_at,
     reveal_in_file_manager,
 )
 from semsearch.services.indexer import IndexQueueTier, IndexService
@@ -30,5 +31,6 @@ __all__ = [
     "open_file",
     "open_media_at",
     "open_pdf_at",
+    "open_terminal_at",
     "reveal_in_file_manager",
 ]

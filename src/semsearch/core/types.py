@@ -3,8 +3,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from semsearch.i18n import tr
-
 
 class FileKind(StrEnum):
     """File classification kind."""
@@ -30,7 +28,6 @@ class SegmentKind(StrEnum):
     FRAME = "frame"
     LINES = "lines"
     CELLS = "cells"
-    OCR = "ocr"
 
 
 class Modality(StrEnum):
@@ -61,6 +58,26 @@ class EngineActivity(StrEnum):
     FINISHING = "finishing"
     IDLE = "idle"
     PAUSED = "paused"
+
+
+class MatchReason(StrEnum):
+    """Explanation key for why a search hit matched."""
+
+    MEANING = "Matches meaning"
+    WORDS = "Matches words"
+    NAME = "Matches name"
+
+
+@dataclass(frozen=True)
+class ParsedQuery:
+    """Parsed user search query with extracted inline filters."""
+
+    clean_query: str
+    is_code: bool = False
+    kinds: frozenset[FileKind] = frozenset()
+    extensions: frozenset[str] = frozenset()
+    path_fragments: tuple[str, ...] = ()
+    after_mtime: float = 0.0
 
 
 @dataclass
@@ -129,13 +146,13 @@ class SearchHit:
     focus: float = 0.0
 
     @property
-    def reason(self) -> str:
-        """Human-readable explanation for why this hit matched."""
+    def reason(self) -> MatchReason:
+        """Human-readable explanation key for why this hit matched."""
         if self.z >= SEMANTIC_Z_GATE:
-            return tr("Matches meaning")
+            return MatchReason.MEANING
         if self.keyword_rank > 0:
-            return tr("Matches words")
-        return tr("Matches name")
+            return MatchReason.WORDS
+        return MatchReason.NAME
 
 
 @dataclass

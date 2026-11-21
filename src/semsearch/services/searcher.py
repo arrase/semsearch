@@ -1,4 +1,4 @@
-"""Search engine with dual-query routing, hybrid DigUp ranking, and desktop gating."""
+"""Search engine with dual-query routing, hybrid BM25 + Z-score ranking, and inline filters."""
 
 import re
 from collections.abc import Iterator
@@ -13,7 +13,7 @@ from semsearch.core.code_lookup import (
     find_first_line_with_words,
     identifier_phrase,
 )
-from semsearch.core.database import Database, FtsMatchRow
+from semsearch.core.database import Database, FtsMatchRow, SegmentMeta
 from semsearch.core.ollama import (
     OllamaClient,
     OllamaError,
@@ -23,18 +23,21 @@ from semsearch.core.ollama import (
 from semsearch.core.search_text import (
     _fold_latin_diacritics,
     extract_kind_hints,
+    extract_snippet,
     extract_terms,
     is_lookup_query,
     make_fts_patterns,
+    parse_query_filters,
 )
 from semsearch.core.types import (
     SEMANTIC_Z_GATE,
     FileKind,
     FileRecord,
+    ParsedQuery,
     SearchHit,
     SegmentKind,
 )
-from semsearch.core.vectors import cosine_similarity, z_score_normalize
+from semsearch.core.vectors import cosine_similarity_unit, z_score_normalize
 
 _STRONG_DEFINITION = 2
 _MIN_WORD_LEN = 2
@@ -42,6 +45,27 @@ _MIN_WILDCARD_TERM_LEN = 3
 _MAX_FTS_WORD_FILES = 200
 _COVERAGE_SEMANTIC_Z_FLOOR = 1.5
 _MIN_COVERAGE_GATE = 0.5
+_BM25_RANK_SCALE = 10.0
+_BM25_WEIGHT_FACTOR = 0.5
+_MIN_LEXICAL_LIMIT = 100
+_LEXICAL_OVERFETCH_FACTOR = 4
+
+
+def _resolve_hit_snippet(
+    default_snippet: str,
+    segment_id: int,
+    keyword: tuple[int, FtsMatchRow] | None,
+    terms: list[str] | None,
+) -> str:
+    if keyword is None or keyword[1]["segment_id"] != segment_id:
+        return default_snippet
+    row = keyword[1]
+    source_text = row["original"] or row["body"]
+    refined = extract_snippet(source_text, terms) if terms and source_text else None
+    raw_snip = refined or row["snippet"]
+    if raw_snip and "«" in raw_snip:
+        return raw_snip
+    return default_snippet
 
 
 @dataclass
@@ -194,15 +218,53 @@ class SearchService:
 
         return segment_id, 0.0, 0
 
-    def _resolve_target_db_and_query(self, stripped: str, *, is_code: bool) -> tuple[Database | None, str, bool]:
-        is_code_prefix = stripped.lower().startswith("code:")
-        effective_code = is_code or is_code_prefix
+    def _resolve_target_db(self, parsed: ParsedQuery, *, is_code: bool) -> tuple[Database | None, bool]:
+        effective_code = is_code or parsed.is_code
         if effective_code:
-            clean_query = stripped[5:].strip() if is_code_prefix else stripped
-            if self.code_db is None or not clean_query:
-                return None, "", True
-            return self.code_db, clean_query, True
-        return self.db, stripped, False
+            if self.code_db is None:
+                return None, True
+            return self.code_db, True
+        return self.db, False
+
+    @staticmethod
+    def _has_inline_filters(parsed: ParsedQuery) -> bool:
+        return bool(parsed.kinds or parsed.extensions or parsed.path_fragments or parsed.after_mtime > 0.0)
+
+    @staticmethod
+    def _combine_kinds(kinds: set[FileKind] | None, parsed_kinds: frozenset[FileKind]) -> set[FileKind] | None:
+        if kinds is not None and parsed_kinds:
+            return set(kinds) & set(parsed_kinds)
+        if parsed_kinds:
+            return set(parsed_kinds)
+        return set(kinds) if kinds is not None else None
+
+    @staticmethod
+    def _matches_filters(
+        f_rec: FileRecord,
+        *,
+        parsed: ParsedQuery,
+        kinds: set[FileKind] | None,
+    ) -> bool:
+        if kinds is not None and f_rec.kind not in kinds:
+            return False
+        if parsed.extensions and Path(f_rec.path).suffix.lstrip(".").lower() not in parsed.extensions:
+            return False
+        if parsed.path_fragments:
+            path_lower = f_rec.path.lower()
+            if not all(frag.lower() in path_lower for frag in parsed.path_fragments):
+                return False
+        return not (parsed.after_mtime > 0.0 and f_rec.mtime < parsed.after_mtime)
+
+    def _filter_records(
+        self,
+        records: dict[int, FileRecord],
+        *,
+        parsed: ParsedQuery,
+        kinds: set[FileKind] | None,
+    ) -> dict[int, FileRecord]:
+        return {
+            fid: f_rec for fid, f_rec in records.items() if self._matches_filters(f_rec, parsed=parsed, kinds=kinds)
+        }
 
     @staticmethod
     def _parse_search_terms(
@@ -211,6 +273,8 @@ class SearchService:
         *,
         is_code: bool,
     ) -> tuple[list[str], bool]:
+        if not clean_query:
+            return [], False
         extracted_terms = extract_terms(clean_query)
         pure_kind_query = not extracted_terms and bool(hinted_kinds) and not is_code
         if extracted_terms:
@@ -228,7 +292,7 @@ class SearchService:
         is_code: bool,
     ) -> dict[int, tuple[float, float, int]]:
         best: dict[int, tuple[float, float, int]] = {}
-        if self.ollama is None:
+        if self.ollama is None or not clean_query:
             return best
         prompt = format_code_query_prompt(clean_query) if is_code else format_query_prompt(clean_query)
         try:
@@ -238,18 +302,25 @@ class SearchService:
         if not embeddings:
             return best
 
-        query_vec = np.array(embeddings[0], dtype=np.float32)
-        seg_ids, file_ids, modalities, mat, sets_scale = target_db.get_all_vectors_with_scale()
-        if len(seg_ids) == 0 or mat.shape[0] == 0:
+        snap = target_db.get_vector_snapshot()
+        if snap.segment_ids.size == 0 or snap.matrix.shape[0] == 0:
             return best
 
-        cosines = cosine_similarity(query_vec, mat)
-        z_scores = z_score_normalize(cosines, modalities, sets_scale=sets_scale)
-        for seg_id, f_id, cos, z in zip(seg_ids, file_ids, cosines, z_scores, strict=False):
-            z_val = float(z)
-            cos_val = float(cos)
-            if f_id not in best or z_val > best[f_id][0]:
-                best[f_id] = (z_val, cos_val, seg_id)
+        query_vec = np.array(embeddings[0], dtype=np.float32)
+        if query_vec.shape[0] != snap.matrix.shape[1]:
+            return best
+
+        cosines = cosine_similarity_unit(query_vec, snap.matrix)
+        z_scores = z_score_normalize(cosines, snap.modality_codes, sets_scale=snap.scale_mask)
+        for seg_id, f_id, cos, z in zip(
+            snap.segment_ids.tolist(),
+            snap.file_ids.tolist(),
+            cosines.tolist(),
+            z_scores.tolist(),
+            strict=False,
+        ):
+            if f_id not in best or z > best[f_id][0]:
+                best[f_id] = (z, cos, seg_id)
         return best
 
     @staticmethod
@@ -283,7 +354,7 @@ class SearchService:
         if not patterns:
             return {}, {}
 
-        fts_rows = target_db.fts_search(" OR ".join(patterns), limit=1000, terms=terms)
+        fts_rows = target_db.fts_search(" OR ".join(patterns), limit=1000, terms=None)
         words: list[FtsMatchRow] = []
         seen_files: set[int] = set()
         for r in fts_rows:
@@ -372,7 +443,7 @@ class SearchService:
         keyword: tuple[int, FtsMatchRow] | None,
         *,
         is_code: bool,
-        pure_kind_query: bool,
+        pure_listing: bool,
         resolved_code_places: dict[int, tuple[int, float, int]],
     ) -> tuple[int | None, float]:
         if is_code and fid in resolved_code_places:
@@ -380,70 +451,100 @@ class SearchService:
             return seg_id, focus_line
 
         segment_id = self._select_segment_id(semantic, keyword)
-        if segment_id is None and pure_kind_query:
+        if segment_id is None and pure_listing:
             file_segs = target_db.get_file_segments(fid)
             if file_segs:
                 segment_id = file_segs[0][0]
         return segment_id, 0.0
 
-    def _assemble_hit(
-        self,
-        target_db: Database,
-        fid: int,
+    @staticmethod
+    def _build_hit(
         f_rec: FileRecord,
         score: float,
+        seg_meta: SegmentMeta | None,
         *,
         semantic: tuple[float, float, int] | None,
         keyword: tuple[int, FtsMatchRow] | None,
-        is_code: bool,
-        pure_kind_query: bool,
-        resolved_code_places: dict[int, tuple[int, float, int]],
-    ) -> SearchHit | None:
-        segment_id, focus_line = self._resolve_hit_segment(
-            target_db,
-            fid,
-            semantic,
-            keyword,
-            is_code=is_code,
-            pure_kind_query=pure_kind_query,
-            resolved_code_places=resolved_code_places,
-        )
-        if segment_id is None:
-            return None
+        focus_line: float,
+        terms: list[str] | None,
+    ) -> SearchHit:
+        if seg_meta is not None:
+            s_kind = seg_meta.kind
+            s_id = seg_meta.id
+            s_loc = seg_meta.loc
+            s_loc_end = seg_meta.loc_end
+            base_snippet = seg_meta.excerpt
+            seg_focus = seg_meta.focus
+        else:
+            s_kind = SegmentKind.NAME
+            s_id = 0
+            s_loc = 0.0
+            s_loc_end = 0.0
+            base_snippet = ""
+            seg_focus = 0.0
 
-        seg_meta = target_db.get_segment(segment_id)
-        s_kind, s_loc, s_loc_end, s_excerpt = seg_meta or (SegmentKind.NAME, 0.0, 0.0, "")
-
-        snippet = s_excerpt
-        if keyword and keyword[1]["segment_id"] == segment_id:
-            raw_snip = keyword[1]["snippet"]
-            if raw_snip and "«" in raw_snip:
-                snippet = raw_snip
+        snippet = _resolve_hit_snippet(base_snippet, s_id, keyword, terms)
+        effective_focus = seg_focus if focus_line <= 0.0 and seg_focus > 0.0 else focus_line
+        z, cosine = (semantic[0], semantic[1]) if semantic is not None else (0.0, 0.0)
+        keyword_rank = keyword[0] if keyword is not None else 0
 
         return SearchHit(
             path=f_rec.path,
             kind=f_rec.kind,
             score=score,
-            z=semantic[0] if semantic else 0.0,
-            cosine=semantic[1] if semantic else 0.0,
-            keyword_rank=keyword[0] if keyword else 0,
+            z=z,
+            cosine=cosine,
+            keyword_rank=keyword_rank,
             segment=s_kind,
-            segment_id=segment_id,
+            segment_id=s_id,
             loc=s_loc,
             loc_end=s_loc_end,
             excerpt=snippet,
             modified=f_rec.mtime,
             size=f_rec.size,
             info=f_rec.info,
-            focus=focus_line,
+            focus=effective_focus,
         )
+
+    def _assemble_hit_list(
+        self,
+        fids: list[int],
+        file_records: dict[int, FileRecord],
+        scored: dict[int, float],
+        resolved_segs: dict[int, tuple[int | None, float]],
+        seg_metas: dict[int, SegmentMeta],
+        *,
+        best: dict[int, tuple[float, float, int]],
+        word_rank: dict[int, tuple[int, FtsMatchRow]],
+        terms: list[str] | None,
+        pure_listing: bool,
+    ) -> list[SearchHit]:
+        hits: list[SearchHit] = []
+        for fid in fids:
+            seg_id, focus_line = resolved_segs[fid]
+            if seg_id is None and not pure_listing:
+                continue
+            seg_meta = seg_metas.get(seg_id) if seg_id is not None else None
+            if seg_id is not None and seg_meta is None:
+                continue
+            hits.append(
+                self._build_hit(
+                    file_records[fid],
+                    scored[fid],
+                    seg_meta,
+                    semantic=best.get(fid),
+                    keyword=word_rank.get(fid),
+                    focus_line=focus_line,
+                    terms=terms,
+                )
+            )
+        return hits
 
     def _score_candidates(
         self,
         target_db: Database,
-        candidates: set[int],
+        file_records: dict[int, FileRecord],
         *,
-        kinds: set[FileKind] | None,
         best: dict[int, tuple[float, float, int]],
         coverage: dict[int, float],
         word_rank: dict[int, tuple[int, FtsMatchRow]],
@@ -452,24 +553,25 @@ class SearchService:
         identifier: list[str] | None,
         clean_query: str,
         is_code: bool,
-    ) -> tuple[dict[int, float], dict[int, FileRecord], dict[int, tuple[int, float, int]]]:
+    ) -> tuple[dict[int, float], dict[int, tuple[int, float, int]]]:
         is_lookup = (identifier is not None) or is_lookup_query(clean_query, terms=terms)
         word_weight = 1.0 if is_code else 2.0
         meaning_weight, words_weight = (0.5, word_weight * 2.0) if is_lookup else (1.0, word_weight)
         scored: dict[int, float] = {}
-        file_records: dict[int, FileRecord] = {}
         resolved_code_places: dict[int, tuple[int, float, int]] = {}
         folded_terms = [_fold_latin_diacritics(t) for t in terms if _fold_latin_diacritics(t)]
 
-        for fid in candidates:
-            f_rec = target_db.find_by_id(fid)
-            if f_rec is None or (kinds is not None and f_rec.kind not in kinds):
-                continue
-            file_records[fid] = f_rec
-
+        for fid, f_rec in file_records.items():
             sem = best.get(fid)
+            keyword = word_rank.get(fid)
             z_val = sem[0] if sem else 0.0
             cov_val = coverage.get(fid, 0.0)
+            cov_factor = cov_val**1.5
+            bm25_bonus = (
+                (words_weight * _BM25_WEIGHT_FACTOR * cov_factor) / (1.0 + (keyword[0] - 1) / _BM25_RANK_SCALE)
+                if keyword is not None
+                else 0.0
+            )
             kind_bonus = 1.0 if f_rec.kind in hinted_kinds else 0.0
             name_bonus = self._compute_name_bonus(f_rec.path, folded_terms, cov_val)
             def_bonus = (
@@ -477,7 +579,7 @@ class SearchService:
                     target_db,
                     f_rec,
                     sem,
-                    word_rank.get(fid),
+                    keyword,
                     identifier=identifier,
                     clean_query=clean_query,
                     terms=terms,
@@ -487,9 +589,172 @@ class SearchService:
                 else 0.0
             )
             scored[fid] = (
-                meaning_weight * max(z_val, 0.0) + words_weight * (cov_val**1.5) + kind_bonus + name_bonus + def_bonus
+                meaning_weight * max(z_val, 0.0)
+                + words_weight * cov_factor
+                + bm25_bonus
+                + kind_bonus
+                + name_bonus
+                + def_bonus
             )
-        return scored, file_records, resolved_code_places
+        return scored, resolved_code_places
+
+    def _run_pure_filter_search(
+        self,
+        target_db: Database,
+        parsed: ParsedQuery,
+        effective_kinds: set[FileKind] | None,
+        limit: int,
+    ) -> ResultSet:
+        all_records = {f_rec.id: f_rec for f_rec in target_db.find_all_files()}
+        file_records = self._filter_records(all_records, parsed=parsed, kinds=effective_kinds)
+        if not file_records:
+            return ResultSet()
+
+        sorted_fids = sorted(file_records.keys(), key=lambda fid: file_records[fid].mtime, reverse=True)[:limit]
+        scored = dict.fromkeys(sorted_fids, 1.0)
+        resolved_segs = {
+            fid: self._resolve_hit_segment(
+                target_db,
+                fid,
+                None,
+                None,
+                is_code=False,
+                pure_listing=True,
+                resolved_code_places={},
+            )
+            for fid in sorted_fids
+        }
+        seg_metas = target_db.get_segments_by_ids(seg_id for seg_id, _ in resolved_segs.values() if seg_id is not None)
+        ranked = self._assemble_hit_list(
+            sorted_fids,
+            file_records,
+            scored,
+            resolved_segs,
+            seg_metas,
+            best={},
+            word_rank={},
+            terms=None,
+            pure_listing=True,
+        )
+        return ResultSet(ranked=ranked)
+
+    def _prepare_query(
+        self,
+        query: str,
+        *,
+        is_code: bool,
+        kinds: set[FileKind] | None = None,
+    ) -> tuple[Database, ParsedQuery, bool, set[FileKind] | None] | None:
+        stripped = query.strip()
+        if not stripped:
+            return None
+        parsed = parse_query_filters(stripped)
+        target_db, effective_code = self._resolve_target_db(parsed, is_code=is_code)
+        if target_db is None or (not parsed.clean_query and not self._has_inline_filters(parsed)):
+            return None
+        effective_kinds = self._combine_kinds(kinds, parsed.kinds)
+        if effective_kinds is not None and not effective_kinds:
+            return None
+        return target_db, parsed, effective_code, effective_kinds
+
+    def lexical_search(self, query: str, limit: int = 50, *, is_code: bool = False) -> ResultSet:
+        """Execute fast SQLite FTS5 lexical search supporting inline filters without Ollama calls."""
+        prepared = self._prepare_query(query, is_code=is_code)
+        if prepared is None:
+            return ResultSet()
+
+        target_db, parsed, _, effective_kinds = prepared
+        if not parsed.clean_query:
+            return self._run_pure_filter_search(target_db, parsed, effective_kinds, limit)
+
+        fts_limit = max(limit * _LEXICAL_OVERFETCH_FACTOR, _MIN_LEXICAL_LIMIT)
+        fts_rows = target_db.fts_search(parsed.clean_query, limit=fts_limit, terms=None)
+        best_rows: dict[int, FtsMatchRow] = {}
+        for row in fts_rows:
+            fid = row["file_id"]
+            if fid is not None and fid not in best_rows:
+                best_rows[fid] = row
+
+        records = self._filter_records(target_db.find_by_ids(best_rows.keys()), parsed=parsed, kinds=effective_kinds)
+        matched_fids = [fid for fid in best_rows if fid in records][:limit]
+        if not matched_fids:
+            return ResultSet()
+
+        seg_metas = target_db.get_segments_by_ids(best_rows[fid]["segment_id"] for fid in matched_fids)
+        terms = extract_terms(parsed.clean_query)
+        hits = [
+            self._build_hit(
+                records[fid],
+                max(float(-best_rows[fid]["rank"]), 0.001),
+                seg_metas.get(best_rows[fid]["segment_id"]),
+                semantic=None,
+                keyword=(rank_idx, best_rows[fid]),
+                focus_line=0.0,
+                terms=terms or None,
+            )
+            for rank_idx, fid in enumerate(matched_fids, start=1)
+        ]
+        return ResultSet(ranked=hits)
+
+    def _partition_and_assemble(
+        self,
+        target_db: Database,
+        file_records: dict[int, FileRecord],
+        scored: dict[int, float],
+        *,
+        best: dict[int, tuple[float, float, int]],
+        word_rank: dict[int, tuple[int, FtsMatchRow]],
+        terms: list[str],
+        is_code: bool,
+        pure_kind_query: bool,
+        resolved_code_places: dict[int, tuple[int, float, int]],
+        limit: int,
+    ) -> ResultSet:
+        sorted_files = sorted(
+            scored.keys(),
+            key=lambda fid: (scored[fid], file_records[fid].mtime),
+            reverse=True,
+        )
+        threshold = 0.5 * scored[sorted_files[0]]
+        ranked_fids = [fid for fid in sorted_files if scored[fid] >= threshold][:limit]
+        weaker_fids = [fid for fid in sorted_files if scored[fid] < threshold]
+
+        resolved_segs = {
+            fid: self._resolve_hit_segment(
+                target_db,
+                fid,
+                best.get(fid),
+                word_rank.get(fid),
+                is_code=is_code,
+                pure_listing=pure_kind_query,
+                resolved_code_places=resolved_code_places,
+            )
+            for fid in ranked_fids + weaker_fids
+        }
+        seg_metas = target_db.get_segments_by_ids(seg_id for seg_id, _ in resolved_segs.values() if seg_id is not None)
+        ranked = self._assemble_hit_list(
+            ranked_fids,
+            file_records,
+            scored,
+            resolved_segs,
+            seg_metas,
+            best=best,
+            word_rank=word_rank,
+            terms=terms or None,
+            pure_listing=pure_kind_query,
+        )
+        weaker = self._assemble_hit_list(
+            weaker_fids,
+            file_records,
+            scored,
+            resolved_segs,
+            seg_metas,
+            best=best,
+            word_rank=word_rank,
+            terms=None,
+            pure_listing=pure_kind_query,
+        )
+        return ResultSet(ranked=ranked, weaker=weaker)
 
     def search(
         self,
@@ -500,23 +765,21 @@ class SearchService:
         prefix_last: bool = False,
         kinds: set[FileKind] | None = None,
     ) -> ResultSet:
-        """Execute hybrid search with dual query routing, Z-score fusion, gating, and folding."""
-        stripped = query.strip()
-        if not stripped:
+        """Execute hybrid search with inline filters, BM25 + Z-score fusion, gating, and folding."""
+        prepared = self._prepare_query(query, is_code=is_code, kinds=kinds)
+        if prepared is None:
             return ResultSet()
 
-        target_db, clean_query, is_code = self._resolve_target_db_and_query(stripped, is_code=is_code)
-        if target_db is None:
-            return ResultSet()
+        target_db, parsed, effective_code, effective_kinds = prepared
+        if not parsed.clean_query:
+            return self._run_pure_filter_search(target_db, parsed, effective_kinds, limit)
 
+        clean_query = parsed.clean_query
         hinted_kinds = extract_kind_hints(clean_query)
-        terms, pure_kind_query = self._parse_search_terms(clean_query, hinted_kinds, is_code=is_code)
-        identifier = extract_identifier(clean_query) if is_code else None
+        terms, pure_kind_query = self._parse_search_terms(clean_query, hinted_kinds, is_code=effective_code)
+        identifier = extract_identifier(clean_query) if effective_code else None
 
-        # 1. Vector Search
-        best = self._vector_search(target_db, clean_query, is_code=is_code)
-
-        # 2. Keyword Search
+        best = self._vector_search(target_db, clean_query, is_code=effective_code)
         word_rank, coverage = self._keyword_search(
             target_db,
             terms,
@@ -525,7 +788,6 @@ class SearchService:
             best=best,
         )
 
-        # 3. Quality Gating & Score Fusion
         candidates = self._collect_candidates(
             target_db,
             best,
@@ -533,13 +795,17 @@ class SearchService:
             hinted_kinds,
             pure_kind_query=pure_kind_query,
         )
-        if not candidates:
+        file_records = (
+            self._filter_records(target_db.find_by_ids(candidates), parsed=parsed, kinds=effective_kinds)
+            if candidates
+            else {}
+        )
+        if not file_records:
             return ResultSet()
 
-        scored, file_records, resolved_code_places = self._score_candidates(
+        scored, resolved_code_places = self._score_candidates(
             target_db,
-            candidates,
-            kinds=kinds,
+            file_records,
             best=best,
             coverage=coverage,
             word_rank=word_rank,
@@ -547,39 +813,20 @@ class SearchService:
             terms=terms,
             identifier=identifier,
             clean_query=clean_query,
-            is_code=is_code,
+            is_code=effective_code,
         )
         if not scored:
             return ResultSet()
 
-        # 4. Result Hit Assembly
-        sorted_files = sorted(
-            scored.keys(),
-            key=lambda fid: (scored[fid], file_records[fid].mtime),
-            reverse=True,
+        return self._partition_and_assemble(
+            target_db,
+            file_records,
+            scored,
+            best=best,
+            word_rank=word_rank,
+            terms=terms,
+            is_code=effective_code,
+            pure_kind_query=pure_kind_query,
+            resolved_code_places=resolved_code_places,
+            limit=limit,
         )
-        hits = [
-            hit
-            for fid in sorted_files
-            if (
-                hit := self._assemble_hit(
-                    target_db,
-                    fid,
-                    file_records[fid],
-                    scored[fid],
-                    semantic=best.get(fid),
-                    keyword=word_rank.get(fid),
-                    is_code=is_code,
-                    pure_kind_query=pure_kind_query,
-                    resolved_code_places=resolved_code_places,
-                )
-            )
-            is not None
-        ]
-        if not hits:
-            return ResultSet()
-
-        threshold = 0.5 * hits[0].score
-        ranked = [h for h in hits if h.score >= threshold][:limit]
-        weaker = [h for h in hits if h.score < threshold]
-        return ResultSet(ranked=ranked, weaker=weaker)

@@ -1,6 +1,8 @@
 """Unit tests for the synthetic testbed generator."""
 
 import ast
+import base64
+import io
 import json
 import wave
 from pathlib import Path
@@ -10,7 +12,8 @@ import pymupdf as fitz
 from PIL import Image
 
 from semsearch.core.search_text import has_words
-from semsearch.core.types import SegmentKind
+from semsearch.core.types import Modality, SegmentKind
+from semsearch.extractors.images import extract_image
 from semsearch.extractors.media import extract_audio, extract_video
 from semsearch.extractors.pdfs import extract_pdf
 from tests.testbed import (
@@ -21,6 +24,7 @@ from tests.testbed import (
     create_synthetic_markdown_doc,
     create_synthetic_notebook,
     create_synthetic_screenshot,
+    create_synthetic_svg,
     create_synthetic_text_doc,
     create_synthetic_video,
     create_synthetic_visual_pdf,
@@ -43,6 +47,17 @@ def test_synthetic_images(tmp_path: Path) -> None:
         assert img.format == "PNG"
         assert img.size == (1280, 720)
         assert img.mode == "RGBA"
+
+    svg_path = create_synthetic_svg(tmp_path / "images" / "vector_logo.svg")
+    assert svg_path.is_file()
+    seg = extract_image(str(svg_path))
+    assert seg.kind == SegmentKind.IMAGE
+    assert seg.modality == Modality.IMAGE
+    assert isinstance(seg.payload, dict)
+    raw_png = base64.b64decode(seg.payload["image"])
+    with Image.open(io.BytesIO(raw_png)) as rasterized:
+        assert rasterized.format == "PNG"
+        assert rasterized.size == (240, 160)
 
 
 def test_synthetic_pdfs(tmp_path: Path) -> None:
@@ -136,7 +151,7 @@ def test_synthetic_code_and_notebook(tmp_path: Path) -> None:
 def test_generate_testbed_end_to_end(tmp_path: Path) -> None:
     testbed_dir = tmp_path / "testbed"
     files = generate_testbed(testbed_dir)
-    assert len(files) == 11
+    assert len(files) == 12
     for key, path in files.items():
         assert path.is_file(), f"File {key} at {path} should exist"
         assert path.stat().st_size > 0

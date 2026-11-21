@@ -1,13 +1,15 @@
-"""Unit tests for image and screenshot extractor (zero OCR)."""
+"""Unit tests for image, SVG, and screenshot extractor (zero OCR)."""
 
 import base64
 import io
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from semsearch.core.types import Modality, SegmentKind
-from semsearch.extractors.images import extract_image
+from semsearch.extractors import images as images_mod
+from semsearch.extractors.images import MAX_IMAGE_PIXELS, extract_image
 
 
 def test_extract_standard_image_downscaling(tmp_path: Path) -> None:
@@ -84,3 +86,54 @@ def test_zero_ocr_invariant() -> None:
     forbidden = ["tesseract", "pytesseract", "easyocr", "paddleocr"]
     for word in forbidden:
         assert word not in images_code.lower()
+
+
+def test_extract_svg_rasterization(tmp_path: Path) -> None:
+    svg_large = tmp_path / "diagram.svg"
+    svg_large.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000">'
+        '<rect width="2000" height="1000" fill="#224466"/>'
+        '<circle cx="1000" cy="500" r="250" fill="#ffaa00"/>'
+        "</svg>",
+        encoding="utf-8",
+    )
+
+    seg = extract_image(str(svg_large), is_screenshot=False)
+    assert seg.kind == SegmentKind.IMAGE
+    assert seg.modality == Modality.IMAGE
+    assert isinstance(seg.payload, dict)
+    raw_png = base64.b64decode(seg.payload["image"])
+    with Image.open(io.BytesIO(raw_png)) as im:
+        assert im.format == "PNG"
+        assert im.size == (1024, 512)
+
+    seg_shot = extract_image(str(svg_large), is_screenshot=True)
+    assert isinstance(seg_shot.payload, dict)
+    with Image.open(io.BytesIO(base64.b64decode(seg_shot.payload["image"]))) as im:
+        assert im.format == "PNG"
+        assert im.size == (1536, 768)
+
+    svg_small = tmp_path / "icon.SVG"
+    svg_small.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+        '<rect width="200" height="100" fill="#339966"/>'
+        "</svg>",
+        encoding="utf-8",
+    )
+    seg_small = extract_image(str(svg_small), is_screenshot=False)
+    assert isinstance(seg_small.payload, dict)
+    with Image.open(io.BytesIO(base64.b64decode(seg_small.payload["image"]))) as im:
+        assert im.format == "PNG"
+        assert im.size == (200, 100)
+
+
+def test_extract_raster_pixel_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_IMAGE_PIXELS == 100_000_000
+    assert Image.MAX_IMAGE_PIXELS == 100_000_000
+
+    img_path = tmp_path / "dense.png"
+    Image.new("RGB", (100, 100), color=(10, 20, 30)).save(img_path, format="PNG")
+    monkeypatch.setattr(images_mod, "MAX_IMAGE_PIXELS", 5_000)
+
+    with pytest.raises(ValueError, match="maximum safe pixel count"):
+        extract_image(str(img_path))

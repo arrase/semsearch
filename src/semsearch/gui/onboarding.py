@@ -2,18 +2,14 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QStandardPaths, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFileDialog,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QListWidget,
-    QPushButton,
     QVBoxLayout,
     QWidget,
     QWizard,
@@ -24,7 +20,33 @@ from semsearch.config import ConfigManager
 from semsearch.core.ollama import OllamaClient
 from semsearch.gui.settings import EDITOR_OPTIONS
 from semsearch.gui.theme import ThemeColors, apply_theme, get_ui_font
+from semsearch.gui.widgets import DEFAULT_MODEL, FolderListEditor, OllamaModelPicker
 from semsearch.i18n import tr
+
+_STANDARD_LOCATIONS: tuple[tuple[str, QStandardPaths.StandardLocation, bool], ...] = (
+    ("Documents", QStandardPaths.StandardLocation.DocumentsLocation, True),
+    ("Pictures", QStandardPaths.StandardLocation.PicturesLocation, True),
+    ("Desktop", QStandardPaths.StandardLocation.DesktopLocation, False),
+    ("Downloads", QStandardPaths.StandardLocation.DownloadLocation, False),
+)
+
+
+def discover_standard_folders() -> list[tuple[str, Path, bool]]:
+    """Discover existing XDG standard directories via QStandardPaths with deduplication."""
+    home = Path.home().resolve()
+    seen: set[Path] = set()
+    discovered: list[tuple[str, Path, bool]] = []
+    for name, location, default_checked in _STANDARD_LOCATIONS:
+        raw = QStandardPaths.writableLocation(location)
+        candidate = Path(raw) if raw else (home / name)
+        if not candidate.is_dir():
+            continue
+        resolved = candidate.resolve()
+        if resolved == home or resolved in seen:
+            continue
+        seen.add(resolved)
+        discovered.append((name, resolved, default_checked))
+    return discovered
 
 
 class WelcomePage(QWizardPage):
@@ -71,7 +93,7 @@ class WelcomePage(QWizardPage):
 
 
 class FoldersPage(QWizardPage):
-    """Step 2: Common folder checkboxes and crawl time estimate."""
+    """Step 2: XDG standard folder checkboxes, custom folders, and crawl time estimate."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,35 +104,24 @@ class FoldersPage(QWizardPage):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        home = Path.home()
         self.folder_checkboxes: dict[str, QCheckBox] = {}
-        standard_dirs = [
-            ("Documents", home / "Documents"),
-            ("Pictures", home / "Pictures"),
-            ("Desktop", home / "Desktop"),
-            ("Downloads", home / "Downloads"),
-        ]
-
-        for name, path in standard_dirs:
+        for name, path, default_checked in discover_standard_folders():
             cb = QCheckBox(f"{tr(name)} ({path})")
-            cb.setChecked(name in ("Documents", "Pictures"))
+            cb.setChecked(default_checked)
             cb.toggled.connect(self._update_estimate)
             layout.addWidget(cb)
             self.folder_checkboxes[str(path)] = cb
 
-        self.custom_list = QListWidget()
-        btn_row = QHBoxLayout()
-        add_btn = QPushButton(tr("Add Another Folder..."))
-        add_btn.clicked.connect(self._add_custom_folder)
-        remove_btn = QPushButton(tr("Remove Selected"))
-        remove_btn.clicked.connect(self._remove_custom_folder)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row.addStretch()
+        self.custom_editor = FolderListEditor(
+            tr("Add Another Folder..."),
+            tr("Remove Selected"),
+            tr("Select Folder"),
+        )
+        self.custom_list = self.custom_editor.list_widget
+        self.custom_editor.folders_changed.connect(self._update_estimate)
 
         layout.addWidget(QLabel(tr("Custom Folders:")))
-        layout.addWidget(self.custom_list)
-        layout.addLayout(btn_row)
+        layout.addWidget(self.custom_editor)
 
         self.estimate_label = QLabel()
         self.estimate_label.setFont(get_ui_font(11))
@@ -119,33 +130,28 @@ class FoldersPage(QWizardPage):
 
         self._update_estimate()
 
-    def _add_custom_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, tr("Select Folder"))
-        if folder:
-            self.custom_list.addItem(folder)
-            self._update_estimate()
-
-    def _remove_custom_folder(self) -> None:
-        row = self.custom_list.currentRow()
-        if row >= 0:
-            self.custom_list.takeItem(row)
-            self._update_estimate()
-
     def _update_estimate(self) -> None:
         selected_count = sum(1 for cb in self.folder_checkboxes.values() if cb.isChecked()) + self.custom_list.count()
         est_seconds = max(10, selected_count * 20)
         self.estimate_label.setText(tr("Estimated initial crawl time: ~{seconds} seconds", seconds=est_seconds))
 
     def get_selected_folders(self) -> list[str]:
-        folders: list[str] = [path for path, cb in self.folder_checkboxes.items() if cb.isChecked()]
-        folders.extend(self.custom_list.item(i).text() for i in range(self.custom_list.count()))
-        return folders
+        """Return deduplicated list of checked standard folders and custom folders."""
+        folders = [path for path, cb in self.folder_checkboxes.items() if cb.isChecked()]
+        folders.extend(self.custom_editor.get_folders())
+        return list(dict.fromkeys(folders))
 
 
 class ModelPage(QWizardPage):
     """Step 3: Ollama connection test and verified multimodal model selection."""
 
-    def __init__(self, ollama_client: OllamaClient, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        ollama_client: OllamaClient,
+        initial_url: str = "http://localhost:11434",
+        initial_model: str = DEFAULT_MODEL,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.ollama = ollama_client
         self.setTitle(tr("Multimodal Embedding Model"))
@@ -155,25 +161,17 @@ class ModelPage(QWizardPage):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        form = QFormLayout()
-        url_row = QHBoxLayout()
-        self.url_edit = QLineEdit("http://localhost:11434")
-        self.test_btn = QPushButton(tr("Test Connection"))
-        self.test_btn.clicked.connect(self.test_connection)
-        url_row.addWidget(self.url_edit, stretch=1)
-        url_row.addWidget(self.test_btn)
+        self.ollama_picker = OllamaModelPicker(default_url=initial_url)
+        self.ollama_picker.set_configured_model(
+            initial_model,
+            hint_text=tr("Click 'Test Connection' to discover installed multimodal models."),
+        )
+        self.url_edit = self.ollama_picker.url_edit
+        self.test_btn = self.ollama_picker.test_btn
+        self.model_combo = self.ollama_picker.model_combo
+        self.status_label = self.ollama_picker.status_label
 
-        self.model_combo = QComboBox()
-        self.model_combo.addItem("embeddinggemma-2")
-
-        form.addRow(tr("Ollama Host URL:"), url_row)
-        form.addRow(tr("Multimodal Model:"), self.model_combo)
-        layout.addLayout(form)
-
-        self.status_label = QLabel(tr("Click 'Test Connection' to discover installed multimodal models."))
-        self.status_label.setFont(get_ui_font(11))
-        self.status_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
-        layout.addWidget(self.status_label)
+        layout.addWidget(self.ollama_picker)
 
         tip_label = QLabel(
             tr("Default model 'embeddinggemma-2' provides high accuracy for text, documents, and visual items.")
@@ -185,28 +183,8 @@ class ModelPage(QWizardPage):
         layout.addStretch()
 
     def test_connection(self) -> None:
-        """Query Ollama and filter dropdown strictly to verified multimodal models."""
-        self.ollama.base_url = self.url_edit.text().strip()
-        try:
-            models = self.ollama.list_multimodal_models()
-            self.model_combo.clear()
-            if models:
-                for m in models:
-                    self.model_combo.addItem(m)
-                idx = self.model_combo.findText("embeddinggemma-2")
-                if idx >= 0:
-                    self.model_combo.setCurrentIndex(idx)
-                self.status_label.setText(
-                    tr("✓ Ollama connected ({count} multimodal models available)", count=len(models))
-                )
-                self.status_label.setStyleSheet(f"color: {ThemeColors.LEAF};")
-            else:
-                self.model_combo.addItem("embeddinggemma-2")
-                self.status_label.setText(tr("⚠ Ollama connected. Please ensure 'embeddinggemma-2' is pulled."))
-                self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
-        except Exception as e:  # noqa: BLE001 — GUI connection test boundary displays error message instead of crashing wizard
-            self.status_label.setText(tr("⚠ Connection failed: {error}", error=e))
-            self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
+        """Probe Ollama host without mutating the shared OllamaClient."""
+        self.ollama_picker.test_connection()
 
 
 class CodePage(QWizardPage):
@@ -214,7 +192,7 @@ class CodePage(QWizardPage):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setTitle(tr("Developer && Code Search"))
+        self.setTitle(tr("Developer && Code Search").replace("&&", "&"))
         self.setSubTitle(tr("Optional symbol indexing for source code projects."))
 
         layout = QVBoxLayout(self)
@@ -231,15 +209,12 @@ class CodePage(QWizardPage):
         code_layout.setContentsMargins(0, 0, 0, 0)
         code_layout.setSpacing(8)
 
-        self.repos_list = QListWidget()
-        btn_row = QHBoxLayout()
-        add_btn = QPushButton(tr("Add Code Root..."))
-        add_btn.clicked.connect(self._add_repo)
-        remove_btn = QPushButton(tr("Remove Selected"))
-        remove_btn.clicked.connect(self._remove_repo)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row.addStretch()
+        self.repos_editor = FolderListEditor(
+            tr("Add Code Root..."),
+            tr("Remove Selected"),
+            tr("Select Code Root Directory"),
+        )
+        self.repos_list = self.repos_editor.list_widget
 
         editor_row = QHBoxLayout()
         self.editor_combo = QComboBox()
@@ -249,8 +224,7 @@ class CodePage(QWizardPage):
         editor_row.addWidget(self.editor_combo, stretch=1)
 
         code_layout.addWidget(QLabel(tr("Git Repositories / Code Folders:")))
-        code_layout.addWidget(self.repos_list)
-        code_layout.addLayout(btn_row)
+        code_layout.addWidget(self.repos_editor)
         code_layout.addLayout(editor_row)
 
         self.code_container.setEnabled(False)
@@ -260,18 +234,9 @@ class CodePage(QWizardPage):
     def _on_toggle_code(self) -> None:
         self.code_container.setEnabled(self.code_enable_check.isChecked())
 
-    def _add_repo(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, tr("Select Code Root Directory"))
-        if folder:
-            self.repos_list.addItem(folder)
-
-    def _remove_repo(self) -> None:
-        row = self.repos_list.currentRow()
-        if row >= 0:
-            self.repos_list.takeItem(row)
-
     def get_code_folders(self) -> list[str]:
-        return [self.repos_list.item(i).text() for i in range(self.repos_list.count())]
+        """Return configured code root directories."""
+        return self.repos_editor.get_folders()
 
 
 class CompletionPage(QWizardPage):
@@ -297,7 +262,7 @@ class CompletionPage(QWizardPage):
         hotkey_layout.setSpacing(6)
 
         title = QLabel(tr("Global Keyboard Shortcut"))
-        title.setFont(get_ui_font(13, get_ui_font().weight()))
+        title.setFont(get_ui_font(13))
         title.setStyleSheet("border: none; background: transparent;")
 
         shortcut_label = QLabel(tr("Press  Ctrl + Shift + Space  anytime to open Quick Search"))
@@ -332,13 +297,14 @@ class OnboardingWizard(QWizard):
         super().__init__(parent)
         self.config_manager = config_manager
         self.ollama = ollama_client
+        cfg = self.config_manager.config
 
         self.setWindowTitle(tr("SemSearch Setup"))
         self.resize(580, 460)
 
         self.welcome_page = WelcomePage()
         self.folders_page = FoldersPage()
-        self.model_page = ModelPage(self.ollama)
+        self.model_page = ModelPage(self.ollama, initial_url=cfg.ollama_url, initial_model=cfg.model)
         self.code_page = CodePage()
         self.completion_page = CompletionPage()
 
@@ -354,25 +320,30 @@ class OnboardingWizard(QWizard):
         """Persist configuration with onboarded=True and notify caller to start indexing."""
         cfg = self.config_manager.config
 
-        # 1. Folders
         selected_folders = self.folders_page.get_selected_folders()
         if selected_folders:
             cfg.folders = selected_folders
 
-        # 2. Model
-        cfg.ollama_url = self.model_page.url_edit.text().strip()
-        model_name = self.model_page.model_combo.currentText().strip()
+        cfg.ollama_url = self.model_page.ollama_picker.url()
+        model_name = self.model_page.ollama_picker.selected_model()
         if model_name:
             cfg.model = model_name
+        self.ollama.base_url = cfg.ollama_url
 
-        # 3. Code
         cfg.code_enabled = self.code_page.code_enable_check.isChecked()
         cfg.code_folders = self.code_page.get_code_folders()
         cfg.code_editor = self.code_page.editor_combo.currentData()
 
-        # 4. Mark onboarded
         cfg.onboarded = True
         self.config_manager.save()
 
         self.indexing_started.emit()
         super().accept()
+
+    def done(self, result: int) -> None:
+        self.model_page.ollama_picker.shutdown()
+        super().done(result)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.model_page.ollama_picker.shutdown()
+        super().closeEvent(event)

@@ -21,15 +21,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
+          enable-cache: true
 
-      - name: Install project and pip-audit
-        run: pip install . pip-audit
+      - name: Export locked requirements
+        run: uv export --frozen --no-dev --no-emit-project --quiet --output-file requirements.lock.txt
 
-      - name: Audit installed dependencies
-        run: pip-audit --skip-editable
+      - name: Audit locked dependencies
+        run: uvx pip-audit --requirement requirements.lock.txt --disable-pip
 
   dependency-review:
     name: Dependency review

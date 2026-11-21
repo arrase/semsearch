@@ -2,6 +2,7 @@
 
 import base64
 import io
+import math
 import subprocess
 import tempfile
 import wave
@@ -11,6 +12,32 @@ import numpy as np
 from PIL import Image
 
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
+
+_MAX_MEDIA_DURATION_SEC = "3600"
+_FFMPEG_TIMEOUT_SEC = 60
+_FFPROBE_TIMEOUT_SEC = 10
+
+
+def probe_media_duration(path: str) -> float:
+    """Probe media duration in seconds using ffprobe, returning 0.0 on failure."""
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=_FFPROBE_TIMEOUT_SEC)
+        if proc.returncode != 0:
+            return 0.0
+        duration = float(proc.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return 0.0
+    return duration if math.isfinite(duration) and duration > 0.0 else 0.0
 
 
 def average_hash(im: Image.Image, hash_size: int = 8) -> int:
@@ -39,10 +66,13 @@ def extract_audio(
     """Decode audio to 16 kHz mono WAV, slice into windows, and filter silence."""
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-loglevel",
         "quiet",
         "-i",
         path,
+        "-t",
+        _MAX_MEDIA_DURATION_SEC,
         "-vn",
         "-ac",
         "1",
@@ -52,7 +82,7 @@ def extract_audio(
         "s16le",
         "pipe:1",
     ]
-    proc = subprocess.run(cmd, capture_output=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, check=False, timeout=_FFMPEG_TIMEOUT_SEC)
     raw_bytes = proc.stdout
 
     if not raw_bytes:
@@ -113,17 +143,20 @@ def extract_video(
     with tempfile.TemporaryDirectory() as tmp_dir:
         cmd = [
             "ffmpeg",
+            "-nostdin",
             "-loglevel",
             "quiet",
             "-i",
             path,
+            "-t",
+            _MAX_MEDIA_DURATION_SEC,
             "-vf",
             f"fps=1/{sample_interval_sec},scale='min(1024,iw)':-2",
             "-q:v",
             "2",
             str(Path(tmp_dir) / "frame_%05d.jpg"),
         ]
-        subprocess.run(cmd, capture_output=True, check=False)
+        subprocess.run(cmd, capture_output=True, check=False, timeout=_FFMPEG_TIMEOUT_SEC)
 
         frame_files = sorted(Path(tmp_dir).glob("frame_*.jpg"))
         prev_hash: int | None = None

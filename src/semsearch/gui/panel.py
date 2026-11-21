@@ -2,11 +2,13 @@
 
 import contextlib
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
+from PySide6.QtCore import QEvent, QMimeData, QObject, QSignalBlocker, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QColor, QCursor, QDrag, QFont, QKeyEvent, QScreen
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QFrame,
     QHBoxLayout,
@@ -14,14 +16,13 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QVBoxLayout,
     QWidget,
 )
 
 from semsearch.config import AppConfig
-from semsearch.core.database import Database, FtsMatchRow
 from semsearch.core.ollama import OllamaError
-from semsearch.core.search_text import extract_terms, make_fts_patterns
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import PreviewPane, format_tilde_path
 from semsearch.gui.theme import ThemeColors, ThemeLayout, apply_theme, get_ui_font
@@ -30,7 +31,9 @@ from semsearch.gui.worker import SearchWorker
 from semsearch.i18n import tr
 from semsearch.services.actions import (
     copy_file_to_clipboard,
+    copy_to_clipboard,
     execute_hit_action,
+    open_terminal_at,
     reveal_in_file_manager,
 )
 from semsearch.services.searcher import ResultSet, SearchService
@@ -45,6 +48,12 @@ KIND_GROUP_NAMES = {
     FileKind.CODE: "Code",
 }
 
+_FOOTER_HINT_KEY = "↵ Open    Shift+↵ Show in Files    Ctrl+C Copy    Tab Actions    Esc Dismiss"
+_PDF_PREVIEW_INDEX = 2
+_PAGE_NAV_STEP = 5
+_SCREEN_VERTICAL_MARGIN = 40
+_WORKER_SHUTDOWN_WAIT_MS = 1500
+
 
 def format_hit_place_badge(hit: SearchHit) -> str:
     """Format a compact location badge (page, timestamp, or line) for a search hit."""
@@ -58,6 +67,37 @@ def format_hit_place_badge(hit: SearchHit) -> str:
         if line > 0:
             return f"L{line}"
     return ""
+
+
+class DraggableResultList(QListWidget):
+    """Search result list supporting drag-and-drop via local file URLs."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    @staticmethod
+    def build_mime_data(item: QListWidgetItem) -> QMimeData | None:
+        """Build QMimeData with a local file URL when item holds a SearchHit."""
+        hit = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(hit, SearchHit):
+            return None
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(hit.path)])
+        mime.setText(hit.path)
+        return mime
+
+    def startDrag(self, _supported_actions: Qt.DropAction) -> None:
+        """Initiate a QDrag carrying the selected hit's local file URL."""
+        if self.currentRow() < 0:
+            return
+        mime = self.build_mime_data(self.currentItem())
+        if mime is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 class ResultItemWidget(QWidget):
@@ -98,12 +138,23 @@ class ResultItemWidget(QWidget):
             )
             top_row.addWidget(self.place_badge)
 
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(6)
+
         self.path_label = ElidedLabel(format_tilde_path(str(Path(hit.path).parent)))
         self.path_label.setFont(get_ui_font(10))
         self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
 
+        self.reason_label = QLabel(tr(hit.reason))
+        self.reason_label.setFont(get_ui_font(9))
+        self.reason_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+
+        bottom_row.addWidget(self.path_label, stretch=1)
+        bottom_row.addWidget(self.reason_label)
+
         text_layout.addLayout(top_row)
-        text_layout.addWidget(self.path_label)
+        text_layout.addLayout(bottom_row)
 
         layout.addWidget(self.icon_label)
         layout.addLayout(text_layout, stretch=1)
@@ -139,6 +190,7 @@ class SearchPanel(QWidget):
 
         self.is_expanded = False
         self.weaker_expanded = False
+        self._menu_open = False
         self._current_result_set: ResultSet = ResultSet()
         self._last_query = ""
         self._worker: SearchWorker | None = None
@@ -151,7 +203,7 @@ class SearchPanel(QWidget):
         self._semantic_timer.timeout.connect(self._trigger_async_semantic_search)
 
         self._build_ui()
-        self._set_geometry_collapsed()
+        self._set_geometry_collapsed(force=True)
         apply_theme(self)
 
     def _build_ui(self) -> None:
@@ -225,20 +277,18 @@ class SearchPanel(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        self.result_list = QListWidget()
+        self.result_list = DraggableResultList()
         self.result_list.setObjectName("panelResultList")
         self.result_list.setFixedWidth(ThemeLayout.LIST_WIDTH)
         self.result_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.result_list.setStyleSheet(
-            f"QListWidget#panelResultList {{ border-right: 1px solid {ThemeColors.BORDER}; padding: 4px 6px; }}"
-        )
+        self._apply_list_border_style()
         self.result_list.currentItemChanged.connect(self._on_selection_changed)
         self.result_list.itemClicked.connect(self._on_item_clicked)
         self.result_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.result_list.installEventFilter(self)
 
-        self.preview_pane = PreviewPane()
-        self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH - 2)
+        self.preview_pane = PreviewPane(config=self.config)
+        self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH)
         self.preview_pane.action_triggered.connect(self.hide_panel)
 
         content_layout.addWidget(self.result_list)
@@ -254,7 +304,7 @@ class SearchPanel(QWidget):
         )
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(12, 0, 12, 0)
-        self.footer_hint = QLabel(tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"))
+        self.footer_hint = QLabel(tr(_FOOTER_HINT_KEY))
         self.footer_hint.setFont(get_ui_font(10))
         self.footer_hint.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
         footer_layout.addWidget(self.footer_hint)
@@ -263,33 +313,74 @@ class SearchPanel(QWidget):
         content_outer.addWidget(footer)
         return content_widget
 
+    def _is_rtl_layout(self) -> bool:
+        return self.layoutDirection() == Qt.LayoutDirection.RightToLeft
+
+    def _apply_list_border_style(self) -> None:
+        edge = "border-left" if self._is_rtl_layout() else "border-right"
+        self.result_list.setStyleSheet(
+            f"QListWidget#panelResultList {{ {edge}: 1px solid {ThemeColors.BORDER}; padding: 4px 6px; }}"
+        )
+
+    def _update_status_badge(self) -> None:
+        if not self._last_query:
+            self.status_badge.setText("")
+            return
+        if self._semantic_timer.isActive() or self._worker is not None:
+            self.status_badge.setText(tr("Searching…"))
+            return
+        total = len(self._current_result_set.ranked) + len(self._current_result_set.weaker)
+        self.status_badge.setText(
+            tr("{count} matches", count=len(self._current_result_set.ranked)) if total > 0 else tr("No matches")
+        )
+
     def retranslate_ui(self) -> None:
-        """Refresh translated panel strings."""
+        """Refresh translated panel strings, status badge, and RTL border direction."""
+        self._apply_list_border_style()
         self.search_input.setPlaceholderText(tr("Search files, documents, code, media... (prefix 'code:' for source)"))
-        self.footer_hint.setText(tr("↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss"))
+        self.footer_hint.setText(tr(_FOOTER_HINT_KEY))
+        self._update_status_badge()
         self.preview_pane.retranslate_ui()
         if self._current_result_set.ranked or self._current_result_set.weaker:
             self._populate_list(self._current_result_set)
 
-    def _set_geometry_collapsed(self) -> None:
+    def _set_geometry_collapsed(self, *, force: bool = False) -> None:
+        if not force and not self.is_expanded:
+            return
         self.is_expanded = False
         self.content_widget.setVisible(False)
-        self.setFixedSize(ThemeLayout.PANEL_WIDTH, ThemeLayout.PANEL_HEIGHT_COLLAPSED)
-        self._reposition_to_top_third()
+        target_height = ThemeLayout.PANEL_HEIGHT_COLLAPSED
+        self.setFixedSize(ThemeLayout.PANEL_WIDTH, target_height)
+        self._reposition_to_top_third(target_height)
 
-    def _set_geometry_expanded(self) -> None:
+    @staticmethod
+    def _active_screen() -> QScreen | None:
+        return QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+
+    def _set_geometry_expanded(self, *, force: bool = False) -> None:
+        if not force and self.is_expanded:
+            return
         self.is_expanded = True
         self.content_widget.setVisible(True)
-        self.setFixedSize(ThemeLayout.PANEL_WIDTH, ThemeLayout.PANEL_HEIGHT_EXPANDED)
-        self._reposition_to_top_third()
+        screen = self._active_screen()
+        target_height = (
+            min(ThemeLayout.PANEL_HEIGHT_EXPANDED, screen.availableGeometry().height() - _SCREEN_VERTICAL_MARGIN)
+            if screen is not None
+            else ThemeLayout.PANEL_HEIGHT_EXPANDED
+        )
+        self.setFixedSize(ThemeLayout.PANEL_WIDTH, target_height)
+        self._reposition_to_top_third(target_height)
 
-    def _reposition_to_top_third(self) -> None:
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.availableGeometry()
-            x = geo.x() + (geo.width() - ThemeLayout.PANEL_WIDTH) // 2
-            y = geo.y() + int(geo.height() * 0.16)
-            self.move(x, y)
+    def _reposition_to_top_third(self, target_height: int | None = None) -> None:
+        screen = self._active_screen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        height = self.height() if target_height is None else target_height
+        x = geo.x() + (geo.width() - ThemeLayout.PANEL_WIDTH) // 2
+        y = geo.y() + int(geo.height() * 0.16)
+        y = max(geo.y(), min(y, geo.y() + geo.height() - height))
+        self.move(x, y)
 
     def _cleanup_worker(self, worker: SearchWorker) -> None:
         self._active_workers.discard(worker)
@@ -301,16 +392,26 @@ class SearchPanel(QWidget):
         self._semantic_timer.stop()
         for worker in self._active_workers:
             worker.stop()
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker.wait(50)
-            self._worker = None
+        self._worker = None
+
+    def shutdown(self) -> None:
+        """Stop timers, wait for all active search workers, and shut down preview pane."""
+        self._semantic_timer.stop()
+        workers = list(self._active_workers)
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            worker.wait(_WORKER_SHUTDOWN_WAIT_MS)
+        self._active_workers.clear()
+        self._worker = None
+        self.preview_pane.shutdown()
 
     def _on_query_text_changed(self, text: str) -> None:
         stripped = text.strip()
         self._last_query = stripped
         if not stripped:
             self._stop_workers()
+            self._current_result_set = ResultSet()
             self.status_badge.setText("")
             self.result_list.clear()
             self.preview_pane.clear()
@@ -321,56 +422,12 @@ class SearchPanel(QWidget):
         self._execute_instant_lexical(stripped)
         self._semantic_timer.start(120)
 
-    @staticmethod
-    def _fts_rows_to_hits(fts_rows: list[FtsMatchRow], target_db: Database) -> list[SearchHit]:
-        best_by_file: dict[int, SearchHit] = {}
-        for r in fts_rows:
-            raw_fid = r["file_id"]
-            if raw_fid is None:
-                continue
-            fid = int(raw_fid)
-            score = float(-r["rank"])
-            if fid in best_by_file and best_by_file[fid].score >= score:
-                continue
-            file_rec = target_db.find_by_id(fid)
-            if not file_rec:
-                continue
-            raw_size = getattr(file_rec, "size", 0)
-            raw_mtime = getattr(file_rec, "mtime", 0.0)
-            best_by_file[fid] = SearchHit(
-                path=file_rec.path,
-                kind=file_rec.kind,
-                score=score,
-                excerpt=r["snippet"] or r["excerpt"],
-                keyword_rank=max(1, int(score)) if score > 0 else 0,
-                segment_id=r["segment_id"],
-                loc=r["loc"],
-                size=raw_size if isinstance(raw_size, int) else 0,
-                modified=float(raw_mtime) if isinstance(raw_mtime, (int, float)) else 0.0,
-            )
-        return list(best_by_file.values())
-
     def _execute_instant_lexical(self, query: str) -> None:
-        """Run fast keyword match against SQLite index, deduplicating by file_id."""
-        is_code = query.lower().startswith("code:")
-        target_db = self.search_service.code_db if is_code and self.search_service.code_db else self.search_service.db
-        clean_q = query[5:].strip() if is_code else query
-
-        fts_rows = target_db.fts_search(clean_q, limit=50)
-        if not fts_rows:
-            terms = extract_terms(clean_q)
-            if terms:
-                fts_q = " OR ".join(make_fts_patterns(terms, prefix_last=True))
-                fts_rows = target_db.fts_search(fts_q, limit=50)
-
-        hits = self._fts_rows_to_hits(fts_rows, target_db)
-        if hits:
-            hits.sort(key=lambda h: h.score, reverse=True)
-            threshold = 0.5 * hits[0].score
-            ranked = [h for h in hits if h.score >= threshold]
-            weaker = [h for h in hits if h.score < threshold]
-            self._current_result_set = ResultSet(ranked=ranked, weaker=weaker)
-            self._populate_list(self._current_result_set)
+        """Run fast keyword match via SearchService without direct SQLite access."""
+        result_set = self.search_service.lexical_search(query, limit=50)
+        if result_set.ranked or result_set.weaker:
+            self._current_result_set = result_set
+            self._populate_list(result_set)
             self._set_geometry_expanded()
         else:
             self.result_list.clear()
@@ -410,13 +467,37 @@ class SearchPanel(QWidget):
             self.preview_pane.clear()
             self._set_geometry_collapsed()
 
-    def _populate_list(self, result_set: ResultSet) -> None:
-        self.result_list.clear()
+    def _current_hit(self) -> SearchHit | None:
+        if self.result_list.currentRow() < 0:
+            return None
+        hit = self.result_list.currentItem().data(Qt.ItemDataRole.UserRole)
+        return hit if isinstance(hit, SearchHit) else None
 
+    def _add_hit_item(self, hit: SearchHit) -> QListWidgetItem:
+        name = Path(hit.path).name
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 50))
+        item.setData(Qt.ItemDataRole.UserRole, hit)
+        item.setData(Qt.ItemDataRole.AccessibleTextRole, f"{name} — {tr(hit.reason)}")
+        widget = ResultItemWidget(hit)
+        self.result_list.addItem(item)
+        self.result_list.setItemWidget(item, widget)
+        return item
+
+    def _add_hit_items(self, hits: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
+        matched_item: QListWidgetItem | None = None
+        for hit in hits:
+            item = self._add_hit_item(hit)
+            if matched_item is None and hit.path == selected_path:
+                matched_item = item
+        return matched_item
+
+    def _add_ranked_groups(self, ranked: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
         grouped: dict[FileKind, list[SearchHit]] = {}
-        for hit in result_set.ranked:
+        for hit in ranked:
             grouped.setdefault(hit.kind, []).append(hit)
 
+        restored_item: QListWidgetItem | None = None
         for kind, hits in grouped.items():
             header_item = QListWidgetItem(tr(KIND_GROUP_NAMES.get(kind, "Other")).upper())
             header_item.setFont(get_ui_font(10, QFont.Weight.Bold))
@@ -425,34 +506,49 @@ class SearchPanel(QWidget):
             header_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 24))
             self.result_list.addItem(header_item)
 
-            for hit in hits:
-                item = QListWidgetItem()
-                item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 50))
-                item.setData(Qt.ItemDataRole.UserRole, hit)
-                widget = ResultItemWidget(hit)
-                self.result_list.addItem(item)
-                self.result_list.setItemWidget(item, widget)
+            group_match = self._add_hit_items(hits, selected_path)
+            if restored_item is None:
+                restored_item = group_match
+        return restored_item
 
+    def _add_weaker_section(self, weaker: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
+        collapsed_arrow = "◂" if self._is_rtl_layout() else "▸"
+        arrow = "▾" if self.weaker_expanded else collapsed_arrow
+        toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(weaker))
+        toggle_item = QListWidgetItem(toggle_text)
+        toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
+        toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
+        toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
+        toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
+        self.result_list.addItem(toggle_item)
+        if not self.weaker_expanded:
+            return None
+        return self._add_hit_items(weaker, selected_path)
+
+    def _populate_list(self, result_set: ResultSet) -> None:
+        selected_hit = self._current_hit()
+        selected_path = selected_hit.path if selected_hit is not None else None
+
+        self.result_list.clear()
+
+        restored_item = self._add_ranked_groups(result_set.ranked, selected_path)
         if result_set.weaker:
-            arrow = "▾" if self.weaker_expanded else "▸"
-            toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(result_set.weaker))
-            toggle_item = QListWidgetItem(toggle_text)
-            toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
-            toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
-            toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
-            toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
-            self.result_list.addItem(toggle_item)
+            weaker_match = self._add_weaker_section(result_set.weaker, selected_path)
+            if restored_item is None:
+                restored_item = weaker_match
 
-            if self.weaker_expanded:
-                for hit in result_set.weaker:
-                    item = QListWidgetItem()
-                    item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 50))
-                    item.setData(Qt.ItemDataRole.UserRole, hit)
-                    widget = ResultItemWidget(hit)
-                    self.result_list.addItem(item)
-                    self.result_list.setItemWidget(item, widget)
+        if restored_item is not None:
+            self.result_list.setCurrentItem(restored_item)
+        else:
+            self._select_first_result()
 
-        self._select_first_result()
+    def _selectable_rows(self) -> list[int]:
+        rows: list[int] = []
+        for idx in range(self.result_list.count()):
+            item = self.result_list.item(idx)
+            if item.data(Qt.ItemDataRole.UserRole) is not None or item.data(Qt.ItemDataRole.UserRole + 1) == "toggle":
+                rows.append(idx)
+        return rows
 
     def _select_first_result(self) -> None:
         for idx in range(self.result_list.count()):
@@ -460,6 +556,11 @@ class SearchPanel(QWidget):
             if item.data(Qt.ItemDataRole.UserRole) is not None:
                 self.result_list.setCurrentItem(item)
                 break
+
+    def _select_boundary_result(self, *, last: bool) -> None:
+        rows = self._selectable_rows()
+        if rows:
+            self.result_list.setCurrentRow(rows[-1] if last else rows[0])
 
     def _on_selection_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is None:
@@ -479,13 +580,76 @@ class SearchPanel(QWidget):
             execute_hit_action(hit, self.config)
             self.hide_panel()
 
-    def _handle_key_press(self, key_event: QKeyEvent) -> bool:
-        key = key_event.key()
-        modifiers = key_event.modifiers()
+    def _build_quick_actions_menu(self, hit: SearchHit) -> QMenu:
+        menu = QMenu(tr("Quick Actions"), self)
 
+        open_action = menu.addAction(tr("Open"))
+        open_action.triggered.connect(lambda: self._run_and_hide(lambda: execute_hit_action(hit, self.config)))
+
+        reveal_action = menu.addAction(tr("Show in Files"))
+        reveal_action.triggered.connect(lambda: self._run_and_hide(lambda: reveal_in_file_manager(hit.path)))
+
+        menu.addSeparator()
+
+        copy_file_action = menu.addAction("Copy File")
+        copy_file_action.triggered.connect(lambda: copy_file_to_clipboard(hit.path))
+
+        copy_path_action = menu.addAction(tr("Copy Path"))
+        copy_path_action.triggered.connect(lambda: copy_to_clipboard(hit.path))
+
+        copy_excerpt_action = menu.addAction(tr("Copy Excerpt"))
+        copy_excerpt_action.setEnabled(bool(hit.excerpt))
+        copy_excerpt_action.triggered.connect(lambda: copy_to_clipboard(hit.excerpt))
+
+        menu.addSeparator()
+
+        terminal_action = menu.addAction(tr("Open Terminal Here"))
+        terminal_action.triggered.connect(lambda: self._run_and_hide(lambda: open_terminal_at(hit.path)))
+        return menu
+
+    def _run_and_hide(self, action: Callable[[], object]) -> None:
+        action()
+        self.hide_panel()
+
+    def _show_quick_actions_menu(self) -> bool:
+        hit = self._current_hit()
+        if hit is None:
+            return False
+        menu = self._build_quick_actions_menu(hit)
+        pos = (
+            self.result_list.viewport().mapToGlobal(
+                self.result_list.visualItemRect(self.result_list.currentItem()).bottomLeft()
+            )
+            if self.result_list.currentRow() >= 0
+            else self.mapToGlobal(self.rect().center())
+        )
+        self._menu_open = True
+        try:
+            menu.exec(pos)
+        finally:
+            self._menu_open = False
+        return True
+
+    def _handle_navigation_key(self, key: int, modifiers: Qt.KeyboardModifier) -> bool:
         if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
             self._move_selection(1 if key == Qt.Key.Key_Down else -1)
             return True
+        if key in (Qt.Key.Key_PageDown, Qt.Key.Key_PageUp):
+            self._move_selection(_PAGE_NAV_STEP if key == Qt.Key.Key_PageDown else -_PAGE_NAV_STEP)
+            return True
+        if key in (Qt.Key.Key_Home, Qt.Key.Key_End) and self.result_list.count() > 0:
+            self._select_boundary_result(last=(key == Qt.Key.Key_End))
+            return True
+        if (modifiers & Qt.KeyboardModifier.AltModifier) and self.preview_pane.currentIndex() == _PDF_PREVIEW_INDEX:
+            if key == Qt.Key.Key_Left:
+                self.preview_pane.pdf_view.prev_page()
+                return True
+            if key == Qt.Key.Key_Right:
+                self.preview_pane.pdf_view.next_page()
+                return True
+        return False
+
+    def _handle_action_key(self, key: int, modifiers: Qt.KeyboardModifier) -> bool:
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._activate_current_item(modifiers)
             return True
@@ -497,9 +661,18 @@ class SearchPanel(QWidget):
                 self.hide_panel()
             return True
         if key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier):
+            if self.search_input.hasSelectedText():
+                return False
             self._copy_selected_path()
             return True
+        if key == Qt.Key.Key_Tab or (key == Qt.Key.Key_K and (modifiers & Qt.KeyboardModifier.ControlModifier)):
+            return self._show_quick_actions_menu()
         return False
+
+    def _handle_key_press(self, key_event: QKeyEvent) -> bool:
+        key = key_event.key()
+        modifiers = key_event.modifiers()
+        return self._handle_navigation_key(key, modifiers) or self._handle_action_key(key, modifiers)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Handle keyboard navigation across search input and results list."""
@@ -508,18 +681,15 @@ class SearchPanel(QWidget):
         return super().eventFilter(watched, event)
 
     def _move_selection(self, step: int) -> None:
-        cur_row = self.result_list.currentRow()
-        count = self.result_list.count()
-        if count == 0:
+        rows = self._selectable_rows()
+        if not rows:
             return
-
-        next_row = cur_row + step
-        while 0 <= next_row < count:
-            item = self.result_list.item(next_row)
-            if item.data(Qt.ItemDataRole.UserRole) is not None or item.data(Qt.ItemDataRole.UserRole + 1) == "toggle":
-                self.result_list.setCurrentRow(next_row)
-                break
-            next_row += step
+        cur_row = self.result_list.currentRow()
+        if cur_row in rows:
+            target_pos = max(0, min(len(rows) - 1, rows.index(cur_row) + step))
+            self.result_list.setCurrentRow(rows[target_pos])
+        else:
+            self.result_list.setCurrentRow(rows[0] if step > 0 else rows[-1])
 
     def _activate_current_item(self, modifiers: Qt.KeyboardModifier) -> None:
         if self.result_list.currentRow() < 0:
@@ -540,11 +710,9 @@ class SearchPanel(QWidget):
             self.hide_panel()
 
     def _copy_selected_path(self) -> None:
-        if self.result_list.currentRow() >= 0:
-            current = self.result_list.currentItem()
-            hit = current.data(Qt.ItemDataRole.UserRole)
-            if isinstance(hit, SearchHit):
-                copy_file_to_clipboard(hit.path)
+        hit = self._current_hit()
+        if hit is not None:
+            copy_file_to_clipboard(hit.path)
 
     def execute_search(self, query: str) -> None:
         """Trigger search programmatically."""
@@ -561,7 +729,7 @@ class SearchPanel(QWidget):
         self.search_input.clear()
         self.result_list.clear()
         self.preview_pane.clear()
-        self._set_geometry_collapsed()
+        self._set_geometry_collapsed(force=True)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -583,17 +751,23 @@ class SearchPanel(QWidget):
         self.result_list.clear()
         self.preview_pane.clear()
         self._set_geometry_collapsed()
-        if self.search_service.db is not None:
-            self.search_service.db.shrink_memory()
+        self.search_service.db.shrink_memory()
         if self.search_service.code_db is not None:
             self.search_service.code_db.shrink_memory()
         self.hide()
 
     def event(self, event: QEvent) -> bool:
-        if event.type() == QEvent.Type.WindowDeactivate and self.isVisible():
+        if event.type() == QEvent.Type.LayoutDirectionChange:
+            self._apply_list_border_style()
+        elif (
+            event.type() == QEvent.Type.WindowDeactivate
+            and self.isVisible()
+            and not self._menu_open
+            and QApplication.activePopupWidget() is None
+        ):
             self.hide_panel()
         return super().event(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._stop_workers()
+        self.shutdown()
         super().closeEvent(event)
