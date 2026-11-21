@@ -69,7 +69,6 @@ allow-star-arg-any = true
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S108", "S603", "SLF001", "PLR2004", "PT011"]
-"src/semsearch/i18n/**" = ["E501", "RUF001"]
 "src/semsearch/gui/**" = ["N802"]
 # Queries interpolate only the constant FILE_COLUMNS or int-cast ID lists; user inputs are parameterized.
 "src/semsearch/core/database.py" = ["S608"]
@@ -77,7 +76,6 @@ allow-star-arg-any = true
 "src/semsearch/extractors/docs.py" = ["S314"]
 # Desktop media/action subprocesses invoke trusted system binaries with argument lists (shell=False).
 "src/semsearch/extractors/media.py" = ["S603", "S607"]
-"src/semsearch/gui/preview.py" = ["S603", "S607"]
 "src/semsearch/services/actions.py" = ["S603", "S607"]
 
 [tool.pytest.ini_options]

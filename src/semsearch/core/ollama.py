@@ -1,5 +1,7 @@
-"""Ollama client and multimodal model discovery for SemSearch."""
+"""Ollama HTTP client and multimodal embedding model discovery for SemSearch."""
 
+import threading
+from types import TracebackType
 from typing import Any
 
 import httpx
@@ -27,14 +29,13 @@ MULTIMODAL_INDICATORS = {
     "gemma-embedding2",
     "vision",
     "audio",
-    "llava",
-    "bakllava",
     "embeddinggemma",
 }
 
 _HTTP_NOT_FOUND = 404
 _HTTP_BAD_REQUEST = 400
 _MIN_PARAMETER_PARTS = 3
+_MULTIMODAL_BATCH_SIZE = 4
 
 
 def format_query_prompt(text: str) -> str:
@@ -54,7 +55,7 @@ def format_doc_prompt(title: str, text: str) -> str:
 
 
 class OllamaClient:
-    """Client for Ollama inference and multimodal model discovery."""
+    """Persistent keep-alive client for Ollama inference and multimodal embedding discovery."""
 
     def __init__(
         self,
@@ -63,17 +64,46 @@ class OllamaClient:
         embed_timeout: float = 120.0,
         max_batch_size: int = 32,
         *,
-        default_model: str = "embeddinggemma-2",
         num_ctx: int = 0,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self._base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.embed_timeout = embed_timeout
         self.max_batch_size = max_batch_size
-        self.default_model = default_model
         self.num_ctx = num_ctx
+        self._cache_lock = threading.Lock()
         self._context_length_cache: dict[tuple[str, str], int] = {}
         self._resolved_model_cache: dict[tuple[str, str], str] = {}
+        self._client = httpx.Client()
+
+    @property
+    def base_url(self) -> str:
+        """Normalized Ollama base URL without trailing slash."""
+        return self._base_url
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        normalized = value.rstrip("/")
+        with self._cache_lock:
+            if normalized != self._base_url:
+                self._base_url = normalized
+                self._context_length_cache.clear()
+                self._resolved_model_cache.clear()
+
+    def close(self) -> None:
+        """Close the persistent HTTP connection pool."""
+        self._client.close()
+
+    def __enter__(self) -> "OllamaClient":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def _request(
         self,
@@ -82,16 +112,17 @@ class OllamaClient:
         payload: dict[str, Any] | None = None,
         model_name: str = "",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}{endpoint}"
+        base_url = self.base_url
+        url = f"{base_url}{endpoint}"
         try:
             if payload is None:
-                response = httpx.get(url, timeout=timeout)
+                response = self._client.get(url, timeout=timeout)
             else:
-                response = httpx.post(url, json=payload, timeout=timeout)
+                response = self._client.post(url, json=payload, timeout=timeout)
         except httpx.ConnectError as err:
-            raise OllamaConnectionError(f"Cannot connect to Ollama at {self.base_url}") from err
+            raise OllamaConnectionError(f"Cannot connect to Ollama at {base_url}") from err
         except httpx.TimeoutException as err:
-            raise OllamaTimeoutError(f"Request to Ollama timed out at {self.base_url}") from err
+            raise OllamaTimeoutError(f"Request to Ollama timed out at {base_url}") from err
         except httpx.HTTPError as err:
             raise OllamaError(f"HTTP error: {err}") from err
 
@@ -147,14 +178,17 @@ class OllamaClient:
 
     def get_model_context_length(self, model: str) -> int | None:
         """Query the maximum supported context window size (in tokens) for a model from Ollama."""
-        direct_key = (self.base_url, model)
-        if direct_key in self._context_length_cache:
-            return self._context_length_cache[direct_key]
+        base_url = self.base_url
+        direct_key = (base_url, model)
+        with self._cache_lock:
+            if direct_key in self._context_length_cache:
+                return self._context_length_cache[direct_key]
 
         target = self.resolve_model_name(model)
-        cache_key = (self.base_url, target)
-        if cache_key in self._context_length_cache:
-            return self._context_length_cache[cache_key]
+        cache_key = (base_url, target)
+        with self._cache_lock:
+            if cache_key in self._context_length_cache:
+                return self._context_length_cache[cache_key]
 
         try:
             info = self.show_model(target)
@@ -163,14 +197,15 @@ class OllamaClient:
 
         max_ctx = self._extract_context_length(info)
         if max_ctx is not None:
-            self._context_length_cache[cache_key] = max_ctx
-            self._context_length_cache[direct_key] = max_ctx
+            with self._cache_lock:
+                self._context_length_cache[cache_key] = max_ctx
+                self._context_length_cache[direct_key] = max_ctx
         return max_ctx
 
     def _is_info_multimodal(self, info: dict[str, Any], model_name: str = "") -> bool:
-        """Check capabilities, details, architecture, and name for multimodal support."""
+        """Check verified capabilities, details, architecture, and name for multimodal embedding support."""
         caps = [str(c).lower() for c in (info.get("capabilities") or [])]
-        if "completion" in caps and "embedding" not in caps:
+        if "embedding" not in caps:
             return False
         if any(c in ("vision", "audio") for c in caps):
             return True
@@ -191,33 +226,33 @@ class OllamaClient:
             return True
 
         name = model_name or str(info.get("name") or info.get("model") or "")
-        return any(
-            indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "llava", "bakllava")
-        )
+        return any(indicator in name.lower() for indicator in ("embeddinggemma", "vision", "audio", "clip"))
 
     def is_multimodal(self, model: str | dict[str, Any], tag_info: dict[str, Any] | None = None) -> bool:
-        """Inspect capabilities, details, or architecture to check if a model is multimodal."""
+        """Inspect verified /api/show capabilities and metadata to check multimodal embedding support."""
         if isinstance(model, dict):
             return self._is_info_multimodal(model)
 
-        if tag_info:
-            caps = [str(c).lower() for c in (tag_info.get("capabilities") or [])]
-            if "completion" in caps and "embedding" not in caps:
+        if tag_info and "capabilities" in tag_info:
+            tag_caps = [str(c).lower() for c in (tag_info.get("capabilities") or [])]
+            if "embedding" not in tag_caps:
                 return False
-            if self._is_info_multimodal(tag_info, model_name=model):
-                return True
 
         try:
             full_info = self.show_model(model)
-            return self._is_info_multimodal(full_info, model_name=model)
+        except (OllamaConnectionError, OllamaTimeoutError):
+            raise
         except OllamaError:
             return False
+        return self._is_info_multimodal(full_info, model_name=model)
 
     def resolve_model_name(self, preferred: str) -> str:
-        """Resolve model name, falling back to installed multimodal model if preferred is not found."""
-        cache_key = (self.base_url, preferred)
-        if cache_key in self._resolved_model_cache:
-            return self._resolved_model_cache[cache_key]
+        """Resolve model name, falling back to an installed matching tag if preferred is not exact."""
+        base_url = self.base_url
+        cache_key = (base_url, preferred)
+        with self._cache_lock:
+            if cache_key in self._resolved_model_cache:
+                return self._resolved_model_cache[cache_key]
 
         try:
             tags = self.get_tags()
@@ -226,33 +261,37 @@ class OllamaClient:
 
         names = [str(item.get("name") or item.get("model", "")) for item in tags]
         if preferred in names:
-            self._resolved_model_cache[cache_key] = preferred
+            with self._cache_lock:
+                self._resolved_model_cache[cache_key] = preferred
             return preferred
 
         clean_pref = preferred.lower().replace("-", "").replace("_", "")
-        for n in names:
-            clean_n = n.lower().replace("-", "").replace("_", "")
-            if clean_pref in clean_n or clean_n in clean_pref:
-                self._resolved_model_cache[cache_key] = n
-                self._resolved_model_cache[(self.base_url, n)] = n
-                return n
+        for name in names:
+            clean_name = name.lower().replace("-", "").replace("_", "")
+            if clean_pref in clean_name or clean_name in clean_pref:
+                with self._cache_lock:
+                    self._resolved_model_cache[cache_key] = name
+                    self._resolved_model_cache[(base_url, name)] = name
+                return name
 
-        self._resolved_model_cache[cache_key] = preferred
+        with self._cache_lock:
+            self._resolved_model_cache[cache_key] = preferred
         return preferred
 
     def validate_model(self, model: str) -> bool:
-        """Validate that model exists and supports multimodal embeddings."""
-        if not self.is_multimodal(model):
-            resolved = self.resolve_model_name(model)
-            if not self.is_multimodal(resolved):
-                raise OllamaModelError(f"Model '{model}' does not support multimodal embeddings")
-        return True
+        """Validate that model exists and supports multimodal embeddings, propagating connectivity errors."""
+        if self.is_multimodal(model):
+            return True
+        resolved = self.resolve_model_name(model)
+        if resolved != model and self.is_multimodal(resolved):
+            return True
+        raise OllamaModelError(f"Model '{model}' does not support multimodal embeddings")
 
     def list_multimodal_models(self) -> list[str]:
-        """Return list of model names that support multimodal embeddings."""
+        """Return installed model names verified via /api/show to support multimodal embeddings."""
         result: list[str] = []
         for item in self.get_tags():
-            name = item.get("name") or item.get("model", "")
+            name = str(item.get("name") or item.get("model", ""))
             if name and self.is_multimodal(name, tag_info=item):
                 result.append(name)
         return result
@@ -260,11 +299,7 @@ class OllamaClient:
     def _resolve_target_and_ctx(self, model: str, num_ctx: int | None) -> tuple[str, int]:
         target_model = self.resolve_model_name(model)
         effective_ctx = self.num_ctx if num_ctx is None else num_ctx
-        if effective_ctx == 0:
-            max_ctx = self.get_model_context_length(target_model)
-            if max_ctx is not None:
-                effective_ctx = max_ctx
-        return target_model, effective_ctx
+        return target_model, max(0, effective_ctx)
 
     def preload(self, model: str, num_ctx: int | None = None) -> None:
         """Preload embedding model into VRAM without computing token embeddings."""
@@ -282,6 +317,21 @@ class OllamaClient:
             model_name=model,
         )
 
+    def unload(self, model: str) -> None:
+        """Unload embedding model from VRAM immediately."""
+        target_model = self.resolve_model_name(model)
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "input": [],
+            "keep_alive": 0,
+        }
+        self._request(
+            "/api/embed",
+            timeout=self.timeout,
+            payload=payload,
+            model_name=model,
+        )
+
     def embed(
         self,
         model: str,
@@ -290,15 +340,20 @@ class OllamaClient:
         truncate: bool = True,
         num_ctx: int | None = None,
     ) -> list[list[float]]:
-        """Embed a heterogeneous batch of text, image, or audio inputs in chunks up to max_batch_size."""
+        """Embed a heterogeneous batch of text, image, or audio inputs with adaptive batch sizing."""
         if not inputs:
             return []
 
         target_model, effective_ctx = self._resolve_target_and_ctx(model, num_ctx)
+        multimodal_batch = min(self.max_batch_size, _MULTIMODAL_BATCH_SIZE)
         all_embeddings: list[list[float]] = []
 
-        for i in range(0, len(inputs), self.max_batch_size):
-            batch = inputs[i : i + self.max_batch_size]
+        idx = 0
+        while idx < len(inputs):
+            window = inputs[idx : idx + self.max_batch_size]
+            batch = inputs[idx : idx + multimodal_batch] if any(isinstance(item, dict) for item in window) else window
+            idx += len(batch)
+
             payload: dict[str, Any] = {
                 "model": target_model,
                 "input": batch,
@@ -312,6 +367,10 @@ class OllamaClient:
                 payload=payload,
                 model_name=model,
             )
-            all_embeddings.extend(data.get("embeddings", []))
+            batch_embs = data.get("embeddings")
+            if not isinstance(batch_embs, list) or len(batch_embs) != len(batch):
+                got = len(batch_embs) if isinstance(batch_embs, list) else 0
+                raise OllamaError(f"Ollama returned {got} embeddings for batch of {len(batch)}")
+            all_embeddings.extend(batch_embs)
 
         return all_embeddings

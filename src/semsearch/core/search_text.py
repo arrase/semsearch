@@ -1,9 +1,11 @@
-"""Text normalization, term extraction, and keyword search utilities matching DigUp SearchText."""
+"""Text normalization, term extraction, query filter parsing, and keyword search utilities."""
 
 import re
+import time
 import unicodedata
+from datetime import UTC, datetime
 
-from semsearch.core.types import FileKind
+from semsearch.core.types import FileKind, ParsedQuery
 
 _STRIP_SCALARS = {
     0x00AD,
@@ -12,13 +14,13 @@ _STRIP_SCALARS = {
     0x0640,  # Tatweel
 }
 # Ranges of invisible formatting / direction / joiner characters
-_STRIP_RANGES = [
+_STRIP_RANGES = (
     (0x200C, 0x200F),
     (0x202A, 0x202E),
     (0x2060, 0x2064),
     (0x2066, 0x2069),
     (0x064B, 0x065F),  # Harakat
-]
+)
 
 _ALEF_VARIANTS = {0x0622, 0x0623, 0x0625, 0x0671}
 _ZERO_WIDTH_SPACE = 0x200B
@@ -29,10 +31,59 @@ _ARABIC_START = 0x0600
 _ARABIC_END = 0x06FF
 _COMBINING_MARK_START = 0x0300
 _COMBINING_MARK_END = 0x036F
+_CJK_RANGES = (
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana
+    (0xAC00, 0xD7AF),  # Hangul Syllables
+)
+_EXTENDED_LATIN_TABLE = str.maketrans(
+    {
+        "ł": "l",
+        "ø": "o",
+        "ß": "ss",
+        "đ": "d",
+        "æ": "ae",
+        "œ": "oe",
+    }
+)
+_CAMEL_BOUNDARY_1 = re.compile(r"([a-z])([A-Z])")
+_CAMEL_BOUNDARY_2 = re.compile(r"([A-Z]+|[0-9]+)([A-Z][a-z])")
+_FILTER_TOKEN_RE = re.compile(
+    r'(?<!\S)(?P<key>kind|ext|path|after):(?:"(?P<dq>[^"]*)"|\'(?P<sq>[^\']*)\'|(?P<val>\S+))',
+    re.IGNORECASE,
+)
+_CODE_TOKEN_RE = re.compile(r"(?<!\S)code:(?=\s|$)", re.IGNORECASE)
+_RELATIVE_AFTER_RE = re.compile(r"^(\d+)([dwm])$", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+_SECONDS_PER_DAY = 86400
+_AFTER_UNIT_SECONDS = {
+    "d": _SECONDS_PER_DAY,
+    "w": 7 * _SECONDS_PER_DAY,
+    "m": 30 * _SECONDS_PER_DAY,
+}
+_FILTER_KIND_ALIASES: dict[str, FileKind] = {
+    "pdf": FileKind.PDF,
+    "doc": FileKind.DOC,
+    "docs": FileKind.DOC,
+    "image": FileKind.IMAGE,
+    "img": FileKind.IMAGE,
+    "photo": FileKind.IMAGE,
+    "screenshot": FileKind.SCREENSHOT,
+    "shot": FileKind.SCREENSHOT,
+    "audio": FileKind.AUDIO,
+    "video": FileKind.VIDEO,
+    "code": FileKind.CODE,
+}
+
 _MIN_TERM_LEN = 2
 _MIN_HINT_PREFIX_LEN = 3
 _MIN_LOOKUP_LEN = 4
 _MAX_TERM_MATCHES = 500
+_ASCII_LIMIT = 128
 
 STOPWORDS: set[str] = {
     "a",
@@ -101,6 +152,7 @@ STOPWORDS: set[str] = {
     "voice",
     "sound",
     "recording",
+    "code",
     # Spanish stopwords and kind words
     "de",
     "la",
@@ -286,27 +338,29 @@ KIND_WORDS: dict[str, FileKind] = {
 }
 
 
+def _is_cjk_char(ch: str) -> bool:
+    """Return True if character lies in a CJK ideograph, Kana, or Hangul Unicode range."""
+    val = ord(ch)
+    return any(start <= val <= end for start, end in _CJK_RANGES)
+
+
 def _is_word_char(char: str) -> bool:
     cat = unicodedata.category(char)
     return cat[0] in ("L", "N", "M")
 
 
-def _tokenize_words(text: str) -> list[str]:
-    words: list[str] = []
-    current: list[str] = []
-    for c in text:
-        if _is_word_char(c):
-            current.append(c)
-        elif current:
-            words.append("".join(current))
-            current = []
-    if current:
-        words.append("".join(current))
-    return words
+def _is_valid_term(term: str) -> bool:
+    return len(term) >= _MIN_TERM_LEN or (len(term) == 1 and _is_cjk_char(term))
 
 
-def normalize_search_text(text: str) -> str:
-    """Normalize text using NFKC, strip invisible marks/harakat, and normalize alef."""
+def split_camel_case(text: str) -> str:
+    """Insert spaces at camelCase and PascalCase word boundaries."""
+    step = _CAMEL_BOUNDARY_2.sub(r"\1 \2", text)
+    return _CAMEL_BOUNDARY_1.sub(r"\1 \2", step)
+
+
+def _normalize_chars(text: str) -> str:
+    """Apply NFKC normalization, strip invisible marks/harakat, and normalize alef variants."""
     compatible = unicodedata.normalize("NFKC", text)
     result: list[str] = []
 
@@ -315,11 +369,9 @@ def normalize_search_text(text: str) -> str:
         if val == _ZERO_WIDTH_SPACE:
             result.append(" ")
             continue
-        if val in _STRIP_SCALARS:
+        if val in _STRIP_SCALARS or val == _SUPERSCRIPT_ALEF:
             continue
         if any(start <= val <= end for start, end in _STRIP_RANGES):
-            continue
-        if val == _SUPERSCRIPT_ALEF:
             continue
         if val in _ALEF_VARIANTS:
             result.append("\u0627")
@@ -327,6 +379,193 @@ def normalize_search_text(text: str) -> str:
         result.append(char)
 
     return "".join(result)
+
+
+def _expand_cjk_run(run: str) -> str:
+    if len(run) == 1:
+        return run
+    tokens = list(run)
+    tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
+    return " ".join(tokens)
+
+
+def _expand_cjk_runs(text: str) -> str:
+    out: list[str] = []
+    cjk_buf: list[str] = []
+    for ch in text:
+        if _is_cjk_char(ch):
+            if not cjk_buf and out and not out[-1].isspace():
+                out.append(" ")
+            cjk_buf.append(ch)
+            continue
+        if cjk_buf:
+            out.append(_expand_cjk_run("".join(cjk_buf)))
+            cjk_buf = []
+            if not ch.isspace():
+                out.append(" ")
+        out.append(ch)
+    if cjk_buf:
+        out.append(_expand_cjk_run("".join(cjk_buf)))
+    return "".join(out)
+
+
+def _tokenize_words(text: str) -> list[str]:
+    words: list[str] = []
+    current: list[str] = []
+    cjk_run: list[str] = []
+
+    def flush_current() -> None:
+        if current:
+            words.append("".join(current))
+            current.clear()
+
+    def flush_cjk() -> None:
+        if not cjk_run:
+            return
+        run = "".join(cjk_run)
+        cjk_run.clear()
+        if len(run) == 1:
+            words.append(run)
+        else:
+            words.extend(run[i : i + 2] for i in range(len(run) - 1))
+
+    for ch in text:
+        if _is_cjk_char(ch):
+            flush_current()
+            cjk_run.append(ch)
+        elif _is_word_char(ch):
+            flush_cjk()
+            current.append(ch)
+        else:
+            flush_current()
+            flush_cjk()
+
+    flush_current()
+    flush_cjk()
+    return words
+
+
+def normalize_search_text(text: str) -> str:
+    """Normalize text for FTS indexing with NFKC, camelCase splitting, and CJK unigram/bigram expansion."""
+    normalized = split_camel_case(_normalize_chars(text))
+    if any(_is_cjk_char(ch) for ch in normalized):
+        return _expand_cjk_runs(normalized)
+    return normalized
+
+
+def _parse_kind_filter(value: str) -> set[FileKind] | None:
+    parts = [part.strip().lower() for part in value.split(",") if part.strip()]
+    if not parts or any(part not in _FILTER_KIND_ALIASES for part in parts):
+        return None
+    return {_FILTER_KIND_ALIASES[part] for part in parts}
+
+
+def _parse_ext_filter(value: str) -> set[str] | None:
+    parts = [part.strip().lstrip(".").lower() for part in value.split(",")]
+    cleaned = {part for part in parts if part}
+    return cleaned or None
+
+
+def _parse_after_filter(value: str, now_ts: float) -> float | None:
+    rel_match = _RELATIVE_AFTER_RE.match(value)
+    if rel_match:
+        amount = int(rel_match.group(1))
+        unit = rel_match.group(2).lower()
+        return max(0.0, now_ts - amount * _AFTER_UNIT_SECONDS[unit])
+
+    if _ISO_DATE_RE.match(value):
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            return None
+        return dt.timestamp()
+
+    return None
+
+
+def _match_filter_value(match: re.Match[str]) -> str:
+    if match.group("dq") is not None:
+        return match.group("dq")
+    if match.group("sq") is not None:
+        return match.group("sq")
+    return match.group("val")
+
+
+def _apply_filter_match(
+    key: str,
+    val: str,
+    *,
+    reference_now: float,
+    kinds: set[FileKind],
+    extensions: set[str],
+    path_fragments: list[str],
+    after_mtime: float,
+) -> tuple[bool, float]:
+    consumed = False
+    if key == "kind":
+        parsed_kinds = _parse_kind_filter(val)
+        if parsed_kinds is not None:
+            kinds.update(parsed_kinds)
+            consumed = True
+    elif key == "ext":
+        parsed_exts = _parse_ext_filter(val)
+        if parsed_exts is not None:
+            extensions.update(parsed_exts)
+            consumed = True
+    elif key == "path":
+        frag = val.strip()
+        if frag:
+            path_fragments.append(frag)
+            consumed = True
+    else:
+        parsed_ts = _parse_after_filter(val.strip(), reference_now)
+        if parsed_ts is not None:
+            after_mtime = max(after_mtime, parsed_ts)
+            consumed = True
+    return consumed, after_mtime
+
+
+def parse_query_filters(raw_query: str, *, now_ts: float | None = None) -> ParsedQuery:
+    """Extract inline filters (code:, kind:, ext:, path:, after:) from a raw user query."""
+    text = raw_query.strip()
+    is_code = False
+    if text.lower().startswith("code:"):
+        is_code = True
+        text = text[5:].lstrip()
+
+    reference_now = time.time() if now_ts is None else now_ts
+    kinds: set[FileKind] = set()
+    extensions: set[str] = set()
+    path_fragments: list[str] = []
+    after_mtime = 0.0
+
+    def consume_filter(match: re.Match[str]) -> str:
+        nonlocal after_mtime
+        consumed, after_mtime = _apply_filter_match(
+            match.group("key").lower(),
+            _match_filter_value(match),
+            reference_now=reference_now,
+            kinds=kinds,
+            extensions=extensions,
+            path_fragments=path_fragments,
+            after_mtime=after_mtime,
+        )
+        return " " if consumed else match.group(0)
+
+    remaining = _FILTER_TOKEN_RE.sub(consume_filter, text)
+    if _CODE_TOKEN_RE.search(remaining):
+        is_code = True
+        remaining = _CODE_TOKEN_RE.sub(" ", remaining)
+
+    clean_query = " ".join(remaining.split())
+    return ParsedQuery(
+        clean_query=clean_query,
+        is_code=is_code,
+        kinds=frozenset(kinds),
+        extensions=frozenset(extensions),
+        path_fragments=tuple(path_fragments),
+        after_mtime=after_mtime,
+    )
 
 
 def inflects(word: str) -> bool:
@@ -354,24 +593,25 @@ def has_words(text: str) -> bool:
 
 def extract_terms(text: str) -> list[str]:
     """Extract content words of query: normalized, lowercase, without stopwords or kind words."""
-    norm = normalize_search_text(text).lower()
+    norm = split_camel_case(_normalize_chars(text)).lower()
     raw_tokens = _tokenize_words(norm)
     seen: set[str] = set()
     terms: list[str] = []
     for token in raw_tokens:
         clean = token.strip()
-        if len(clean) >= _MIN_TERM_LEN and clean not in STOPWORDS and clean not in seen:
+        if _is_valid_term(clean) and clean not in STOPWORDS and clean not in seen:
             seen.add(clean)
             terms.append(clean)
     return terms
 
 
 def make_fts_patterns(terms: list[str], *, prefix_last: bool = False) -> list[str]:
-    """Generate quoted FTS5 patterns with selective prefix wildcards."""
+    """Generate quoted FTS5 patterns with escaped double quotes and selective prefix wildcards."""
     patterns: list[str] = []
     for idx, term in enumerate(terms):
+        escaped = term.replace('"', '""')
         prefix = (prefix_last and idx == len(terms) - 1) or inflects(term)
-        patterns.append(f'"{term}"*' if prefix else f'"{term}"')
+        patterns.append(f'"{escaped}"*' if prefix else f'"{escaped}"')
     return patterns
 
 
@@ -403,7 +643,7 @@ def is_lookup_query(query: str, terms: list[str] | None = None) -> bool:
 
 def extract_kind_hints(text: str) -> set[FileKind]:
     """Identify soft file kind hints from words in the query."""
-    norm = normalize_search_text(text).lower()
+    norm = _normalize_chars(text).lower()
     words = _tokenize_words(norm)
     hints: set[FileKind] = set()
     for w in words:
@@ -418,14 +658,39 @@ def extract_kind_hints(text: str) -> set[FileKind]:
 
 
 def _fold_latin_diacritics(text: str) -> str:
-    """Normalize text and strip Latin combining diacritical marks (0x0300..0x036F)."""
-    norm = normalize_search_text(text).lower()
+    """Normalize text, fold extended Latin letters, and strip combining diacritical marks."""
+    norm = _normalize_chars(text).lower().translate(_EXTENDED_LATIN_TABLE)
     return "".join(
         ch for ch in unicodedata.normalize("NFD", norm) if not (_COMBINING_MARK_START <= ord(ch) <= _COMBINING_MARK_END)
     )
 
 
-def _resolve_match_bounds(text: str, orig_start: int, orig_end: int, *, prefix: bool) -> tuple[int, int] | None:
+def _build_folded_index(text: str) -> tuple[str, list[int]]:
+    norm_chars: list[str] = []
+    origin: list[int] = []
+    for idx, ch in enumerate(text):
+        if ord(ch) < _ASCII_LIMIT:
+            norm_chars.append(ch.lower())
+            origin.append(idx)
+        else:
+            folded = _fold_latin_diacritics(ch)
+            norm_chars.append(folded)
+            origin.extend([idx] * len(folded))
+    return "".join(norm_chars), origin
+
+
+def _resolve_match_bounds(
+    text: str,
+    orig_start: int,
+    orig_end: int,
+    *,
+    prefix: bool,
+    is_cjk: bool,
+) -> tuple[int, int] | None:
+    while orig_end < len(text) and unicodedata.category(text[orig_end])[0] == "M":
+        orig_end += 1
+    if is_cjk:
+        return orig_start, orig_end
     if orig_start > 0 and _is_word_char(text[orig_start - 1]):
         return None
     if orig_end < len(text) and _is_word_char(text[orig_end]):
@@ -441,14 +706,17 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
     needle = _fold_latin_diacritics(word)
     if not needle:
         return []
+    folded_full = _fold_latin_diacritics(text)
+    if needle not in folded_full:
+        return []
+
     prefix = inflects(word)
-    norm_chars: list[str] = []
-    origin: list[int] = []
-    for idx, c in enumerate(text):
-        p = _fold_latin_diacritics(c)
-        norm_chars.append(p)
-        origin.extend([idx] * len(p))
-    haystack = "".join(norm_chars)
+    is_cjk = any(_is_cjk_char(ch) for ch in word)
+    if text.isascii():
+        haystack = text.lower()
+        origin: list[int] | None = None
+    else:
+        haystack, origin = _build_folded_index(text)
 
     found: list[tuple[int, int]] = []
     cursor = 0
@@ -457,12 +725,19 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
         if pos == -1:
             break
         hit_end = pos + len(needle)
-        cursor = hit_end
-        if not origin or hit_end > len(origin):
-            continue
-        bounds = _resolve_match_bounds(text, origin[pos], origin[hit_end - 1] + 1, prefix=prefix)
+        if origin is None:
+            orig_start, orig_end = pos, hit_end
+        else:
+            if hit_end > len(origin):
+                cursor = pos + 1
+                continue
+            orig_start, orig_end = origin[pos], origin[hit_end - 1] + 1
+        bounds = _resolve_match_bounds(text, orig_start, orig_end, prefix=prefix, is_cjk=is_cjk)
         if bounds is not None:
             found.append(bounds)
+            cursor = hit_end
+        else:
+            cursor = pos + 1
     return found
 
 
@@ -483,7 +758,7 @@ def extract_snippet(text: str, terms: list[str], max_words: int = 12) -> str | N
     if not text or not terms:
         return None
 
-    clean_terms = [t.strip() for t in terms if len(t.strip()) >= _MIN_TERM_LEN]
+    clean_terms = [stripped for t in terms if _is_valid_term(stripped := t.strip())]
     if not clean_terms:
         return None
 

@@ -1,5 +1,6 @@
 """Tests for hybrid search service, routing, ranking, and folding."""
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,7 @@ from semsearch.core.ollama import (
     format_code_query_prompt,
     format_query_prompt,
 )
-from semsearch.core.search_text import is_lookup_query, make_fts_patterns
+from semsearch.core.search_text import extract_snippet, is_lookup_query, make_fts_patterns
 from semsearch.core.types import (
     Candidate,
     FileKind,
@@ -577,3 +578,275 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs: tu
     assert [h.path for h in res_strong.ranked] == ["/pics/descarga.png", "/pics/captura_black_hole.png"]
     assert all(h.z >= 2.2 for h in res_strong.ranked)
     assert all(h.reason == "Matches meaning" for h in res_strong.ranked)
+
+
+def test_bm25_outranks_dispersed_long_document(mock_dbs: tuple[Database, Database]) -> None:
+    """Verify BM25 bonus ranks a dense, focused match above a long document with dispersed terms."""
+    db, _ = mock_dbs
+
+    # Long document with dispersed occurrences and newer mtime (would win tie without BM25)
+    filler = " ".join(f"filler{i}" for i in range(250))
+    sparse_body = f"kubernetes {filler} ingress {filler} timeout"
+    fid_sparse = db.insert_file(Candidate("/docs/encyclopedia.txt", FileKind.DOC, 5000, 200.0, 1, 1))
+    db.insert_segment(
+        fid_sparse,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        excerpt=sparse_body[:80],
+        body=sparse_body,
+        original=sparse_body,
+    )
+
+    # Concise document with high term density and older mtime
+    dense_body = "kubernetes ingress timeout kubernetes ingress timeout guide"
+    fid_dense = db.insert_file(Candidate("/docs/runbook.txt", FileKind.DOC, 200, 100.0, 2, 1))
+    db.insert_segment(
+        fid_dense,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        excerpt=dense_body,
+        body=dense_body,
+        original=dense_body,
+    )
+
+    searcher = SearchService(db=db)
+    res = searcher.search("kubernetes ingress timeout")
+    assert len(res.ranked) == 2
+    assert res.ranked[0].path == "/docs/runbook.txt"
+    assert res.ranked[0].score > res.ranked[1].score
+
+
+def test_inline_filters_kind_ext_path_and_after(mock_dbs: tuple[Database, Database]) -> None:
+    """Verify inline kind:, ext:, path:, and after: filters constrain hybrid search results."""
+    db, _ = mock_dbs
+    now = time.time()
+
+    fid_pdf = db.insert_file(Candidate("/work/finance/q4_report.pdf", FileKind.PDF, 1000, now - 3600, 1, 1))
+    db.insert_segment(
+        fid_pdf,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        loc=1.0,
+        excerpt="quarterly budget forecast",
+        body="quarterly budget forecast",
+        original="quarterly budget forecast",
+    )
+
+    fid_md = db.insert_file(Candidate("/work/finance/notes.md", FileKind.DOC, 300, now - 3600, 2, 1))
+    db.insert_segment(
+        fid_md,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        excerpt="quarterly budget forecast notes",
+        body="quarterly budget forecast notes",
+        original="quarterly budget forecast notes",
+    )
+
+    fid_old = db.insert_file(Candidate("/personal/archive/old_budget.pdf", FileKind.PDF, 1000, now - 60 * 86400, 3, 1))
+    db.insert_segment(
+        fid_old,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        loc=1.0,
+        excerpt="quarterly budget forecast 2023",
+        body="quarterly budget forecast 2023",
+        original="quarterly budget forecast 2023",
+    )
+
+    searcher = SearchService(db=db)
+
+    res_kind = searcher.search("kind:pdf quarterly budget")
+    assert {h.path for h in res_kind.ranked} == {"/work/finance/q4_report.pdf", "/personal/archive/old_budget.pdf"}
+
+    res_ext = searcher.search("ext:md quarterly budget")
+    assert [h.path for h in res_ext.ranked] == ["/work/finance/notes.md"]
+
+    res_path = searcher.search("path:FINANCE quarterly budget")
+    assert {h.path for h in res_path.ranked} == {"/work/finance/q4_report.pdf", "/work/finance/notes.md"}
+
+    res_after = searcher.search("after:7d quarterly budget")
+    assert {h.path for h in res_after.ranked} == {"/work/finance/q4_report.pdf", "/work/finance/notes.md"}
+
+    # Combining explicit kinds argument with inline kind: intersects both constraints
+    res_combined = searcher.search("kind:pdf quarterly budget", kinds={FileKind.DOC})
+    assert len(res_combined.ranked) == 0
+
+
+def test_pure_filter_query_skips_ollama(mock_dbs: tuple[Database, Database]) -> None:
+    """Verify pure filter queries (kind:pdf, after:7d) return matching files without calling Ollama."""
+    db, _ = mock_dbs
+    now = time.time()
+
+    db.insert_file(Candidate("/docs/recent.pdf", FileKind.PDF, 100, now - 600, 1, 1))
+    db.insert_file(Candidate("/docs/old.pdf", FileKind.PDF, 100, now - 30 * 86400, 2, 1))
+    db.insert_file(Candidate("/docs/recent.md", FileKind.DOC, 100, now - 300, 3, 1))
+
+    embed_calls = 0
+
+    class CountingOllama(OllamaClient):
+        def embed(
+            self,
+            _model: str,
+            inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+        ) -> list[list[float]]:
+            del inputs, truncate, num_ctx
+            nonlocal embed_calls
+            embed_calls += 1
+            return []
+
+    searcher = SearchService(db=db, ollama=CountingOllama())
+
+    res_pdf = searcher.search("kind:pdf")
+    assert [h.path for h in res_pdf.ranked] == ["/docs/recent.pdf", "/docs/old.pdf"]
+    assert embed_calls == 0
+
+    res_recent = searcher.search("after:7d")
+    assert [h.path for h in res_recent.ranked] == ["/docs/recent.md", "/docs/recent.pdf"]
+    assert embed_calls == 0
+
+
+def test_lexical_search_filters_and_disabled_code_db(mock_dbs: tuple[Database, Database]) -> None:
+    """Verify lexical_search applies inline filters and returns empty when code_db is None."""
+    db, code_db = mock_dbs
+    now = time.time()
+
+    fid_doc = db.insert_file(Candidate("/docs/architecture.md", FileKind.DOC, 200, now - 100, 1, 1))
+    db.insert_segment(
+        fid_doc,
+        SegmentKind.CHUNK,
+        Modality.TEXT,
+        excerpt="pipeline architecture overview",
+        body="pipeline architecture overview",
+        original="Pipeline Architecture overview",
+    )
+    fid_pdf = db.insert_file(Candidate("/docs/architecture.pdf", FileKind.PDF, 500, now - 200, 2, 1))
+    db.insert_segment(
+        fid_pdf,
+        SegmentKind.PAGE,
+        Modality.TEXT,
+        loc=3.0,
+        excerpt="pipeline architecture diagram",
+        body="pipeline architecture diagram",
+        original="Pipeline Architecture diagram",
+    )
+
+    fid_code = code_db.insert_file(Candidate("/repo/pipeline.py", FileKind.CODE, 300, now - 50, 3, 1))
+    code_db.insert_segment(
+        fid_code,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        loc=10.0,
+        loc_end=25.0,
+        excerpt="def dispatch_stage():",
+        body="class Pipeline dispatch_stage run",
+        original="class Pipeline:\n    def dispatch_stage(self): pass",
+        focus=12.0,
+    )
+
+    # Disabled code_db must return empty ResultSet without falling back to general db
+    searcher_no_code = SearchService(db=db, code_db=None)
+    assert len(searcher_no_code.lexical_search("code: pipeline")) == 0
+    assert len(searcher_no_code.lexical_search("pipeline", is_code=True)) == 0
+
+    # General lexical search with inline filters
+    searcher = SearchService(db=db, code_db=code_db)
+    res_pdf = searcher.lexical_search("kind:pdf pipeline")
+    assert [h.path for h in res_pdf.ranked] == ["/docs/architecture.pdf"]
+    assert res_pdf.ranked[0].loc == 3.0
+    assert "«" in res_pdf.ranked[0].excerpt
+
+    # Code lexical search matching a LINES segment preserves stored segment focus
+    res_code = searcher.lexical_search("code: dispatch_stage")
+    assert [h.path for h in res_code.ranked] == ["/repo/pipeline.py"]
+    assert res_code.ranked[0].focus == 12.0
+
+    # Pure filter lexical search
+    res_ext = searcher.lexical_search("ext:md")
+    assert [h.path for h in res_ext.ranked] == ["/docs/architecture.md"]
+
+
+def test_search_uses_stored_segment_focus_fallback_and_defers_snippets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify seg_meta.focus acts as code focus fallback and extract_snippet is deferred to final hits."""
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+
+    for i in range(6):
+        fid = db.insert_file(Candidate(f"/docs/item_{i}.txt", FileKind.DOC, 100, float(i + 1), i + 1, 1))
+        db.insert_segment(
+            fid,
+            SegmentKind.CHUNK,
+            Modality.TEXT,
+            excerpt=f"telemetry report {i}",
+            body=f"telemetry report {i}",
+            original=f"Telemetry Report {i}",
+        )
+
+    snippet_calls = 0
+
+    def counting_snippet(text: str, terms: list[str], max_words: int = 12) -> str | None:
+        nonlocal snippet_calls
+        snippet_calls += 1
+        return extract_snippet(text, terms, max_words=max_words)
+
+    monkeypatch.setattr("semsearch.services.searcher.extract_snippet", counting_snippet)
+    monkeypatch.setattr("semsearch.core.database.extract_snippet", counting_snippet)
+
+    searcher = SearchService(db=db, code_db=code_db)
+    res = searcher.search("telemetry report", limit=2)
+    assert len(res.ranked) == 2
+    assert snippet_calls <= 2
+
+    # Code segment matched semantically (no literal word hit) falls back to stored seg_meta.focus
+    rng = np.random.default_rng(11)
+    q_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
+    bg_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
+    for idx in range(15):
+        bg_fid = code_db.insert_file(Candidate(str(tmp_path / f"bg_{idx}.py"), FileKind.CODE, 50, 1.0, idx + 1, 1))
+        code_db.insert_segment(
+            bg_fid,
+            SegmentKind.LINES,
+            Modality.TEXT,
+            loc=1.0,
+            loc_end=5.0,
+            excerpt="unrelated helper",
+            vec=float16_to_bytes(bg_vec),
+            body="unrelated helper",
+            original="unrelated helper",
+        )
+
+    fid_code = code_db.insert_file(Candidate(str(tmp_path / "metrics.py"), FileKind.CODE, 100, 1.0, 99, 1))
+    code_db.insert_segment(
+        fid_code,
+        SegmentKind.LINES,
+        Modality.TEXT,
+        loc=10.0,
+        loc_end=30.0,
+        excerpt="def record_counter():",
+        vec=float16_to_bytes(q_vec),
+        body="def record_counter(): pass",
+        original="def record_counter(): pass",
+        focus=18.0,
+    )
+
+    class SemanticMockOllama(OllamaClient):
+        def embed(
+            self,
+            _model: str,
+            _inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx
+            return [q_vec.tolist()]
+
+    semantic_searcher = SearchService(db=db, code_db=code_db, ollama=SemanticMockOllama())
+    res_code = semantic_searcher.search("code: instrumentation observability")
+    assert len(res_code.ranked) == 1
+    assert res_code.ranked[0].path == str(tmp_path / "metrics.py")
+    assert res_code.ranked[0].focus == 18.0

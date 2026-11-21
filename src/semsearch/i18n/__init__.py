@@ -1,36 +1,9 @@
-"""Internationalization (i18n) engine, locale detection, and translation catalog."""
+"""Internationalization (i18n) engine, locale detection, and lazy JSON translation catalogs."""
 
+import json
 import locale
 import os
-
-from semsearch.i18n import (
-    ar,
-    be,
-    bg,
-    de,
-    es,
-    fa,
-    fr,
-    he,
-    it,
-    kk,
-    ms,
-    nl,
-    pl,
-    pt,
-    ru,
-    sr,
-    th,
-    tl,
-    uk,
-    vi,
-)
-from semsearch.i18n import (
-    id as id_lang,
-)
-from semsearch.i18n import (
-    tr as tr_lang,
-)
+from pathlib import Path
 
 DEFAULT_LANGUAGE = "en"
 
@@ -68,56 +41,54 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "iw": "he",
 }
 
-TRANSLATIONS: dict[str, dict[str, str]] = {
-    "es": es.STRINGS,
-    "fr": fr.STRINGS,
-    "de": de.STRINGS,
-    "it": it.STRINGS,
-    "pt": pt.STRINGS,
-    "nl": nl.STRINGS,
-    "pl": pl.STRINGS,
-    "ar": ar.STRINGS,
-    "tr": tr_lang.STRINGS,
-    "fa": fa.STRINGS,
-    "he": he.STRINGS,
-    "id": id_lang.STRINGS,
-    "vi": vi.STRINGS,
-    "th": th.STRINGS,
-    "ms": ms.STRINGS,
-    "tl": tl.STRINGS,
-    "ru": ru.STRINGS,
-    "uk": uk.STRINGS,
-    "be": be.STRINGS,
-    "bg": bg.STRINGS,
-    "sr": sr.STRINGS,
-    "kk": kk.STRINGS,
-}
-
+_LOCALES_DIR = Path(__file__).parent / "locales"
+_loaded_catalogs: dict[str, dict[str, str]] = {}
 _current_language: str = DEFAULT_LANGUAGE
 
 
+def load_catalog(lang: str) -> dict[str, str]:
+    """Lazily load and cache the JSON translation catalog for a supported non-English language."""
+    if lang == DEFAULT_LANGUAGE or lang not in SUPPORTED_LANGUAGES:
+        return {}
+    cached = _loaded_catalogs.get(lang)
+    if cached is not None:
+        return cached
+    catalog_path = _LOCALES_DIR / f"{lang}.json"
+    catalog: dict[str, str] = json.loads(catalog_path.read_text(encoding="utf-8"))
+    _loaded_catalogs[lang] = catalog
+    return catalog
+
+
+def _match_supported_language(raw_code: str) -> str:
+    """Return the first supported language code in a locale/LANGUAGE string, or '' if none match."""
+    for entry in raw_code.split(":"):
+        cleaned = entry.strip().split(".")[0].split("@")[0]
+        if not cleaned:
+            continue
+        primary = cleaned.replace("-", "_").split("_")[0].lower()
+        if primary in ("c", "posix"):
+            return DEFAULT_LANGUAGE
+        mapped = LANGUAGE_ALIASES.get(primary, primary)
+        if mapped in SUPPORTED_LANGUAGES:
+            return mapped
+    return ""
+
+
 def normalize_language_code(raw_code: str) -> str:
-    """Normalize a locale string (e.g. 'es_ES.UTF-8') to a supported language code or 'en'."""
-    cleaned = raw_code.strip()
-    if not cleaned:
-        return DEFAULT_LANGUAGE
-    cleaned = cleaned.split(":")[0].split(".")[0].split("@")[0]
-    primary = cleaned.replace("-", "_").split("_")[0].lower()
-    if primary in ("c", "posix", ""):
-        return DEFAULT_LANGUAGE
-    mapped = LANGUAGE_ALIASES.get(primary, primary)
-    if mapped in SUPPORTED_LANGUAGES:
-        return mapped
-    return DEFAULT_LANGUAGE
+    """Normalize a locale string (e.g. 'es_ES.UTF-8' or 'ca:es:en') to a supported language code or 'en'."""
+    return _match_supported_language(raw_code) or DEFAULT_LANGUAGE
 
 
 def detect_system_language() -> str:
     """Detect active system locale and fall back to English ('en') if unsupported."""
     for env_var in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
         val = os.environ.get(env_var, "").strip()
-        if val and val.upper() not in ("C", "POSIX", "C.UTF-8"):
-            return normalize_language_code(val)
-        if val.upper() in ("C", "POSIX", "C.UTF-8"):
+        if not val:
+            continue
+        matched = _match_supported_language(val)
+        if matched:
+            return matched
+        if env_var != "LANGUAGE":
             return DEFAULT_LANGUAGE
 
     loc_name = locale.getlocale()[0]
@@ -154,7 +125,7 @@ def is_rtl(lang: str | None = None) -> bool:
 
 def tr(key: str, **kwargs: object) -> str:
     """Translate a UI string into the active language using inline English as fallback."""
-    text = key if _current_language == DEFAULT_LANGUAGE else TRANSLATIONS.get(_current_language, {}).get(key, key)
+    text = key if _current_language == DEFAULT_LANGUAGE else load_catalog(_current_language).get(key, key)
     if kwargs:
         return text.format(**kwargs)
     return text

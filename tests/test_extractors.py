@@ -15,7 +15,7 @@ from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.code import extract_code, extract_notebook
 from semsearch.extractors.docs import extract_doc
 from semsearch.extractors.images import extract_image
-from semsearch.extractors.media import extract_audio, extract_video
+from semsearch.extractors.media import extract_audio, extract_video, probe_media_duration
 from semsearch.extractors.pdfs import extract_pdf
 
 
@@ -41,6 +41,22 @@ def test_image_extractor_scaling_and_base64(tmp_path: Path) -> None:
     raw_png = base64.b64decode(ext_shot.payload["image"])
     with Image.open(io.BytesIO(raw_png)) as im:
         assert im.size == (1536, 512)
+        assert im.format == "PNG"
+
+    # SVG vector image (rasterized via PyMuPDF to PNG, 1024 max)
+    svg_path = tmp_path / "vector.svg"
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="800">'
+        '<rect width="1600" height="800" fill="#114477"/>'
+        "</svg>",
+        encoding="utf-8",
+    )
+    ext_svg = extract_image(str(svg_path), is_screenshot=False)
+    assert ext_svg.kind == SegmentKind.IMAGE
+    assert ext_svg.modality == Modality.IMAGE
+    assert isinstance(ext_svg.payload, dict)
+    with Image.open(io.BytesIO(base64.b64decode(ext_svg.payload["image"]))) as im:
+        assert im.size == (1024, 512)
         assert im.format == "PNG"
 
 
@@ -176,6 +192,7 @@ def test_video_extractor_ahash_shot_deduplication(tmp_path: Path) -> None:
     assert frames[0].loc == 0.0
     assert frames[1].loc == 3.0
     assert len(audio) >= 1
+    assert 6.5 <= probe_media_duration(str(vid_path)) <= 7.5
 
 
 def test_code_extractor_and_notebook_strip_outputs(tmp_path: Path) -> None:

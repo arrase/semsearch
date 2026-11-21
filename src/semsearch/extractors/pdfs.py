@@ -18,6 +18,8 @@ def extract_pdf(
 ) -> tuple[list[ExtractedSegment], bool]:
     """Extract pages from a PDF document in two stages without OCR."""
     with fitz.open(path) as doc:
+        if doc.needs_pass:
+            raise ValueError("Encrypted PDF requires password")
         total_pages = len(doc)
         end_page = min(start_page + max_pages, total_pages)
         is_complete = end_page >= total_pages

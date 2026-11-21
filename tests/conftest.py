@@ -36,6 +36,6 @@ def _reset_default_language() -> Generator[None, None, None]:
 def qapp() -> QApplication:
     """Provide a singleton QApplication for offscreen widget testing."""
     app = QApplication.instance()
-    if app is None:
-        app = QApplication(["-platform", "offscreen"])
-    return app
+    if isinstance(app, QApplication):
+        return app
+    return QApplication(["-platform", "offscreen"])

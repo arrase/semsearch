@@ -1,36 +1,43 @@
 # vector-engine Specification
 
 ## Purpose
-The vector-engine capability provides vector normalization, similarity scoring, float16 byte conversions, and modality-aware Z-score normalization for multimodal embeddings.
+The vector-engine capability provides zero-copy L2 normalization, unit-matrix cosine similarity, float16 byte serialization with dynamic dimensionality, RAM `VectorSnapshot` caching semantics, and vectorized modality-aware Z-score normalization for multimodal embeddings.
 
 ## Requirements
 
-### Requirement: Vector Math and Similarity Computations
-The vector engine MUST provide L2 normalization for 1D vectors and 2D matrices, compute cosine similarity between query vectors and document matrices, and serialize float16 bytes.
+### Requirement: Vector Math, Unit-Matrix Similarity, and Dynamic Float16 Serialization
+The vector engine MUST provide L2 normalization for 1D vectors and 2D matrices (`l2_normalize`), general cosine similarity (`cosine_similarity`), and zero-copy pre-normalized cosine similarity (`cosine_similarity_unit(query_vec, unit_matrix)`) that L2-normalizes only the query vector and evaluates `unit_matrix @ query` without copying `unit_matrix` or recomputing document norms. `float16_to_bytes` and `bytes_to_float16` MUST serialize and deserialize arbitrary embedding dimensions (e.g., 512, 768, 1024).
 
-#### Scenario: Normalize and compute cosine similarity
-- **WHEN** an unnormalized vector is L2 normalized and compared against a matrix of normalized vectors
-- **THEN** valid cosine similarity scores between -1.0 and 1.0 are returned
+#### Scenario: Cosine similarity against pre-normalized RAM matrix
+- **WHEN** `cosine_similarity_unit(query_vec, unit_matrix)` is invoked with a cached L2-normalized `float32` matrix
+- **THEN** only the 1D query vector is L2-normalized and dot products are computed directly via matrix-vector multiplication returning `float32` scores in `[-1.0, 1.0]` without redundant matrix copies
 
-#### Scenario: Float16 serialization
-- **WHEN** a 768-dimensional float32 vector is converted to float16 bytes and deserialized
-- **THEN** the reconstructed array matches the original values within float16 numerical precision
+#### Scenario: Dynamic dimension float16 serialization
+- **WHEN** float32 vectors of dimension 512, 768, or 1024 are converted via `float16_to_bytes` and restored via `bytes_to_float16`
+- **THEN** the reconstructed arrays preserve their original dimensionality and match original values within float16 numerical precision
 
-### Requirement: Modality Z-Score Normalization
-The vector engine MUST normalize cosine similarity scores across modalities using modality-specific means (computed with symmetric 10% trimming when at least 10 items exist) for groups with at least 20 scale-eligible items, falling back to the global scale-eligible mean (computed with symmetric 10% trimming when at least 10 scale-eligible items exist) without artificial modality offsets, and dividing by a bounded global standard deviation (`sigma >= 0.045`) computed over the background scale-eligible segments (`sets_scale`) after excluding the top 15% largest centered deviations when at least 10 scale-eligible segments exist.
+### Requirement: RAM VectorSnapshot Caching and Generation Invalidation
+Vector matrices loaded for search MUST be represented as immutable, read-only `VectorSnapshot` arrays (`segment_ids`, `file_ids`, `modality_codes: uint8`, `matrix: float32`, `scale_mask: bool_`) cached in RAM, invalidated strictly by `_vec_generation` increments upon committed writes, with dimensionality inferred dynamically from `len(blob) // 2` and `scale_mask` marking at most one segment per `(file_id, modality_code)` pair.
 
-#### Scenario: Modality score calibration
-- **WHEN** raw cosine similarities across different modalities are passed to Z-score normalization
-- **THEN** scores are mean-centered per modality (when at least 20 scale-eligible vectors exist for that modality, or by the global scale-eligible mean otherwise) without subtracting a positive offset from image scores, and scaled by the bounded global standard deviation with a minimum floor of `0.045`
+#### Scenario: Dynamic dimension inference and scale masking in VectorSnapshot
+- **WHEN** a snapshot is built from stored float16 blobs of any valid dimension across multi-segment files
+- **THEN** the snapshot matrix shape is `(N, dim)` with `write=False`, `modality_codes` uses compact `uint8` encoding (`MODALITY_TO_CODE`), and only the first segment per `(file_id, modality_code)` has `scale_mask=True`
+
+### Requirement: Vectorized Modality-Aware Z-Score Normalization
+`z_score_normalize(cosines, modalities, sets_scale=None)` MUST operate vectorized over `Modality` lists or `uint8` `modality_codes` arrays. It MUST compute symmetric 10% trimmed means in $O(N)$ using `np.partition` when at least 10 items exist (`_trimmed_mean`), center each modality bucket with at least 20 scale-eligible segments using its modality mean (falling back to the global scale-eligible trimmed mean without artificial offsets), trim the top 15% largest centered scale-eligible deviations via `np.partition` when at least 10 scale-eligible items exist, and scale by `sigma = max(sqrt(np.var(bg_centered)), 0.045)` using true centered background variance.
+
+#### Scenario: Vectorized modality score calibration
+- **WHEN** raw cosine similarities and `uint8` modality codes across text, image, and audio segments are passed to `z_score_normalize()`
+- **THEN** scores are mean-centered per modality (for buckets with `>= 20` scale-eligible items, else global trimmed mean) and divided by `max(sqrt(np.var(bg_centered)), 0.045)` returning `float32` Z-scores
 
 #### Scenario: Scale-eligible subset prevents single-file dominance
-- **WHEN** `sets_scale` flags are provided to Z-score normalization
-- **THEN** only segments marked with `sets_scale=True` contribute to computing the global standard deviation and modality means, while all segments receive normalized Z-scores
+- **WHEN** `sets_scale` flags are provided to `z_score_normalize()`
+- **THEN** only segments with `sets_scale=True` contribute to trimmed means and background variance `np.var(bg_centered)`, while all segments receive normalized Z-scores
 
-#### Scenario: Low-variance noise queries are clamped by minimum standard deviation floor
-- **WHEN** a query has no genuine matches in the corpus and scale-eligible cosine similarities exhibit a narrow standard deviation below `0.045`
-- **THEN** Z-score normalization divides centered scores by `0.045` so minor random cosine deviations do not inflate above the semantic quality gate
+#### Scenario: Low-variance noise queries clamped by minimum standard deviation floor
+- **WHEN** a query has no genuine matches and `sqrt(np.var(bg_centered))` is below `0.045`
+- **THEN** Z-score normalization divides centered scores by `0.045` so random noise does not cross the `2.2` semantic gate
 
-#### Scenario: Multiple genuine matches in a small corpus do not mask secondary hits
-- **WHEN** a corpus of at least 10 scale-eligible segments contains two or more strong semantic matches (outliers) alongside unrelated background items
-- **THEN** symmetric 10% mean trimming and upper-tail 15% deviation trimming prevent the top match from inflating `sigma`, allowing the secondary genuine match to retain a Z-score above the `2.2` semantic gate
+#### Scenario: Upper-tail trimming preserves secondary genuine matches
+- **WHEN** a corpus of at least 10 scale-eligible segments contains multiple strong semantic matches alongside unrelated background items
+- **THEN** symmetric 10% mean trimming and upper-tail 15% `np.partition` deviation trimming prevent top outliers from inflating `sigma`, allowing secondary genuine hits to remain above `SEMANTIC_Z_GATE = 2.2`

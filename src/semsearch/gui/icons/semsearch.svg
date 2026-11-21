@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="brand-grad" x1="12" y1="12" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="lens-fill" x1="15" y1="15" x2="41" y2="41" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#8B5CF6" stop-opacity="0.06"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#0F1115" stroke="#262A36" stroke-width="1.5"/>
+  <circle cx="28" cy="28" r="13" fill="url(#lens-fill)" stroke="url(#brand-grad)" stroke-width="4.5"/>
+  <path d="M28 21.5 L29.7 26.3 L34.5 28 L29.7 29.7 L28 34.5 L26.3 29.7 L21.5 28 L26.3 26.3 Z" fill="url(#brand-grad)"/>
+  <line x1="37.8" y1="37.8" x2="48.5" y2="48.5" stroke="url(#brand-grad)" stroke-width="5" stroke-linecap="round"/>
+</svg>

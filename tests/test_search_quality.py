@@ -99,7 +99,7 @@ def test_is_lookup_logic() -> None:
 
 def test_code_identifier_extraction() -> None:
     assert extract_identifier("quantize_row_q8_0_ref") == ["quantize", "row", "q8", "0", "ref"]
-    assert extract_identifier("retryWithBackoff()") == ["retrywithbackoff"]
+    assert extract_identifier("retryWithBackoff()") == ["retry", "with", "backoff"]
     assert extract_identifier("models.User.find") == ["models", "user", "find"]
     assert extract_identifier("simple") is None
     assert extract_identifier("regular query text") is None
@@ -160,7 +160,7 @@ def test_ollama_client_resolve_model_name(monkeypatch: pytest.MonkeyPatch) -> No
             json={"models": [{"name": "hf.co/ggml-org/embeddinggemma-2-GGUF:BF16"}]},
         )
 
-    monkeypatch.setattr(httpx, "get", mock_get)
+    monkeypatch.setattr(client._client, "get", mock_get)
 
     # Preferred exact match
     resolved_exact = client.resolve_model_name("hf.co/ggml-org/embeddinggemma-2-GGUF:BF16")
@@ -284,11 +284,11 @@ def test_asymmetry_embedding_payload_formatting(tmp_path: Path) -> None:
 
     repo, repo_rel_path = _code_place(str(code_file), code_folders=[str(repo_dir)])
     assert repo == str(repo_dir)
-    assert repo_rel_path == "src/services/search.py"
+    assert repo_rel_path == "my_project/src/services/search.py"
 
     code_text = "def run_search(): pass"
     code_payload = format_doc_prompt(repo_rel_path, code_text)
-    assert code_payload == "title: src/services/search.py | text: def run_search(): pass"
+    assert code_payload == "title: my_project/src/services/search.py | text: def run_search(): pass"
 
     # 3. Code repo detection via package.json marker without code_folders configured
     npm_repo = tmp_path / "frontend_app"
@@ -300,4 +300,4 @@ def test_asymmetry_embedding_payload_formatting(tmp_path: Path) -> None:
 
     found_repo, rel_path = _code_place(str(js_file))
     assert found_repo == str(npm_repo)
-    assert rel_path == "components/button.tsx"
+    assert rel_path == "frontend_app/components/button.tsx"

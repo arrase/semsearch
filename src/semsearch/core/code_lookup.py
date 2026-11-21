@@ -1,8 +1,15 @@
-"""Code symbol lookup, definition detection, and line focusing matching DigUp CodeLookup."""
+"""Code symbol lookup, definition detection, and line focusing."""
 
 import re
 
+from semsearch.core.search_text import split_camel_case
+
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::|->|#)[A-Za-z_$][A-Za-z0-9_$]*)*$")
+_QUALIFIER_SPLIT_RE = re.compile(r"(?:\.|::|->|#)")
+_FUNC_ASSIGN_RE = re.compile(
+    r"^(?::[^=]+)?=\s*(?:async\s+)?"
+    r"(?:function\b|(?:<[^>]*>\s*)?\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][A-Za-z0-9_$]*\s*=>)"
+)
 
 _DEFINERS: set[str] = {
     "def",
@@ -72,14 +79,15 @@ _USERS: set[str] = {
 }
 
 _COMMENT_STARTS: tuple[str, ...] = ("//", "#", "/*", "*", "--", '"""', "'''", "<!--", ";")
-_NON_VAR_DEFINERS: set[str] = _DEFINERS - {"let", "var", "const", "val"}
+_VAR_DEFINERS: set[str] = {"let", "var", "const", "val"}
+_NON_VAR_DEFINERS: set[str] = _DEFINERS - _VAR_DEFINERS
 _STRONG_DEFINITION = 2
 _MIN_WORD_LEN = 2
 _MAX_SUMMARY_LEN = 160
 
 
 def extract_identifier(query: str) -> list[str] | None:
-    """Check if query is a code symbol/identifier and return its tokenized words."""
+    """Check if query is a code symbol/identifier and return its tokenized subwords."""
     clean = query.strip()
     if clean.endswith("()"):
         clean = clean[:-2].strip()
@@ -95,7 +103,8 @@ def extract_identifier(query: str) -> list[str] | None:
     if not (is_camel or has_symbols):
         return None
 
-    words = [w for w in re.split(r"[^a-zA-Z0-9]+", clean.lower()) if w]
+    split = split_camel_case(clean)
+    words = [w for w in re.split(r"[^a-zA-Z0-9]+", split.lower()) if w]
     return words or None
 
 
@@ -142,6 +151,9 @@ def _definition_strength(before: str, after: str, line: str) -> int:
     if previous in _NON_VAR_DEFINERS:
         return 2
 
+    if previous in _VAR_DEFINERS and _FUNC_ASSIGN_RE.match(after):
+        return 2
+
     if before.startswith("func (") and before.endswith(")"):
         return 2
 
@@ -154,16 +166,10 @@ def _definition_strength(before: str, after: str, line: str) -> int:
     return 0
 
 
-def find_definition(name: str, text: str, first_line: int = 1) -> tuple[int, int] | None:
-    """Find line number and confidence strength (1 or 2) where name is defined."""
-    clean_name = name.strip()
-    if clean_name.endswith("()"):
-        clean_name = clean_name[:-2].strip()
-
+def _find_definition_exact(name: str, lines: list[str], first_line: int) -> tuple[int, int] | None:
     best: tuple[int, int] | None = None
-
-    for offset, line in enumerate(text.splitlines()):
-        for start, end in _occurrences(clean_name, line):
+    for offset, line in enumerate(lines):
+        for start, end in _occurrences(name, line):
             before = line[:start].strip()
             after = line[end:].strip()
             strength = _definition_strength(before, after, line)
@@ -171,8 +177,26 @@ def find_definition(name: str, text: str, first_line: int = 1) -> tuple[int, int
                 best = (first_line + offset, strength)
             if strength == _STRONG_DEFINITION:
                 return best
-
     return best
+
+
+def find_definition(name: str, text: str, first_line: int = 1) -> tuple[int, int] | None:
+    """Find line number and confidence strength (1 or 2) where name (or its leaf symbol) is defined."""
+    clean_name = name.strip()
+    if clean_name.endswith("()"):
+        clean_name = clean_name[:-2].strip()
+    if not clean_name:
+        return None
+
+    lines = text.splitlines()
+    best = _find_definition_exact(clean_name, lines, first_line)
+    if best is not None:
+        return best
+
+    parts = _QUALIFIER_SPLIT_RE.split(clean_name)
+    if len(parts) > 1 and parts[-1]:
+        return _find_definition_exact(parts[-1], lines, first_line)
+    return None
 
 
 def _has_word_part(word: str, line: str) -> bool:
@@ -249,7 +273,7 @@ def code_summary(text: str) -> str:
 
     for line in clean_lines:
         tokens = line.split()[:4]
-        if any(t in _DEFINERS and t not in ("let", "var", "const", "val") for t in tokens):
+        if any(t in _NON_VAR_DEFINERS for t in tokens):
             definition_line = line
             break
         if first_code_line is None and not any(line.startswith(p) for p in _SUMMARY_IGNORE_PREFIXES):

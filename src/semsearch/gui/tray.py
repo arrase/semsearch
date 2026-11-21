@@ -10,6 +10,17 @@ from semsearch.i18n import tr
 from semsearch.services.indexer import IndexService
 
 _PAUSE_INDEXING_LABEL = "Pause Indexing"
+_POLL_INTERVAL_MS = 1000
+
+
+def _format_paused_status(waiting_for: str) -> str:
+    if waiting_for == "Ollama":
+        return tr("Waiting for Ollama")
+    if waiting_for == "AC power":
+        return tr("Waiting for AC power")
+    if waiting_for == "Scheduled hours":
+        return tr("Waiting for scheduled hours")
+    return tr("Paused")
 
 
 def render_tray_icon(
@@ -18,8 +29,9 @@ def render_tray_icon(
     is_indexing: bool = False,
     is_paused: bool = False,
 ) -> QIcon:
-    """Render dynamic 64x64 pixmap icon for system tray."""
-    pixmap = QPixmap(64, 64)
+    """Render dynamic HiDPI 128x128 (2x logical 64x64) pixmap icon for system tray."""
+    pixmap = QPixmap(128, 128)
+    pixmap.setDevicePixelRatio(2.0)
     pixmap.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(pixmap)
@@ -65,12 +77,13 @@ def render_tray_icon(
 
 
 class SystemTrayManager(QObject):
-    """Coordinates system tray icon state, progress ring, and context menu."""
+    """Coordinates system tray icon state, progress ring, and event-driven polling."""
 
     open_panel_requested = Signal()
     open_settings_requested = Signal()
     toggle_pause_requested = Signal()
     quit_requested = Signal()
+    _work_arrived = Signal()
 
     def __init__(
         self,
@@ -111,12 +124,24 @@ class SystemTrayManager(QObject):
         self.tray_icon.setIcon(render_tray_icon(0.0, is_indexing=False, is_paused=False))
         self.tray_icon.setToolTip("SemSearch")
 
-        self._last_rendered_state: tuple[EngineActivity, bool, int, int, int] | None = None
+        self._last_rendered_state: tuple[EngineActivity, bool, str, int, int, int] | None = None
         self._poll_timer: QTimer | None = None
+        self._work_arrived.connect(self._on_work_arrived)
         if self.index_service is not None:
             self._poll_timer = QTimer(self)
+            self._poll_timer.setInterval(_POLL_INTERVAL_MS)
             self._poll_timer.timeout.connect(self._poll_status)
-            self._poll_timer.start(1000)
+            self.index_service.add_work_listener(self._notify_work_from_thread)
+            self._poll_timer.start(_POLL_INTERVAL_MS)
+
+    def _notify_work_from_thread(self) -> None:
+        """Thread-safe bridge invoked by IndexService when indexing work resumes or arrives."""
+        self._work_arrived.emit()
+
+    def _on_work_arrived(self) -> None:
+        if self._poll_timer is not None and not self._poll_timer.isActive():
+            self._poll_timer.start(_POLL_INTERVAL_MS)
+        self._poll_status()
 
     def retranslate_ui(self) -> None:
         """Refresh translated action labels."""
@@ -132,12 +157,7 @@ class SystemTrayManager(QObject):
 
     def _poll_status(self) -> None:
         if self.index_service is not None:
-            status = (
-                self.index_service.get_status()
-                if isinstance(self.index_service, IndexService)
-                else self.index_service.status
-            )
-            self.update_status(status)
+            self.update_status(self.index_service.get_status())
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -145,26 +165,34 @@ class SystemTrayManager(QObject):
 
     def _handle_toggle_pause(self) -> None:
         if self.index_service is not None:
-            if self.index_service.status.paused:
+            status = self.index_service.get_status()
+            if status.paused:
                 self.index_service.resume()
             else:
                 self.index_service.pause()
-            self.update_status(self.index_service.status)
+            self.update_status(self.index_service.get_status())
         self.toggle_pause_requested.emit()
 
     def update_status(self, status: EngineStatus) -> None:
-        """Update system tray icon, tooltip, and menu state from EngineStatus."""
+        """Update system tray icon, tooltip, menu state, and idle poll timer from EngineStatus."""
         percent = (status.indexed / status.total * 100.0) if status.total > 0 else 0.0
         is_indexing = status.activity == EngineActivity.INDEXING
         is_paused = status.paused or status.activity == EngineActivity.PAUSED
-        state_key = (status.activity, is_paused, int(percent), status.indexed, status.total)
+
+        if self._poll_timer is not None:
+            if status.activity == EngineActivity.IDLE and not is_paused:
+                self._poll_timer.stop()
+            elif not self._poll_timer.isActive():
+                self._poll_timer.start(_POLL_INTERVAL_MS)
+
+        state_key = (status.activity, is_paused, status.waiting_for, int(percent), status.indexed, status.total)
         if state_key == self._last_rendered_state:
             return
         self._last_rendered_state = state_key
 
         if is_paused:
-            status_text = tr("Paused")
-            self.pause_action.setText(tr("Resume Indexing"))
+            status_text = _format_paused_status(status.waiting_for)
+            self.pause_action.setText(tr("Resume Indexing") if status.paused else tr(_PAUSE_INDEXING_LABEL))
         elif is_indexing:
             status_text = tr(
                 "Indexing: {percent}% ({indexed}/{total})",
@@ -182,6 +210,11 @@ class SystemTrayManager(QObject):
         self.status_action.setText(status_text)
         self.tray_icon.setToolTip(f"SemSearch - {status_text}")
         self.tray_icon.setIcon(render_tray_icon(percent, is_indexing=is_indexing, is_paused=is_paused))
+
+    def stop(self) -> None:
+        """Stop periodic polling timer on application shutdown."""
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
 
     def show(self) -> None:
         """Display tray icon."""

@@ -1,80 +1,66 @@
 # search-engine Specification
 
 ## Purpose
-Provides dual-stage semantic and keyword search, isolated code query routing, DigUp hybrid ranking fusion, quality gating, and weaker matches folding.
+Provides dual-index routing, inline filter parsing, instant lexical search, BM25 + coverage + modality-aware Z-score hybrid ranking fusion, symbol/camelCase/CJK text intelligence, quality gating, batch metadata retrieval, deferred snippet extraction, and weaker matches folding.
 
 ## Requirements
 
-### Requirement: Dual Query Routing for Code and General Modes
-The search engine MUST route queries prefixed with `code:` exclusively to the dedicated code index and route all other queries to the general file index. The engine MUST strip the `code:` prefix prior to processing code search terms.
+### Requirement: Inline Filter Parsing and Dual-Index Routing
+`parse_query_filters()` MUST parse inline filters anywhere in a query into a `ParsedQuery`: `code:` (routes exclusively to `code.sqlite`), `kind:` (comma-separated aliases `pdf`, `doc`/`docs`, `image`/`img`/`photo`, `screenshot`/`shot`, `audio`, `video`, `code`), `ext:` (comma-separated extensions), `path:` (repeatable case-insensitive path substring supporting quoted values with spaces), and `after:` (relative `Nd`, `Nw`, `Nm` or ISO date `YYYY-MM-DD`). When a query consists solely of inline filters (`clean_query == ""`), `SearchService` MUST skip Ollama `_vector_search()` and return matching files sorted by `mtime DESC`.
 
-#### Scenario: Isolated code search routing
-- **WHEN** a user enters a query starting with the `code:` prefix
-- **THEN** search evaluation executes against the code index database and omits general documents
+#### Scenario: Combining inline filters with semantic and lexical search
+- **WHEN** a user searches `kind:pdf ext:pdf path:"tax 2026" after:30d invoice`
+- **THEN** `parse_query_filters()` extracts the structured filters, runs hybrid search on `clean_query = "invoice"`, and retains only PDF files under paths containing `tax 2026` modified within the last 30 days
 
-#### Scenario: Default general query routing
-- **WHEN** a user enters a standard query without the `code:` prefix
-- **THEN** search evaluation executes against the general file index database and omits isolated code repositories
+#### Scenario: Pure filter query without Ollama calls
+- **WHEN** a user enters `kind:pdf after:7d` with no residual search terms
+- **THEN** `SearchService` skips `_vector_search()` and returns matching files ordered by modification time descending
 
-### Requirement: Hybrid DigUp Ranking Fusion
-The search engine MUST rank candidate results using the DigUp formula: Score = W_meaning * max(z, 0) + W_words * (coverage)^1.5 + LexicalBonus + HintBonus. For standard queries, semantic and lexical weights SHALL default to equal weighting, while lookup queries featuring serials or code identifiers SHALL boost the lexical weight. Candidate files matching query terms in their filename or top BM25 lexical rank SHALL receive a lexical bonus so direct filename hits outrank incidental body mentions.
+### Requirement: Instant Lexical Search Delegation
+`SearchService` MUST expose `lexical_search(query, limit=50, *, is_code=False) -> ResultSet` executing fast SQLite FTS5 search with full inline filter support (`code:`, `kind:`, `ext:`, `path:`, `after:`), batch record/segment fetching (`find_by_ids`, `get_segments_by_ids`), and zero Ollama calls, suitable for per-keystroke panel feedback.
 
-#### Scenario: Balanced hybrid scoring for natural language query
-- **WHEN** a natural language query is executed
-- **THEN** semantic Z-scores and keyword coverage are blended using equal primary weights with non-negative Z-score clamping
+#### Scenario: Instant keystroke lexical search with inline filters
+- **WHEN** `SearchService.lexical_search("kind:doc budget", limit=50)` is invoked
+- **THEN** deduplicated FTS5 matches filtered by `FileKind.DOC` are returned immediately without invoking `OllamaClient`
 
-#### Scenario: Boosted exact lexical weight for code symbols and serial identifiers
-- **WHEN** a query is identified as a lookup containing identifiers, symbols, or serial numbers
-- **THEN** lexical keyword coverage weight is amplified over semantic embedding weight in the final score calculation
+### Requirement: Hybrid Ranking Fusion Incorporating BM25 Rank
+`SearchService._score_candidates()` MUST compute fused candidate scores as:
+`Score = meaning_weight * max(z, 0) + words_weight * (cov**1.5) + bm25_bonus + kind_bonus + name_bonus + def_bonus`,
+where `bm25_bonus = (words_weight * 0.5 * (cov**1.5)) / (1.0 + (keyword_rank - 1) / 10.0)` integrates SQLite FTS5 BM25 ranking directly into hybrid fusion, `word_weight = 1.0 if is_code else 2.0`, lookup queries weight `(meaning_weight=0.5, words_weight=word_weight * 2.0)` while standard semantic queries weight `(meaning_weight=1.0, words_weight=word_weight)`, `kind_bonus = 1.0`, `name_bonus = 3.0 * (matched_in_stem / len(folded_terms))**1.5` when `cov >= 0.5`, and `def_bonus` adds `+3.0` (strong) or `+1.5` (weak) for code definitions.
 
-#### Scenario: Filename lexical match outranks incidental body mention
-- **WHEN** a query matches a document's filename directly and also appears once inside the body of a longer document
-- **THEN** the filename match receives a higher BM25 and filename lexical bonus and ranks above the incidental body mention
+#### Scenario: BM25 density and filename ranking advantage in hybrid fusion
+- **WHEN** two candidate files share identical term coverage (`cov = 1.0`) but one ranks higher in FTS5 BM25 (such as a concise document or direct filename match)
+- **THEN** the higher-ranked BM25 candidate receives a larger `bm25_bonus` (plus `name_bonus` for filename stem matches) and ranks higher in the final results
 
-### Requirement: Search Result Quality Gating
-The search engine MUST discard candidate segment matches that fail to satisfy at least one quality threshold: a Z-score of at least 2.2 (meaning match), a keyword coverage ratio of at least 0.5 (lexical match), or a direct kind-hint match when the query consists exclusively of modality/kind hint words.
+### Requirement: Quality Gating at `SEMANTIC_Z_GATE = 2.2` and Weaker Matches Folding
+The search engine MUST admit candidates only when `z >= 2.2` (`SEMANTIC_Z_GATE`), `coverage >= 0.5`, or the query is a pure kind-hint or pure inline-filter query. Candidates scoring below `50%` of the top candidate's score MUST be folded into `ResultSet.weaker`, while primary hits (`>= 50%`, up to `limit`) occupy `ResultSet.ranked`.
 
-#### Scenario: Pruning irrelevant candidates failing both gates
-- **WHEN** a candidate segment yields both a Z-score below 2.2 and a keyword coverage ratio below 0.5 on a standard query
-- **THEN** the candidate is discarded and excluded from the search result set
+#### Scenario: Pruning candidates failing semantic and lexical gates
+- **WHEN** a candidate has `z < 2.2` and `coverage < 0.5` on a standard query
+- **THEN** it is discarded from both `ResultSet.ranked` and `ResultSet.weaker`
 
-#### Scenario: Retaining semantic matches meeting Z-score threshold
-- **WHEN** a candidate segment has a Z-score of at least 2.2 with low keyword coverage
-- **THEN** the candidate is retained as a valid semantic match
+#### Scenario: Folding lower-scoring hits into weaker matches
+- **WHEN** qualifying results include hits scoring below `0.5 * top_score`
+- **THEN** they are partitioned into `ResultSet.weaker` while strong hits remain in `ResultSet.ranked`
 
-#### Scenario: Retaining keyword matches meeting coverage threshold
-- **WHEN** a candidate segment has a keyword coverage ratio of at least 0.5 with a Z-score below 2.2
-- **THEN** the candidate is retained as a valid lexical match
+### Requirement: Identifier Splitting (`camelCase` <-> `snake_case`), Qualified Symbols, CJK, and Safe FTS5 Escaping
+Text normalization (`normalize_search_text`), term extraction (`extract_terms`), and code symbol lookup (`extract_identifier`, `find_definition`) MUST:
+- Split `camelCase`/`PascalCase` boundaries so `OllamaClient` and `ollama_client` match interchangeably.
+- Support qualified symbols (`Class.method`, `mod::fn`, `obj->prop`, `mod#sym`) by matching exact definitions first and falling back to the leaf symbol definition, as well as JS/TS `const`/`let`/`var`/`val` arrow and function assignments.
+- Tokenize and expand CJK characters (Han ideographs, Hiragana, Katakana, Hangul) into unigrams/bigrams and support single-character CJK queries without requiring ASCII word boundaries.
+- Fold extended Latin characters (`ł/ø/ß/đ/æ/œ`) and NFD combining marks, filter English/Spanish/Bengali/Arabic stopwords (including `code`/`codigo`/`código`) and kind hints, and escape double quotes (`"` -> `""`) in all FTS5 query patterns without silent `sqlite3.Error` fallbacks.
 
-#### Scenario: Retaining files matching pure kind-hint queries
-- **WHEN** a user enters a query composed exclusively of kind hint terms (such as `screenshot`, `captura de pantalla`, or `pdf`)
-- **THEN** indexed files matching the hinted `FileKind` are retained and ranked even when no residual lexical search terms remain
+#### Scenario: Cross-matching camelCase and snake_case identifiers and qualified symbols
+- **WHEN** a user queries `code: OllamaClient` against `ollama_client` or `code: SearchService.lexical_search` against `def lexical_search(...)`
+- **THEN** `extract_identifier()` emits subword tokens `["ollama", "client"]` and `find_definition()` locates the leaf symbol definition line
 
-### Requirement: Weaker Matches Folding
-The search engine MUST classify search results with a final score below 50% of the top-ranking result score as weaker matches, partitioning them for collapsible display in search results.
+#### Scenario: CJK search and double-quote FTS5 safety
+- **WHEN** a user searches CJK text or enters a query containing literal double quotes `"`
+- **THEN** CJK runs expand and match via unigrams/bigrams, and quotes are doubled cleanly in FTS5 patterns without raising SQLite syntax errors
 
-#### Scenario: Secondary results below half of top score folded
-- **WHEN** search results are returned with scores less than 0.5 times the maximum score in the set
-- **THEN** those lower-scoring items are flagged as weaker matches to be displayed collapsed
+### Requirement: Batch Retrieval and Deferred Snippet Extraction
+`SearchService` MUST eliminate N+1 database queries by batch-fetching candidate `FileRecord`s via `find_by_ids()` and segment metadata via `get_segments_by_ids()`, and MUST defer Python `extract_snippet()` computation strictly to assembled primary hits rather than running it across all raw FTS rows.
 
-#### Scenario: Retaining all strong results in primary view
-- **WHEN** all returned search results score at or above 50% of the maximum score
-- **THEN** all items remain unfolded in the primary results list
-
-### Requirement: Code Definition Navigation Scoring
-The search engine MUST apply a relevance bonus to code files and segments that define matched identifiers and MUST associate the definition starting line number and matching segment ID as an anchor for editor jumps and code previews.
-
-#### Scenario: Definition match bonus and line anchoring
-- **WHEN** a code search hit matches a declared function, class, or type definition
-- **THEN** a definition bonus is added to the file's final score so the defining file ranks above caller files, and the definition line number and containing segment ID are attached to the result
-
-### Requirement: Multilingual Query Parsing and Diacritic-Insensitive Matching
-The search engine MUST strip both English and Spanish stopwords and recognize both English and Spanish modality kind hints when extracting query terms, and MUST match and highlight query terms inside text snippets insensitively to Latin diacritics/accents.
-
-#### Scenario: Spanish query term and kind extraction
-- **WHEN** a user searches for a Spanish query such as `captura de pantalla` or `informacion fiscal de juan`
-- **THEN** Spanish stopwords (`de`, `la`, `el`, `en`, `con`, `para`, `por`) are excluded from search terms and Spanish kind words (`captura`, `pantalla`, `imagen`, `documento`, `video`, `audio`) map to their corresponding `FileKind`
-
-#### Scenario: Diacritic-insensitive snippet highlighting
-- **WHEN** a user searches with unaccented terms such as `informacion` or `autorizacion` against text containing `INFORMACIÓN` or `Autorización`
-- **THEN** `find_term_matches` and `extract_snippet` locate the accented occurrences and return the matching snippet ranges
+#### Scenario: Batch loading and deferred snippet formatting on large candidate sets
+- **WHEN** a query matches hundreds of FTS rows and candidate files
+- **THEN** `SearchService` calls `fts_search(..., terms=None)`, fetches file and segment metadata in batched SQL queries, and runs `extract_snippet()` only for final primary `ranked` hits

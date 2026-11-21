@@ -4,6 +4,7 @@ import base64
 from pathlib import Path
 
 import pymupdf as fitz
+import pytest
 
 from semsearch.core.types import Modality, SegmentKind
 from semsearch.extractors.pdfs import extract_pdf
@@ -107,3 +108,20 @@ def test_pdf_zero_ocr_invariant() -> None:
     forbidden = ["tesseract", "pytesseract", "easyocr", "paddleocr"]
     for word in forbidden:
         assert word not in code.lower()
+
+
+def test_extract_pdf_encrypted_raises_value_error(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "encrypted.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text(fitz.Point(50, 50), "Protected content")
+    doc.save(
+        str(pdf_path),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        user_pw="secret",
+        owner_pw="owner",
+    )
+    doc.close()
+
+    with pytest.raises(ValueError, match="Encrypted PDF requires password"):
+        extract_pdf(str(pdf_path))

@@ -1,46 +1,63 @@
 """File filtering, secret detection, and classification rules."""
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from semsearch.core.types import FileKind
 
-SKIPPED_FOLDER_NAMES = {
-    "node_modules",
-    "bower_components",
-    "venv",
-    "site-packages",
-    "__pycache__",
-    "DerivedData",
-    "Pods",
-    "Carthage",
-    "build",
-    "dist",
-    "target",
-    "vendor",
-    ".git",
-    ".noindex",
-}
+MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024
 
-SECRET_EXTENSIONS = {
-    "pem",
-    "key",
-    "p12",
-    "pfx",
-    "keystore",
-    "jks",
-    "ppk",
-    "kdbx",
-    "gpg",
-    "asc",
-    "crt",
-    "cer",
-    "der",
-    "p8",
-    "mobileprovision",
-}
+SKIPPED_FOLDER_NAMES: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        "bower_components",
+        "venv",
+        "site-packages",
+        "__pycache__",
+        "DerivedData",
+        "Pods",
+        "Carthage",
+        "build",
+        "dist",
+        "target",
+        "vendor",
+        ".git",
+        ".noindex",
+    }
+)
 
-SECRET_PREFIXES = (
+SECRET_FOLDER_NAMES: frozenset[str] = frozenset(
+    {
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+    }
+)
+
+SECRET_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "pem",
+        "key",
+        "p12",
+        "pfx",
+        "keystore",
+        "jks",
+        "ppk",
+        "kdbx",
+        "gpg",
+        "asc",
+        "crt",
+        "cer",
+        "der",
+        "p8",
+        "mobileprovision",
+        "tfstate",
+    }
+)
+
+SECRET_PREFIXES: tuple[str, ...] = (
     "id_rsa",
     "id_dsa",
     "id_ecdsa",
@@ -55,26 +72,48 @@ SECRET_PREFIXES = (
     ".htpasswd",
 )
 
-PROJECT_MARKERS = {
-    ".git",
-    "package.json",
-    "Package.swift",
-    "pyproject.toml",
-    "setup.py",
-    "requirements.txt",
-    "Cargo.toml",
-    "go.mod",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "Gemfile",
-    "composer.json",
-    "CMakeLists.txt",
-}
+SECRET_SUBSTRINGS: tuple[str, ...] = (
+    "secret",
+    "credential",
+    "tfstate",
+    "kubeconfig",
+    "id_rsa",
+    "id_ed25519",
+    "_ed25519",
+    "_rsa",
+)
 
-PROJECT_BUNDLE_EXTENSIONS = {".xcodeproj", ".xcworkspace"}
+SECRET_EXACT_NAMES: frozenset[str] = frozenset({"hosts.yml"})
 
-SCREENSHOT_PREFIXES = (
+MINIFIED_SUFFIXES: tuple[str, ...] = (
+    ".min.js",
+    ".min.css",
+    ".bundle.js",
+    ".chunk.js",
+)
+
+PROJECT_MARKERS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "package.json",
+        "Package.swift",
+        "pyproject.toml",
+        "setup.py",
+        "requirements.txt",
+        "Cargo.toml",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "Gemfile",
+        "composer.json",
+        "CMakeLists.txt",
+    }
+)
+
+PROJECT_BUNDLE_EXTENSIONS: frozenset[str] = frozenset({".xcodeproj", ".xcworkspace"})
+
+SCREENSHOT_PREFIXES: tuple[str, ...] = (
     "screenshot",
     "screen shot",
     "cleanshot",
@@ -83,7 +122,7 @@ SCREENSHOT_PREFIXES = (
     "captura",
 )
 
-CAMERA_PREFIXES = (
+CAMERA_PREFIXES: tuple[str, ...] = (
     "img",
     "dsc",
     "pxl",
@@ -97,142 +136,188 @@ CAMERA_PREFIXES = (
     "captura",
 )
 
-IMAGE_EXTENSIONS = {
-    "png",
-    "jpg",
-    "jpeg",
-    "webp",
-    "gif",
-    "bmp",
-    "tiff",
-    "tif",
-    "heic",
-    "avif",
-    "svg",
-}
-PDF_EXTENSIONS = {"pdf"}
-DOC_EXTENSIONS = {
-    "txt",
-    "text",
-    "md",
-    "markdown",
-    "rst",
-    "rtf",
-    "docx",
-    "doc",
-    "odt",
-    "html",
-    "htm",
-}
-CODE_DOC_EXTENSIONS = {"md", "markdown", "rst"}
-AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff"}
-VIDEO_EXTENSIONS = {"mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv"}
-CODE_EXTENSIONS = {
-    "py",
-    "ipynb",
-    "c",
-    "h",
-    "cc",
-    "cpp",
-    "cxx",
-    "hpp",
-    "hh",
-    "m",
-    "mm",
-    "swift",
-    "ts",
-    "tsx",
-    "cts",
-    "mts",
-    "js",
-    "jsx",
-    "mjs",
-    "cjs",
-    "go",
-    "rs",
-    "java",
-    "kt",
-    "kts",
-    "scala",
-    "rb",
-    "php",
-    "cs",
-    "fs",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "ps1",
-    "lua",
-    "pl",
-    "r",
-    "jl",
-    "dart",
-    "sql",
-    "vue",
-    "svelte",
-    "css",
-    "scss",
-    "sass",
-    "less",
-    "json",
-    "jsonl",
-    "yaml",
-    "yml",
-    "toml",
-    "xml",
-    "plist",
-    "proto",
-    "graphql",
-    "tf",
-    "nix",
-    "zig",
-    "hs",
-    "ex",
-    "exs",
-    "erl",
-    "clj",
-    "elm",
-    "ml",
-    "vim",
-    "el",
-    "asm",
-}
-CODE_FILENAMES = {
-    "makefile",
-    "gnumakefile",
-    "dockerfile",
-    "containerfile",
-    "justfile",
-    "rakefile",
-    "gemfile",
-    "podfile",
-    "brewfile",
-    "procfile",
-    "vagrantfile",
-    "jenkinsfile",
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "bmp",
+        "tiff",
+        "tif",
+        "heic",
+        "avif",
+        "svg",
+    }
+)
+PDF_EXTENSIONS: frozenset[str] = frozenset({"pdf"})
+DOC_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "txt",
+        "text",
+        "md",
+        "markdown",
+        "rst",
+        "rtf",
+        "docx",
+        "odt",
+        "html",
+        "htm",
+    }
+)
+CODE_DOC_EXTENSIONS: frozenset[str] = frozenset({"md", "markdown", "rst"})
+AUDIO_EXTENSIONS: frozenset[str] = frozenset({"mp3", "m4a", "wav", "aac", "flac", "ogg", "wma", "aiff"})
+VIDEO_EXTENSIONS: frozenset[str] = frozenset({"mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv"})
+CODE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "py",
+        "ipynb",
+        "c",
+        "h",
+        "cc",
+        "cpp",
+        "cxx",
+        "hpp",
+        "hh",
+        "m",
+        "mm",
+        "swift",
+        "ts",
+        "tsx",
+        "cts",
+        "mts",
+        "js",
+        "jsx",
+        "mjs",
+        "cjs",
+        "go",
+        "rs",
+        "java",
+        "kt",
+        "kts",
+        "scala",
+        "rb",
+        "php",
+        "cs",
+        "fs",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "ps1",
+        "lua",
+        "pl",
+        "r",
+        "jl",
+        "dart",
+        "sql",
+        "vue",
+        "svelte",
+        "css",
+        "scss",
+        "sass",
+        "less",
+        "json",
+        "jsonl",
+        "yaml",
+        "yml",
+        "toml",
+        "xml",
+        "plist",
+        "proto",
+        "graphql",
+        "tf",
+        "nix",
+        "zig",
+        "hs",
+        "ex",
+        "exs",
+        "erl",
+        "clj",
+        "elm",
+        "ml",
+        "vim",
+        "el",
+        "asm",
+    }
+)
+CODE_FILENAMES: frozenset[str] = frozenset(
+    {
+        "makefile",
+        "gnumakefile",
+        "dockerfile",
+        "containerfile",
+        "justfile",
+        "rakefile",
+        "gemfile",
+        "podfile",
+        "brewfile",
+        "procfile",
+        "vagrantfile",
+        "jenkinsfile",
+    }
+)
+
+DATA_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "json",
+        "jsonl",
+        "xml",
+        "toml",
+        "plist",
+        "csv",
+        "tsv",
+        "lock",
+    }
+)
+
+_DATASET_MIN_COUNT = 300
+_DATASET_MACHINE_RATIO = 0.7
+
+_EXT_KIND_MAP: dict[str, FileKind] = {
+    **dict.fromkeys(IMAGE_EXTENSIONS, FileKind.IMAGE),
+    **dict.fromkeys(PDF_EXTENSIONS, FileKind.PDF),
+    **dict.fromkeys(DOC_EXTENSIONS, FileKind.DOC),
+    **dict.fromkeys(AUDIO_EXTENSIONS, FileKind.AUDIO),
+    **dict.fromkeys(VIDEO_EXTENSIONS, FileKind.VIDEO),
+    **dict.fromkeys(CODE_EXTENSIONS, FileKind.CODE),
 }
 
-DATA_EXTENSIONS = {
-    "json",
-    "jsonl",
-    "xml",
-    "toml",
-    "plist",
-    "csv",
-    "tsv",
-    "lock",
-}
+
+def normalize_excluded_folders(excluded_folders: Iterable[str] | None) -> frozenset[str]:
+    """Normalize excluded folder entries into a deduplicated frozenset."""
+    if not excluded_folders:
+        return frozenset()
+    return frozenset(cleaned for entry in excluded_folders if (cleaned := entry.strip()))
+
+
+def normalize_excluded_types(excluded_types: Iterable[str] | None) -> frozenset[str]:
+    """Normalize excluded extension/kind names into lowercase frozenset without leading dots."""
+    if not excluded_types:
+        return frozenset()
+    return frozenset(cleaned for entry in excluded_types if (cleaned := entry.lstrip(".").strip().lower()))
 
 
 def is_secret(path: str) -> bool:
-    """Return True if path represents a secret, private key, or credential file."""
+    """Return True if path represents a secret, private key, credential, or sensitive config directory."""
     p = Path(path)
+    if any(part.lower() in SECRET_FOLDER_NAMES for part in p.parts[:-1]):
+        return True
     ext = p.suffix.lstrip(".").lower()
     if ext in SECRET_EXTENSIONS:
         return True
     name = p.name.lower()
-    return any(name.startswith(prefix) for prefix in SECRET_PREFIXES)
+    if name in SECRET_EXACT_NAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in SECRET_PREFIXES):
+        return True
+    return any(token in name for token in SECRET_SUBSTRINGS)
+
+
+def is_minified_file(path: str) -> bool:
+    """Return True if filename is a minified or bundled web asset."""
+    return Path(path).name.lower().endswith(MINIFIED_SUFFIXES)
 
 
 def is_code_project_root(path: str) -> bool:
@@ -257,19 +342,6 @@ def looks_machine_named(stem: str) -> bool:
     if re.match(r"^[0-9a-f]{8,}([-_][0-9a-f]{4,})*$", name):
         return True
     return bool(re.match(r"^[a-z]{0,16}[-_. ]?\d{3,}([-_.]\d+)*$", name))
-
-
-_DATASET_MIN_COUNT = 300
-_DATASET_MACHINE_RATIO = 0.7
-
-_EXT_KIND_MAP: dict[str, FileKind] = {
-    **dict.fromkeys(IMAGE_EXTENSIONS, FileKind.IMAGE),
-    **dict.fromkeys(PDF_EXTENSIONS, FileKind.PDF),
-    **dict.fromkeys(DOC_EXTENSIONS, FileKind.DOC),
-    **dict.fromkeys(AUDIO_EXTENSIONS, FileKind.AUDIO),
-    **dict.fromkeys(VIDEO_EXTENSIONS, FileKind.VIDEO),
-    **dict.fromkeys(CODE_EXTENSIONS, FileKind.CODE),
-}
 
 
 def is_dataset_folder(paths: list[str]) -> bool:
@@ -310,59 +382,43 @@ def classify_file(path: str, *, is_code_mode: bool = False) -> FileKind | None:
     return kind
 
 
-def is_inside_code_project(path: str) -> bool:
-    """Return True if path is inside a recognized code project."""
-    parent = Path(path).resolve().parent
-    root = Path(parent.root)
-    while parent != root:
-        if is_code_project_root(str(parent)):
-            return True
-        parent = parent.parent
-    return False
-
-
-def is_path_excluded(path: str, excluded_folders: list[str] | set[str] | None) -> bool:
+def is_path_excluded(path: str, excluded_folders: Iterable[str] | None) -> bool:
     """Return True if path is inside any user-configured excluded folder."""
-    if not excluded_folders:
+    folders = (
+        excluded_folders if isinstance(excluded_folders, frozenset) else normalize_excluded_folders(excluded_folders)
+    )
+    if not folders:
         return False
     p = Path(path)
-    resolved = str(p.resolve()) if p.is_absolute() else str(p)
+    resolved_path = p.resolve() if p.is_absolute() else p
     parts_set = set(p.parts)
-    for excl in excluded_folders:
-        clean = excl.strip()
-        if not clean:
-            continue
+    for clean in folders:
         if clean.startswith(("/", "~")):
-            excl_resolved = str(Path(clean).expanduser().resolve())
-            if resolved == excl_resolved or resolved.startswith(f"{excl_resolved}/"):
+            excl_path = Path(clean).expanduser().resolve()
+            if resolved_path.is_relative_to(excl_path):
                 return True
         elif clean in parts_set:
             return True
     return False
 
 
-def _is_excluded_type(
-    ext: str,
-    kind: FileKind,
-    excluded_types: list[str] | set[str] | None,
-) -> bool:
+def _is_excluded_type(ext: str, kind: FileKind, excluded_types: frozenset[str]) -> bool:
     if not excluded_types:
         return False
-    norm_types = {t.lstrip(".").strip().lower() for t in excluded_types if t.strip()}
-    return ext in norm_types or kind.value in norm_types
+    return ext in excluded_types or kind.value in excluded_types
 
 
-def _check_mode_compatibility(path: str, kind: FileKind, *, is_code_mode: bool) -> str:
+def _check_mode_compatibility(kind: FileKind, *, is_code_mode: bool, in_code_project: bool) -> str:
     if is_code_mode:
         return "not a code file" if kind != FileKind.CODE else ""
     if kind == FileKind.CODE:
         return "code file in general mode"
-    if kind != FileKind.SCREENSHOT and is_inside_code_project(path):
+    if kind != FileKind.SCREENSHOT and in_code_project:
         return "non-screenshot inside code project"
     return ""
 
 
-def _check_path_exclusions(path: str, p: Path, excluded_folders: list[str] | set[str] | None) -> str:
+def _check_path_exclusions(path: str, p: Path, excluded_folders: frozenset[str]) -> str:
     for part in p.parts[:-1]:
         if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
             return f"inside skipped folder {part}"
@@ -377,14 +433,23 @@ def should_skip(
     path: str,
     *,
     is_code_mode: bool,
-    excluded_folders: list[str] | set[str] | None = None,
-    excluded_types: list[str] | set[str] | None = None,
+    excluded_folders: Iterable[str] | None = None,
+    excluded_types: Iterable[str] | None = None,
+    in_code_project: bool = False,
 ) -> tuple[bool, str]:
     """Determine whether to skip a file during indexing."""
+    norm_folders = (
+        excluded_folders if isinstance(excluded_folders, frozenset) else normalize_excluded_folders(excluded_folders)
+    )
+    norm_types = excluded_types if isinstance(excluded_types, frozenset) else normalize_excluded_types(excluded_types)
+
     p = Path(path)
-    path_reason = _check_path_exclusions(path, p, excluded_folders)
+    path_reason = _check_path_exclusions(path, p, norm_folders)
     if path_reason:
         return True, path_reason
+
+    if is_minified_file(path):
+        return True, "minified or bundled asset"
 
     ext = p.suffix.lstrip(".").lower()
     name = p.name.lower()
@@ -395,8 +460,8 @@ def should_skip(
     if kind is None:
         return True, "unsupported file kind"
 
-    if _is_excluded_type(ext, kind, excluded_types):
+    if _is_excluded_type(ext, kind, norm_types):
         return True, f"excluded file type {ext or kind.value}"
 
-    mode_reason = _check_mode_compatibility(path, kind, is_code_mode=is_code_mode)
+    mode_reason = _check_mode_compatibility(kind, is_code_mode=is_code_mode, in_code_project=in_code_project)
     return (True, mode_reason) if mode_reason else (False, "")

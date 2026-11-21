@@ -3,8 +3,12 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from semsearch.core.types import Modality, SegmentKind
+from semsearch.extractors import code as code_mod
 from semsearch.extractors.code import (
+    MAX_CODE_FILE_BYTES,
     extract_code,
     extract_notebook,
 )
@@ -120,3 +124,54 @@ def test_code_to_segment(tmp_path: Path) -> None:
     assert seg.loc == 1.0
     assert seg.focus == 1.0
     assert "fn main" in seg.payload
+
+
+def test_code_and_notebook_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_CODE_FILE_BYTES == 10 * 1024 * 1024
+    monkeypatch.setattr(code_mod, "MAX_CODE_FILE_BYTES", 64)
+
+    big_py = tmp_path / "big.py"
+    big_py.write_text("x = 1\n" * 30, encoding="utf-8")
+    with pytest.raises(ValueError, match="maximum safe size"):
+        extract_code(str(big_py))
+
+    big_nb = tmp_path / "big.ipynb"
+    big_nb.write_text('{"cells": []}' + (" " * 100), encoding="utf-8")
+    with pytest.raises(ValueError, match="maximum safe size"):
+        extract_notebook(str(big_nb))
+
+
+def test_extract_notebook_malformed_and_invalid_cells(tmp_path: Path) -> None:
+    bad_json = tmp_path / "broken.ipynb"
+    bad_json.write_text("{not valid json", encoding="utf-8")
+    assert extract_notebook(str(bad_json)) == []
+
+    list_root = tmp_path / "list_root.ipynb"
+    list_root.write_text("[1, 2, 3]", encoding="utf-8")
+    assert extract_notebook(str(list_root)) == []
+
+    missing_cells = tmp_path / "missing_cells.ipynb"
+    missing_cells.write_text('{"nbformat": 4}', encoding="utf-8")
+    assert extract_notebook(str(missing_cells)) == []
+
+    invalid_cells = tmp_path / "invalid_cells.ipynb"
+    invalid_cells.write_text('{"cells": null}', encoding="utf-8")
+    assert extract_notebook(str(invalid_cells)) == []
+
+    mixed_cells = tmp_path / "mixed.ipynb"
+    mixed_cells.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    "not-a-dict",
+                    {"cell_type": "code", "source": None},
+                    {"cell_type": "code", "source": "result = 42\n"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    segments = extract_notebook(str(mixed_cells))
+    assert len(segments) == 1
+    assert segments[0].loc == 3.0
+    assert "result = 42" in str(segments[0].payload)

@@ -3,11 +3,15 @@
 import zipfile
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from semsearch.core.search_text import has_words
 from semsearch.core.types import Modality, SegmentKind
+from semsearch.extractors import docs as docs_mod
 from semsearch.extractors.docs import (
+    MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    MAX_TEXT_FILE_BYTES,
     chunk_document,
     extract_doc,
     read_doc_text,
@@ -160,3 +164,101 @@ def test_docx_table_extraction(tmp_path: Path) -> None:
     segments = extract_doc(str(docx_file))
     assert len(segments) >= 1
     assert any("Merged Header" in str(s.payload) for s in segments)
+
+
+def test_reject_legacy_binary_doc(tmp_path: Path) -> None:
+    doc_file = tmp_path / "legacy.doc"
+    doc_file.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1binary ole2 payload")
+
+    with pytest.raises(ValueError, match=r"Legacy binary \.doc format is not supported"):
+        read_doc_text(str(doc_file))
+
+    with pytest.raises(ValueError, match=r"Legacy binary \.doc format is not supported"):
+        extract_doc(str(doc_file))
+
+
+def test_zip_bomb_blocked_for_odt_and_docx(tmp_path: Path) -> None:
+    assert MAX_ARCHIVE_UNCOMPRESSED_BYTES == 32 * 1024 * 1024
+    oversized_payload = b"0" * (33 * 1024 * 1024)
+
+    bomb_odt = tmp_path / "bomb.odt"
+    with zipfile.ZipFile(bomb_odt, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("content.xml", oversized_payload)
+
+    with pytest.raises(ValueError, match="Archive exceeds maximum safe uncompressed size"):
+        read_doc_text(str(bomb_odt))
+
+    bomb_docx = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(bomb_docx, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", oversized_payload)
+
+    with pytest.raises(ValueError, match="Archive exceeds maximum safe uncompressed size"):
+        read_doc_text(str(bomb_docx))
+
+
+def test_text_file_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_TEXT_FILE_BYTES == 10 * 1024 * 1024
+    monkeypatch.setattr(docs_mod, "MAX_TEXT_FILE_BYTES", 64)
+
+    for ext in (".txt", ".md", ".markdown", ".rst", ".html", ".htm", ".rtf"):
+        large_file = tmp_path / f"large{ext}"
+        large_file.write_text("a" * 128, encoding="utf-8")
+        with pytest.raises(ValueError, match="maximum safe size"):
+            read_doc_text(str(large_file))
+
+    small_rst = tmp_path / "small.rst"
+    small_rst.write_text("Short valid reStructuredText.", encoding="utf-8")
+    assert read_doc_text(str(small_rst)) == "Short valid reStructuredText."
+
+
+def test_strip_html_ignores_script_style_noscript_svg_and_head() -> None:
+    html = (
+        "<!DOCTYPE html><html>"
+        "<head><title>Hidden Head Title</title><style>.x { color: red; }</style></head>"
+        "<body>"
+        "<script>const leaked = 'DO_NOT_INDEX';</script>"
+        "<style>body { font-size: 14px; }</style>"
+        "<noscript><p>Enable JavaScript notice</p></noscript>"
+        "<svg><g><svg><text>Nested SVG Text</text></svg><text>Outer SVG Text</text></g></svg>"
+        "<h1>Visible Heading</h1>"
+        "<p>Actual document paragraph.</p>"
+        "</body></html>"
+    )
+    stripped = strip_html(html)
+    assert "Visible Heading" in stripped
+    assert "Actual document paragraph." in stripped
+    for forbidden in (
+        "Hidden Head Title",
+        "color: red",
+        "DO_NOT_INDEX",
+        "font-size",
+        "Enable JavaScript",
+        "Nested SVG Text",
+        "Outer SVG Text",
+    ):
+        assert forbidden not in stripped
+
+
+def test_strip_rtf_ignorable_groups_unicode_and_cp1252(tmp_path: Path) -> None:
+    rtf_file = tmp_path / "rich.rtf"
+    rtf_content = (
+        r"{\rtf1\ansi\deff0 "
+        r"{\fonttbl{\f0\fnil Arial;}{\f1\fswiss Helvetica;}}"
+        r"{\colortbl ;\red255\green0\blue0;}"
+        r"{\*\themedata 504b0304abcdef}"
+        r"{\*\datastore {\nested datastore_secret}}"
+        r"{\*\latentstyles{\lsdlockedexcept Normal;}}"
+        r"\f0\fs24 Caf\'e9 10\'80 espa\u241?ol \u241\'f1 \u-1279?\par "
+        r"Second line.}"
+    )
+    rtf_file.write_text(rtf_content, encoding="utf-8")
+
+    extracted = read_doc_text(str(rtf_file))
+    assert "Café" in extracted
+    assert "10€" in extracted
+    assert "español" in extracted
+    assert "ñ" in extracted
+    assert "ﬁ" in extracted
+    assert "Second line." in extracted
+    for ignored in ("Arial", "Helvetica", "504b0304", "datastore_secret", "Normal"):
+        assert ignored not in extracted

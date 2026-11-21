@@ -23,21 +23,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: uv sync --frozen --extra dev
 
       - name: Ruff lint
-        run: ruff check --output-format=github .
+        run: uv run ruff check --output-format=github src tests
 
       - name: Ruff format
-        run: ruff format --check .
+        run: uv run ruff format --check src tests
 
       - name: Mypy
-        run: mypy src/
+        run: uv run mypy src tests
 
   tests:
     name: Tests (Python ${{ matrix.python-version }})
@@ -53,9 +54,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Install system dependencies
         run: |
@@ -70,12 +72,12 @@ jobs:
             libxkbcommon0
 
       - name: Install dependencies
-        run: pip install -e ".[test]"
+        run: uv sync --frozen --extra dev
 
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest --cov --cov-report=xml:coverage.xml --cov-report=term
+        run: uv run pytest --cov=src/semsearch --cov-report=xml:coverage.xml --cov-report=term
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'

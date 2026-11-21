@@ -5,8 +5,10 @@ import numpy as np
 from semsearch.core.types import Modality
 from semsearch.core.vectors import (
     DIM,
+    MODALITY_TO_CODE,
     bytes_to_float16,
     cosine_similarity,
+    cosine_similarity_unit,
     float16_to_bytes,
     l2_normalize,
     z_score_normalize,
@@ -166,3 +168,38 @@ def test_z_score_normalize_multi_hit_outlier_resistance() -> None:
     assert z[-1] >= 3.0
     assert z[-2] >= 2.2
     assert np.all(z[:-2] < 2.2)
+
+
+def test_cosine_similarity_unit_matches_cosine_similarity() -> None:
+    """Verify cosine_similarity_unit matches cosine_similarity on L2-normalized rows."""
+    rng = np.random.default_rng(7)
+    raw_docs = rng.standard_normal((16, 32)).astype(np.float32)
+    unit_docs = l2_normalize(raw_docs).astype(np.float32)
+    query = rng.standard_normal(32).astype(np.float32) * 3.5
+
+    sims_unit = cosine_similarity_unit(query, unit_docs)
+    sims_full = cosine_similarity(query, raw_docs)
+    assert sims_unit.dtype == np.float32
+    assert np.allclose(sims_unit, sims_full, atol=1e-5)
+
+    empty = np.empty((0, 32), dtype=np.float32)
+    assert len(cosine_similarity_unit(query, empty)) == 0
+
+
+def test_z_score_normalize_accepts_uint8_modality_codes() -> None:
+    """Verify vectorized uint8 modality codes produce identical Z-scores to list[Modality]."""
+    rng = np.random.default_rng(123)
+    cosines = rng.uniform(0.1, 0.9, size=60).astype(np.float32)
+    modalities = [Modality.TEXT] * 25 + [Modality.IMAGE] * 25 + [Modality.AUDIO] * 10
+    codes = np.array([MODALITY_TO_CODE[m] for m in modalities], dtype=np.uint8)
+    scale = np.array([i % 2 == 0 for i in range(60)], dtype=np.bool_)
+
+    z_list = z_score_normalize(cosines, modalities, sets_scale=scale)
+    z_codes = z_score_normalize(cosines, codes, sets_scale=scale)
+    assert np.allclose(z_list, z_codes, atol=1e-6)
+    assert MODALITY_TO_CODE == {
+        Modality.NONE: 0,
+        Modality.TEXT: 1,
+        Modality.IMAGE: 2,
+        Modality.AUDIO: 3,
+    }

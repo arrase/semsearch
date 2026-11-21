@@ -1,72 +1,64 @@
 # multimodal-extractors Specification
 
 ## Purpose
-Defines extraction contracts for transforming desktop files into standardized multimodal segment inputs across images, PDFs, office documents, audio, video, and code, strictly prohibiting OCR.
+Defines safe, bounded extraction contracts for transforming desktop files into standardized multimodal segment inputs across raster and SVG images, PDFs, office and markup documents, audio, video, and source code/notebooks, strictly enforcing the Zero-OCR invariant.
 
 ## Requirements
 
-### Requirement: Zero OCR Invariant Across All Extractors
-Extractors MUST NOT perform optical character recognition (OCR) on any images, rendered PDF pages, or video frames, relying exclusively on multimodal visual embeddings to capture visual and textual information.
+### Requirement: Strict Zero-OCR Invariant Across All Extractors
+Extractors MUST NOT import or invoke any optical character recognition (OCR) library or process on images, SVGs, rendered PDF pages, or video frames. Visual content MUST be represented exclusively as multimodal image payloads (`SegmentKind.IMAGE`, `SegmentKind.PAGE_IMAGE`, `SegmentKind.FRAME`).
 
 #### Scenario: Visual document processing without OCR
-- **WHEN** an image, scanned document, or PDF page is processed
-- **THEN** no OCR library or process is invoked, and the raw visual content is converted directly to an image payload
+- **WHEN** an image, `.svg`, screenshot, scanned PDF page, or video frame is extracted
+- **THEN** no OCR tool or library is invoked and the rasterized/normalized visual content is emitted directly as a base64 image segment
 
-### Requirement: Image and Screenshot Extraction
-The image extractor MUST load images, normalize EXIF orientation, downscale to a maximum bounding dimension of 1024px for standard images and 1536px for screenshots, and return base64-encoded image payloads.
+### Requirement: Image, SVG, and Screenshot Extraction with Decompression-Bomb Guard
+`extract_image()` MUST enforce `MAX_IMAGE_PIXELS = 100_000_000` on Pillow and reject raster images exceeding that pixel budget. For `.svg` files, it MUST rasterize the first page natively via PyMuPDF (`fitz.open(path)`) bounded to `1024px` (images) or `1536px` (screenshots) and return a PNG base64 `SegmentKind.IMAGE` payload. For raster formats, it MUST apply `ImageOps.exif_transpose()`, downscale preserving aspect ratio via `LANCZOS` (`1024px` standard, `1536px` screenshot), and encode screenshots/transparent images as PNG and standard photos as JPEG (`quality=90`).
 
-#### Scenario: Standard image extraction and downscaling
-- **WHEN** an image exceeding 1024px in width or height is extracted
-- **THEN** it is downscaled preserving aspect ratio to fit within 1024px, EXIF orientation is corrected, and a base64 image segment is returned
+#### Scenario: SVG rasterization via PyMuPDF without external tools
+- **WHEN** an `.svg` vector file is passed to `extract_image()`
+- **THEN** PyMuPDF rasterizes the vector artwork scaled within `1024px` (or `1536px` for screenshots) and emits a PNG base64 `SegmentKind.IMAGE` segment without OCR
 
-#### Scenario: Screenshot extraction with enhanced resolution
-- **WHEN** a screenshot candidate file is extracted
-- **THEN** it is downscaled to fit within 1536px bounding dimension preserving sharp text and UI elements, returned as a base64 image segment
+#### Scenario: Blocking oversized raster decompression bombs
+- **WHEN** an image whose `width * height` exceeds `100_000_000` pixels is passed to `extract_image()`
+- **THEN** extraction raises `ValueError` instead of allocating unbounded memory
 
-### Requirement: PDF Two-Stage and Hybrid Extraction
-The PDF extractor MUST read documents in two stages, extracting pages 1 to 30 in the initial pass and deferring subsequent pages. For each page, digital text MUST be extracted if the character count is at least 200; otherwise, the page MUST be rendered to a 1400px image segment without OCR.
+### Requirement: PDF Two-Stage Hybrid Extraction and Encrypted PDF Handling
+`extract_pdf()` MUST check `doc.needs_pass` and raise `ValueError("Encrypted PDF requires password")` cleanly for encrypted PDFs. It MUST process documents in batches of up to 30 pages (`max_pages = 30`). Pages with at least 200 characters passing `has_words()` MUST emit `SegmentKind.PAGE` (`Modality.TEXT`); all other pages MUST render at 150 DPI capped at 1400px maximum side as JPEG base64 `SegmentKind.PAGE_IMAGE` (`Modality.IMAGE`) without OCR.
 
-#### Scenario: Digital text page extraction
-- **WHEN** a PDF page contains 200 or more characters of selectable text
-- **THEN** the text content is extracted as a text segment with its page number location
+#### Scenario: Controlled rejection of encrypted PDF
+- **WHEN** `extract_pdf()` opens a password-protected PDF (`doc.needs_pass == True`)
+- **THEN** it raises a controlled `ValueError` so the indexer records a clear failure detail without crashing
 
-#### Scenario: Scanned or visual slide page rendering
-- **WHEN** a PDF page contains fewer than 200 characters of selectable text
-- **THEN** the entire page is rendered to an image scaled to 1400px dimension and emitted as an image segment with zero OCR
+#### Scenario: Hybrid digital text and visual slide extraction with 30-page batching
+- **WHEN** a PDF with more than 30 pages containing both dense text pages and image-only slides is extracted
+- **THEN** the initial pass processes pages 1–30, emitting `PAGE` segments for `>= 200`-char text pages and `1400px`-capped `PAGE_IMAGE` segments for visual pages, and returns `is_complete = False`
 
-#### Scenario: Multi-stage pagination limit
-- **WHEN** a PDF contains more than 30 pages
-- **THEN** the first pass extracts up to page 30 and marks the remaining pages for deferred background processing
+### Requirement: Safe Document Extraction, Zip-Bomb Guard, HTML/RTF Cleaning, and Word-Boundary Chunking
+`read_doc_text()` MUST support `.txt`, `.text`, `.md`, `.markdown`, `.rst`, `.rtf`, `.docx`, `.odt`, `.html`, and `.htm`, and MUST explicitly reject legacy binary `.doc` files (`ValueError`). Before reading `.odt` or `.docx` archives, it MUST verify total uncompressed archive size `<= MAX_ARCHIVE_UNCOMPRESSED_BYTES` (`32 MiB`) to prevent zip bombs. Plain text, HTML, and RTF reads MUST enforce `<= MAX_TEXT_FILE_BYTES` (`10 MiB`). `_HTMLTextExtractor` MUST discard content inside `<script>`, `<style>`, `<noscript>`, `<svg>`, and `<head>` tags. `_strip_rtf()` MUST discard ignorable RTF groups (`{\*\...}`, `fonttbl`, `colortbl`, `stylesheet`, `info`, `pict`), decode Unicode `\uN?` escapes, and decode `\'xx` hex escapes as `cp1252`. `chunk_document()` MUST produce `SegmentKind.CHUNK` segments up to 1800 characters with 200-character overlap snapped to whitespace, filtering chunks failing `has_words()`.
 
-### Requirement: Document Text Extraction and Boundary-Snapped Chunking
-The document extractor MUST parse plain text, Markdown, HTML (with tags stripped), DOCX, ODT, and RTF into chunks of at most 1800 characters with 200-character overlap snapped to word boundaries, discarding chunks with under 20% alphabetic letters.
+#### Scenario: Blocking zip bombs in ODT and DOCX archives
+- **WHEN** an `.odt` or `.docx` archive reports total uncompressed entry sizes exceeding `32 MiB`
+- **THEN** `read_doc_text()` raises `ValueError` before decompressing XML entries into memory
 
-#### Scenario: Markup stripping and word-boundary chunking
-- **WHEN** a document containing markup or formatting is processed
-- **THEN** plain text is extracted, stripped of markup tags, and segmented into chunks of up to 1800 characters with 200-character overlap snapped to whitespace
+#### Scenario: Rejecting legacy binary .doc format
+- **WHEN** a `.doc` file path is passed to `read_doc_text()`
+- **THEN** it raises `ValueError` indicating legacy binary `.doc` is unsupported
 
-#### Scenario: Low-quality non-text filtering
-- **WHEN** an extracted chunk contains fewer than 20% alphabetic characters
-- **THEN** the chunk is discarded by the `has_words` filter
+#### Scenario: Cleaning HTML scripts/styles and decoding RTF cp1252 and Unicode escapes
+- **WHEN** HTML containing `<head>`, `<script>`, `<style>`, `<noscript>`, or `<svg>` blocks or RTF containing `{\*\...}`, `\'e9`, and `\u241?` is parsed
+- **THEN** non-content HTML tags and ignorable RTF groups are stripped while accented `cp1252` and Unicode characters are decoded accurately
 
-### Requirement: Audio and Video Media Extraction
-The media extractor MUST convert audio to 16 kHz mono WAV, segmenting into 30-second windows with 25-second hops and filtering silence (RMS <= 0.003). For video, it MUST sample frames every 3 seconds, deduplicate frames using 8x8 average perceptual hashing (dropping Hamming distance <= 4), and extract the audio track.
+### Requirement: Bounded Audio/Video Extraction and Duration Probing
+`extract_audio()` and `extract_video()` MUST invoke `ffmpeg` with `-nostdin`, duration cap `-t 3600`, and subprocess `timeout=60`. Audio extraction MUST decode 16 kHz mono PCM, slice 30-second windows with 25-second hops, and discard silent windows (`RMS <= 0.003`). Video extraction MUST sample 1 frame every 3 seconds scaled to max width 1024px, deduplicate consecutive shots via 8x8 `average_hash` (dropping Hamming distance `<= 4`), and also extract the audio track. `probe_media_duration(path)` MUST query `ffprobe` (`timeout=10`) returning positive finite duration in seconds or `0.0` on failure.
 
-#### Scenario: Audio windowing and silence filtration
-- **WHEN** an audio file is extracted
-- **THEN** 16 kHz mono 30-second chunks are generated at 25-second hop intervals, and chunks with RMS amplitude 0.003 or lower are discarded
+#### Scenario: Enforcing ffmpeg subprocess bounds and probing duration
+- **WHEN** `extract_audio()`, `extract_video()`, or `probe_media_duration()` runs on a media file
+- **THEN** `ffmpeg` executes non-interactively (`-nostdin`) bounded to `-t 3600` and `timeout=60`, while `probe_media_duration()` returns the real duration in seconds via `ffprobe` (or `0.0` safely on failure)
 
-#### Scenario: Video keyframe sampling and perceptual deduplication
-- **WHEN** a video file is extracted
-- **THEN** frames are captured at 3-second intervals, sequential frames with 8x8 perceptual hash Hamming distance <= 4 are discarded as duplicate shots, and remaining frames are emitted as image segments alongside audio soundtrack chunks
+### Requirement: Bounded Source Code and Notebook Extraction
+`extract_code()` and `extract_notebook()` MUST enforce `MAX_CODE_FILE_BYTES = 10 MiB`. `extract_code()` MUST slice whole lines into ~1800-character `SegmentKind.LINES` segments snapping to natural boundaries (10 lines back, else 2-line overlap) and record top-level symbol definition line numbers in `focus`. `extract_notebook()` MUST extract 1-based `SegmentKind.CELLS` segments from `.ipynb` code and markdown cells while stripping execution outputs and metadata.
 
-### Requirement: Code and Notebook Extraction with Definition Detection
-The code extractor MUST slice source code into whole-line chunks of approximately 1800 characters, detect top-level function and class definition lines, and strip execution outputs and metadata from Jupyter notebooks.
-
-#### Scenario: Whole-line code chunking and definition indexing
-- **WHEN** source code files are parsed
-- **THEN** chunks are split cleanly on line boundaries without splitting statements, and definition lines are identified and recorded in segment metadata
-
-#### Scenario: Jupyter notebook output stripping
-- **WHEN** a `.ipynb` notebook is extracted
-- **THEN** all cell outputs, execution counts, and notebook metadata are stripped, extracting only clean code and markdown source cells
+#### Scenario: Whole-line code chunking and Jupyter output stripping
+- **WHEN** a source code file or `.ipynb` notebook within `10 MiB` is extracted
+- **THEN** code files emit whole-line `LINES` segments with 1-based `focus` definition lines, and notebooks emit clean `CELLS` segments stripped of cell outputs

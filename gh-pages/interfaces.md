@@ -1,88 +1,93 @@
-# Desktop UI, Quick Panel & Shortcuts
+# Desktop UI, Quick Panel, Previews & Desktop Providers
 
-SemSearch provides a streamlined, keyboard-first desktop experience built with **PySide6**: a dynamic **System Tray Icon**, a Spotlight-style **Floating Quick Search Panel** with grouped results, an **Interactive Multimodal Preview Pane**, and **Deep-Link Desktop Actions**.
+SemSearch provides a keyboard-first Linux desktop experience built with **PySide6**: an event-driven **System Tray Icon**, a Spotlight-style **`748px` Floating Quick Search Panel**, a modular asynchronous **`gui/preview/`** package with real in-panel media playback, **Deep-Link Desktop Actions**, and native **KDE KRunner & GNOME Shell** D-Bus search providers.
 
 ---
 
-## 1. Dynamic System Tray Icon (`gui/tray.py`)
+## 1. Event-Driven System Tray Icon (`gui/tray.py`)
 
-`SystemTrayManager` renders a custom $64 \times 64$ antialiased `QPixmap` in memory using `QPainter` (`render_tray_icon`) that reflects the real-time state of `IndexService`:
+`SystemTrayManager` renders a crisp HiDPI `128 × 128` (`2×` logical `64 × 64`) antialiased `QPixmap` via `QPainter` (`render_tray_icon`):
 
 | State | Visual Indicator | Tooltip / Menu Status |
 | :--- | :--- | :--- |
 | **Idle** | Brand purple-blue magnifying glass icon | `SemSearch - Idle - {N} indexed` |
-| **Indexing** | Circular dark track with animated green progress arc (`0%`–`100%`) and center dot | `SemSearch - Indexing: {percent}% ({indexed}/{total})` |
-| **Paused** | Amber circle with dual vertical pause bars | `SemSearch - Paused` |
+| **Indexing** | Circular dark track with green progress arc (`0%`–`100%`) and center dot | `SemSearch - Indexing: {percent}% ({indexed}/{total})` |
+| **Paused / Waiting** | Amber circle with dual vertical pause bars | `Paused`, `Waiting for Ollama`, `Waiting for AC power`, or `Waiting for scheduled hours` |
 
-To minimize background CPU and SQLite overhead while idle, `SystemTrayManager` caches the last rendered state tuple (`_last_rendered_state`) and `IndexService.get_status()` skips database `COUNT(*)` queries when `EngineActivity.IDLE` is active.
+* **Zero Polling in `IDLE`**: When `IndexService` transitions to `IDLE`, `SystemTrayManager` stops its 1-second `QTimer` completely and only resumes polling when `IndexService.add_work_listener` signals `_work_arrived` from a background thread. `_last_rendered_state` skips redundant repaints and D-Bus updates whenever state is unchanged.
+* **No-Tray Desktop Fallback**: If `QSystemTrayIcon.isSystemTrayAvailable()` is `False` (e.g., minimal tiling window managers without a tray) and `--daemon` was not specified, SemSearch automatically displays the Quick Search Panel on launch.
 
 ### Tray Interactions
-* **Left-Click**: Immediately opens and focuses the floating **Quick Search Panel**.
-* **Right-Click Context Menu**:
-  * Status indicator line *(read-only)*
-  * **Quick Search**: Opens the floating search panel.
-  * **Pause Indexing / Resume Indexing**: Manually pauses or resumes background indexing.
-  * **Settings...**: Opens the 4-tab Settings dialog.
-  * **Quit**: Stops background threads cleanly and exits SemSearch.
+* **Left-Click**: Opens and focuses the floating **Quick Search Panel**.
+* **Right-Click Context Menu**: Status line *(read-only)*, **Quick Search**, **Pause Indexing / Resume Indexing** (manual user pause independent of `PowerScheduler`), **Settings...**, and **Quit**.
 
 ---
 
 ## 2. Floating Quick Search Panel (`gui/panel.py`)
 
-Pressing <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> (or running `semsearch --panel`) summons a frameless, centered floating search bar (`900px` wide) that expands smoothly into a two-column view with grouped search results on the left (`340px`) and a live multimodal preview pane on the right (`560px`).
+Pressing <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> (or running `semsearch --toggle` / `semsearch --panel`) opens a frameless floating panel (`748px` wide, `18px` corner radius, `56px` collapsed) centered in the upper third of the **monitor under the active mouse cursor** (`QApplication.screenAt(QCursor.pos())`). When matches exist, it expands up to `480px` (clamped to `screen.availableGeometry().height() - 40` on small/HiDPI displays) into a two-column layout: **`328px` result list** + **`416px` preview pane**.
 
 ![SemSearch Quick Search Panel](screenshots/quick-panel.png)
 
-### Two-Stage Instant + Semantic Retrieval
-1. **Instant Lexical Pass (`_execute_instant_lexical`)**: As you type, SemSearch immediately queries the SQLite FTS5 index (with automatic prefix fallback) so exact keyword and filename matches appear with zero latency.
-2. **Debounced Hybrid Semantic Pass (`SearchWorker`)**: After a **120 ms** typing pause, a background `QThread` worker runs the full hybrid vector + lexical ranking pipeline (`SearchService.search`) and updates the grouped results and match counter (`{count} matches`).
+### Dual-Cadence Retrieval & Selection Preservation
+1. **Instant Lexical Pass**: On every keystroke, `SearchPanel` delegates to `SearchService.lexical_search(query, limit=50)` (supporting inline filters `code:`, `kind:`, `ext:`, `path:`, `after:` with zero Ollama calls).
+2. **Debounced Semantic Pass (`SearchWorker`)**: After a **120 ms** pause, a background `QThread` executes `SearchService.search(..., prefix_last=True)` serialized by `_search_lock`, skipping obsolete cancelled workers immediately.
+3. **Selection Preservation**: When asynchronous semantic results arrive or when toggling weaker matches, `_populate_list()` preserves the user's currently highlighted `hit.path` instead of snapping back to row 0.
 
-### Grouped Results & Location Badges
-* **Category Grouping**: Primary ranked results (`result_set.ranked`) are organized under uppercase category headers (`DOCUMENTS`, `PDF DOCUMENTS`, `SCREENSHOTS`, `PICTURES`, `AUDIO`, `MEDIA`, `CODE`).
-* **Compact Location Badges (`format_hit_place_badge`)**: Each result row (`ResultItemWidget`) displays a file type icon, an elided filename (`ElidedLabel`), an elided tilde-formatted parent path (`~/...`), and a context-specific location badge:
-  * **PDFs**: `p. {page}` (matched page number)
-  * **Audio / Video**: `M:SS` (matched timestamp)
-  * **Source Code**: `L{line}` (matched symbol definition or focus line)
-* **Folded Weaker Matches**: Lower-scoring hits (`score < 0.5 * top_score`) are neatly folded into an expandable `{arrow} {count} weaker matches` row at the bottom of the list, toggleable via mouse click or <kbd>Enter</kbd>.
-* **Automatic Focus & Memory Reclamation**: Clicking outside the panel (`WindowDeactivate`) or triggering an action automatically dismisses the panel, releases cached preview pixmaps/documents, and calls `Database.shrink_memory()` on `index.sqlite` and `code.sqlite`.
+### Grouped Results, Drag & Drop, Quick Actions & Accessibility
+* **Category Headers & Badges**: Ranked hits group under uppercase category headers (`DOCUMENTS`, `PDF DOCUMENTS`, `SCREENSHOTS`, `PICTURES`, `AUDIO`, `MEDIA`, `CODE`) with elided paths and location badges (`p. {page}`, `M:SS`, `L{line}`). Lower-scoring hits (`< 50%` of top score) fold into an expandable `{arrow} {count} weaker matches` row.
+* **Drag & Drop (`DraggableResultList`)**: Drag any result row directly into a browser, chat window, editor, or file manager (`QDrag` carrying `QUrl.fromLocalFile(hit.path)` and plain path text).
+* **Quick Actions Menu (<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd>)**: Opens a context menu on the highlighted result with **Open**, **Show in Files**, **Copy File**, **Copy Path**, **Copy Excerpt**, and **Open Terminal Here** without dismissing the panel.
+* **IME, Accessibility & RTL**: `WindowDeactivate` ignores active popups (`QApplication.activePopupWidget()`) and the Quick Actions menu so `IBus`/`Fcitx5` IME windows do not close the panel. Result rows expose `Qt.ItemDataRole.AccessibleTextRole`, muted text (`#94A3B8`) meets WCAG AA contrast, and RTL locales (`ar`, `fa`, `he`) flip list borders and collapse arrows automatically.
 
-### Quick Search Panel Keyboard Shortcuts
+### Keyboard Shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | Toggle the Quick Search Panel from anywhere on the desktop |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | Navigate up and down through ranked search results (and weaker matches toggle) |
-| <kbd>Enter</kbd> (`↵`) | Open selected result at the exact PDF page, media timestamp, or code line |
-| <kbd>Shift</kbd> + <kbd>Enter</kbd> (`⇧↵`) / <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Reveal and highlight the file in your system file manager |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd> (`⌃C`) | Copy the file (`file://` URI) to the system clipboard |
-| <kbd>Esc</kbd> | Clear the search input (collapsing the panel) or dismiss the panel if empty |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | Toggle Quick Search Panel globally (Wayland XDG Portal / X11 `pynput`) |
+| <kbd>↑</kbd> / <kbd>↓</kbd>, <kbd>PageUp</kbd> / <kbd>PageDown</kbd>, <kbd>Home</kbd> / <kbd>End</kbd> | Navigate results and weaker matches |
+| <kbd>Enter</kbd> (`↵`) | Open selected result at exact PDF page, media timestamp, or code line |
+| <kbd>Shift</kbd> + <kbd>Enter</kbd> / <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Reveal and highlight file in system file manager |
+| <kbd>Tab</kbd> / <kbd>Ctrl</kbd> + <kbd>K</kbd> | Open Quick Actions menu |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copy selected query text if highlighted in the search box; otherwise copy the file to the clipboard |
+| <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>Alt</kbd> + <kbd>→</kbd> | Navigate to previous / next page when previewing a PDF |
+| <kbd>Esc</kbd> | Clear search input (collapsing panel) or dismiss panel if empty |
 
 ---
 
-## 3. Interactive Multimodal Preview Pane (`gui/preview.py`)
+## 3. Modular Asynchronous Preview Pane (`gui/preview/`)
 
-Selecting any result in the Quick Search Panel populates the right-hand `PreviewPane` with a specialized viewer tailored to the file's modality, paired with a bottom `MetadataCard` showing the filename, match reason badge (`Matches meaning`, `Matches words`, or `Matches name`), file size, modification timestamp, and quick **Open** / **Show in Files** action buttons.
+The preview subsystem is split into a modular asynchronous package (`__init__.py`, `loader.py`, `metadata.py`, `image_view.py`, `pdf_view.py`, `media_view.py`, `code_view.py`) backed by `PreviewLoader` (`QThreadPool`, max 2 threads) with per-channel request IDs that discard stale loads as you navigate quickly:
 
 ![SemSearch Code Search](screenshots/code-search.png)
 
-* **PDF Preview (`PdfPreviewWidget`)**: Renders the matched page (`hit.loc`) at `1.6x` zoom using PyMuPDF (`pymupdf`) with translucent yellow highlight rectangles (`page.search_for(term)`) drawn over matching query terms, plus **◀ Prev** and **Next ▶** page navigation controls.
-* **Image & Screenshot Preview (`ImagePreviewWidget`)**: High-DPI, aspect-ratio-preserving preview with smooth scaling and pixel dimension readout (`width × height px`).
-* **Audio Preview (`AudioPreviewWidget`)**: Displays a 64-bar deterministic waveform visualization (`WaveformWidget`) seeded by the file path, positioned at the matched timestamp (`hit.loc`), with an interactive scrub slider and a **▶ Play** button that launches playback at the exact scrubbed second.
-* **Video Preview (`VideoPreviewWidget`)**: Extracts the actual video frame at the matched timestamp (`hit.loc`) on the fly via `ffmpeg` (`_extract_video_frame`), overlays a play badge, and provides a scrub bar and **▶ Open at Moment** button.
-* **Source Code & Document Preview (`CodePreviewWidget`)**:
-  * **Source Code**: Renders in a read-only `CodeEditor` with a dynamic line-number gutter (`LineNumberGutter`), nowrap formatting, a full-width yellow highlight on the target symbol/focus line (`hit.focus` or `hit.loc`), and yellow highlights on all occurrences of the query terms.
-  * **Text & Rich Documents (`.docx`, `.odt`, `.rtf`, `.html`, `.txt`, `.md`)**: Extracts clean text (via `read_doc_text`), enables word wrapping, highlights all query terms in yellow, and automatically scrolls and centers the viewport on the first query match or matched segment excerpt.
+* **Disk Thumbnail Cache (`loader.py`)**: Extracted `ffmpeg` video frames are cached atomically as PNGs in `~/.cache/semsearch/thumbs/` (pruned to the 200 most recent files by `mtime`). Text/code previews truncate safely at **256 KB** (`MAX_PREVIEW_TEXT_BYTES = 262,144`).
+* **Image, SVG & Animated GIF Preview (`image_view.py`)**: Uses `QImageReader` scaled decode with `devicePixelRatioF()` for crisp HiDPI rendering (loading images `> 512 KB` asynchronously), rasterizes `.svg` vectors via PyMuPDF, plays animated `.gif` files via `QMovie`, and displays pixel dimensions.
+* **PDF Preview (`pdf_view.py`)**: Renders the matched page at `1.6 × dpr` zoom using PyMuPDF with yellow keyword highlights, **◀ Prev** / **Next ▶** controls (<kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd>), and clear error messages for missing, encrypted, or corrupt PDFs.
+* **Audio & Video Preview (`media_view.py`)**:
+  * **In-Panel Audio Playback**: `AudioPreviewWidget` plays directly inside the panel using `QMediaPlayer` + `QAudioOutput` positioned at `hit.loc` (with `open_media_at` fallback), displays a real 64-bar RMS amplitude envelope (`WaveformWidget`) decoded via `ffmpeg`, and reads real duration from `hit.info["duration"]` / `probe_media_duration()` / `durationChanged`.
+  * **Async Video Scrubbing**: `VideoPreviewWidget` displays cached video frames asynchronously, updates frames with a 150 ms debounce as you scrub the slider, and launches external playback via **▶ Open at Moment**.
+* **Code & Document Preview (`code_view.py`)**: Read-only `CodeEditor` with dynamic `LineNumberGutter`, lightweight lexical **`CodeSyntaxHighlighter`** (keywords, definitions, strings, comments), UTF-16-safe diacritic-insensitive query highlights capped at **200** `ExtraSelection`s, async loading for files `> 128 KB`, full-width anchor highlight when `line > 0`, and line-wrapped excerpt scrolling for document/semantic matches.
+* **Metadata Card (`metadata.py`)**: Displays filename, tilde path, size, modification timestamp, translated match reason badge (`Matches meaning`, `Matches words`, `Matches name`), and **Open** / **Show in Files** buttons—where **Open** dispatches `execute_hit_action(hit, config)` to preserve exact page, timestamp, or line jumps.
 
 ---
 
 ## 4. Deep-Link Desktop Actions (`services/actions.py`)
 
-When you press <kbd>Enter</kbd> or double-click a result, `execute_hit_action()` opens the file at the exact matched location using installed Linux desktop applications:
+| Action | Behavior & Supported Linux Applications |
+| :--- | :--- |
+| **Source Code (`open_code_at`)** | Jumps to `hit.focus` or `hit.loc`: **VS Code** (`code -g path:line`), **Cursor** (`cursor -g path:line`), **Zed** (`zed path:line`), **Sublime Text** (`subl path:line`), **JetBrains** (`pycharm`/`idea`/`clion`/`webstorm`/`goland`/`rustrover`/`rider --line line path`, prioritized when `code_editor = "jetbrains"`), fallback `xdg-open`. |
+| **PDF (`open_pdf_at`)** | Queries default XDG handler (`xdg-mime query default application/pdf`) and prefers it among **Papers** (`papers -i page -- path`), **Okular** (`okular -p page -- path`), **Evince** (`evince -i page -- path`), and **Zathura** (`zathura -P page -- path`), fallback `xdg-open`. |
+| **Audio / Video (`open_media_at`)** | Jumps to matched second: **mpv** (`mpv --start=sec -- path`), **VLC** (`vlc --start-time=sec -- path`), fallback `xdg-open`. |
+| **Reveal in File Manager** | Invokes `org.freedesktop.FileManager1.ShowItems([file_uri], "")` over **`PySide6.QtDBus.QDBusInterface`**, falling back to `dolphin`/`nautilus`/`nemo --select` and `xdg-open` on parent folder. |
+| **Clipboard (`copy_file_to_clipboard`, `copy_to_clipboard`)** | Uses native Qt `QGuiApplication.clipboard()` (`QMimeData.setUrls` + `file://` URI text for files) in GUI mode, with `wl-copy` / `xclip -selection clipboard` fallback in headless CLI mode. |
+| **Open Terminal Here (`open_terminal_at`)** | Opens the first available terminal in `xdg-terminal-exec`, `kitty`, `alacritty`, `ghostty`, `konsole`, `gnome-terminal`, `wezterm`, `xfce4-terminal`, `xterm` at the file's directory. |
 
-| File Kind | Deep-Link Action | Supported Applications & CLI Flags |
-| :--- | :--- | :--- |
-| **Source Code (`CODE`)** | Opens file at exact symbol/match line (`hit.focus` or `hit.loc`) | **VS Code** (`code -g path:line`), **Cursor** (`cursor -g path:line`), **Zed** (`zed path:line`), **Sublime Text** (`subl path:line`), **JetBrains IDEs** (`pycharm`/`idea`/`clion`/`webstorm`/`goland`/`rustrover`/`rider --line line path`), fallback `xdg-open` |
-| **PDF (`PDF`)** | Opens PDF at exact matched page (`hit.loc`) | **Okular** (`okular -p page`), **Evince** (`evince -p page`), **Zathura** (`zathura -P page`), fallback `xdg-open` |
-| **Audio / Video (`AUDIO`, `VIDEO`)** | Starts playback at exact matched timestamp (`hit.loc` seconds) | **mpv** (`mpv --start=sec`), **VLC** (`vlc --start-time=sec`), fallback `xdg-open` |
-| **Reveal in File Manager** | Highlights the file in its parent folder | `org.freedesktop.FileManager1.ShowItems` via `dbus-send`, **Dolphin** (`--select`), **Nautilus** (`--select`), **Nemo** (`--select`) |
-| **Copy to Clipboard** | Copies `file://` URI to clipboard | Wayland `wl-copy` or X11 `xclip -selection clipboard` |
+---
+
+## 5. Native Desktop Search Providers (`gui/desktop_providers.py`)
+
+While SemSearch is running, `DesktopSearchProviders` registers **`org.semsearch.DesktopSearch`** on the D-Bus session bus using `QDBusVirtualObject` instances (installed with `semsearch install-desktop`):
+
+* **KDE Plasma KRunner (`/krunner` — `org.kde.krunner1`)**: Implements `Actions` (exposing secondary action *Show in Files*), `Match` (returning up to 10 ranked hits with category, folder + excerpt subtext, and normalized relevance), and `Run` (executing deep-link `execute_hit_action` or `reveal_in_file_manager`).
+* **GNOME Shell Overview (`/org/semsearch/SearchProvider` — `org.gnome.Shell.SearchProvider2`)**: Implements `GetInitialResultSet`, `GetSubsearchResultSet`, `GetResultMetas`, `ActivateResult` (deep-link open), and `LaunchSearch` (opening the SemSearch Quick Panel pre-filled with the GNOME Overview query).

@@ -1,103 +1,53 @@
 # e2e-validation Specification
 
 ## Purpose
-Provides comprehensive end-to-end integration testing, synthetic realistic testbed validation across all modalities, search fidelity benchmarks, CLI activation, and system architectural invariant enforcement.
+Provides comprehensive end-to-end integration testing across synthetic multimodal testbeds, WAL concurrency and resilience, hybrid BM25 + Z-score search fidelity with inline filters, headless CLI commands, IPC forwarding, native D-Bus search providers, and strict Zero-OCR architectural invariant enforcement.
 
 ## Requirements
 
-### Requirement: Multimodal Testbed Generation and Ingestion
-The testbed SHALL generate valid synthetic sample files across all supported modalities without requiring external internet access. The testbed SHALL provide raster images and desktop screenshots, digital and scanned visual PDFs, formatted documents, audio recordings with speech and silence segments, video clips with distinct scenes, and source code files with symbols alongside Jupyter notebooks with cleared outputs.
+### Requirement: Multimodal Testbed Generation and Zero-OCR Ingestion
+The testbed SHALL generate valid synthetic sample files across all supported modalities without requiring external internet access: raster images, `.svg` vector graphics, desktop screenshots, digital and visual PDFs, formatted documents (`.txt`, `.md`, `.html`, `.rtf`, `.docx`, `.odt` — excluding legacy binary `.doc`), audio recordings with active and silent segments, video clips with distinct scenes, source code files with symbols, and Jupyter notebooks with cleared outputs. Visual ingestion SHALL strictly preserve the Zero-OCR invariant without importing or executing any OCR engine and without `SegmentKind.OCR`.
 
-#### Scenario: Generating synthetic testbed artifacts across all modalities
-- **WHEN** the synthetic testbed generation procedure is invoked with a target directory
-- **THEN** valid test files for images, PDFs, documents, audio, video, code, and notebooks are generated successfully
+#### Scenario: Generating and ingesting synthetic multimodal testbed artifacts
+- **WHEN** the synthetic testbed is generated and processed through the indexing pipeline
+- **THEN** all supported files (including `.svg` rasterized via PyMuPDF) are extracted, L2-normalized, vectorized, and stored in schema v6 `index.sqlite` and `code.sqlite` with zero failed files and zero OCR calls
 
-#### Scenario: Ingestion of generated testbed files into the indexing pipeline
-- **WHEN** the indexing pipeline processes the generated testbed directory
-- **THEN** all supported testbed files are extracted, vectorized, and cataloged in the search databases
+### Requirement: WAL Concurrency, Vector Preservation, and Ollama Outage Resilience
+End-to-end validation SHALL verify that:
+- Concurrent WAL readers execute searches without blocking during active write transactions and rolled-back transactions leave storage and `VectorSnapshot` caches intact.
+- Moving or renaming an already indexed (`DONE`) file preserves its segments and float16 vectors without re-embedding.
+- Temporary Ollama outages (`OllamaConnectionError`, `OllamaTimeoutError`) pause indexing with `waiting_for = "Ollama"` and exponential backoff without marking files `FAILED`, resuming cleanly once Ollama recovers.
+- Changing the configured embedding model or vector dimension updates `meta` (`embedding_model`, `embedding_dim`) and triggers clean re-indexing.
 
-### Requirement: End-to-End Pipeline Indexing and Storage
-The system SHALL execute full end-to-end indexing on the testbed directory structure, discovering all eligible files, delegating to appropriate extractors, generating vector embeddings, and populating primary and code database schemas. The system SHALL support incremental reindexing upon file modification and deletion.
+#### Scenario: Surviving transient Ollama downtime and file moves
+- **WHEN** Ollama fails transiently during indexing or an indexed file is moved (`mv`)
+- **THEN** pending files remain `PENDING` and index automatically after Ollama recovers, while moved files retain existing vectors without re-embedding
 
-#### Scenario: Initial complete indexation of multimodal directory
-- **WHEN** an initial full crawl and index operation is executed against a test directory
-- **THEN** all files are processed into database records and searchable vectors with zero failed files
+### Requirement: Hybrid BM25 + Z-Score Fidelity, Inline Filters, and Quality Gating (`SEMANTIC_Z_GATE = 2.2`)
+The search engine SHALL enforce `SEMANTIC_Z_GATE = 2.2` and lexical coverage `>= 0.5`, blend BM25 rank (`bm25_bonus`), coverage, and modality-aware Z-scores, fold hits scoring below `50%` of the top candidate score into `ResultSet.weaker`, evaluate inline filters (`code:`, `kind:`, `ext:`, `path:`, `after:`), cross-match `camelCase`/`snake_case` and CJK terms, and anchor code hits to symbol definitions.
 
-#### Scenario: Incremental change detection and database update
-- **WHEN** an existing indexed file is modified or removed from the watched directory
-- **THEN** the index records and vector embeddings are updated or removed to mirror the file system state
+#### Scenario: Quality gating at Z-score 2.2 and inline filter evaluation
+- **WHEN** a query produces candidates with `z < 2.2` and `coverage < 0.5`, or includes inline filters such as `kind:pdf ext:pdf path:reports after:7d`
+- **THEN** sub-threshold noise candidates are excluded from both `ranked` and `weaker`, hits below `50%` of the top score fold into `weaker`, and inline filters restrict results accurately (skipping Ollama when no clean query text remains)
 
-### Requirement: Cross-Modal and Keyword Search Fidelity
-The search engine SHALL retrieve multimodal items matching user textual intent across modalities. Natural language visual descriptions SHALL retrieve matching image and video frame segments; exact serials and identifier tokens SHALL trigger lookup scoring with BM25 boost; and queries starting with the code prefix SHALL target the code database with definition line anchoring.
+#### Scenario: Cross-modal retrieval, serial lookup, and code definition anchoring
+- **WHEN** descriptive queries match images/video frames, identifier lookups match serials, or `code:` queries match symbols (including `camelCase` and qualified `Class.method` identifiers)
+- **THEN** visual hits rank via Z-score calibration, lookups boost lexical BM25 + coverage scores, and code hits carry exact definition line anchors (`focus`)
 
-#### Scenario: Cross-modal visual retrieval from text description
-- **WHEN** a user enters a descriptive textual query matching visual contents of an image or video segment
-- **THEN** the target image or video frame segment is returned in the primary ranked results
+### Requirement: CLI Activation, Headless Subcommands, and Single-Instance IPC
+End-to-end validation SHALL verify GUI activation flags (`--daemon`, `--panel`, `--toggle`, `--settings`), single-instance lockfile (`flock`) and `AF_UNIX` IPC command forwarding (`ipc.sock`), and headless subcommands (`semsearch query --json`, `semsearch status --json`, `semsearch reindex --force`, `semsearch install-desktop`).
 
-#### Scenario: Serial and identifier lookup retrieval
-- **WHEN** a user enters an identifier, hexadecimal string, or hyphenated serial code
-- **THEN** lookup routing is applied and the exact matching item is boosted to the top rank
+#### Scenario: Running headless CLI subcommands and IPC toggle forwarding
+- **WHEN** `semsearch query --json`, `semsearch status --json`, `semsearch reindex --force`, and `semsearch install-desktop` run headless, or a secondary process invokes `semsearch --toggle` / `--panel` / `--settings` while a daemon is active
+- **THEN** headless commands output valid JSON/status and install user-space desktop files cleanly, while secondary GUI invocations forward over `ipc.sock` and exit with status `0`
 
-#### Scenario: Code search with definition line target
-- **WHEN** a user issues a search query prefixed with code targeting a function or class symbol
-- **THEN** the code database is searched and the matching file is returned with its definition line anchor
+#### Scenario: Default daemon launch anchored in system tray
+- **WHEN** `semsearch` is invoked without flags or with `--daemon` on an onboarded installation with an available system tray
+- **THEN** the application runs anchored in the system tray without opening the search panel until toggled
 
-### Requirement: Quality Gating and Weaker Match Folding
-The search engine SHALL enforce quality gating by discarding result candidates whose normalized Z-score falls below 2.0 and whose query coverage falls below 0.5. Search candidates scoring below 50% of the top candidate score SHALL be partitioned into a folded weaker matches collection.
+### Requirement: Native D-Bus Desktop Search Providers and Deep-Link Actions
+End-to-end validation SHALL verify that `org.semsearch.DesktopSearch` exposes `/krunner` (`org.kde.krunner1`) and `/org/semsearch/SearchProvider` (`org.gnome.Shell.SearchProvider2`), returning ranked matches and launching deep-link actions, and that `execute_hit_action()`, `reveal_in_file_manager()`, clipboard helpers, and `open_terminal_at()` dispatch the expected Linux desktop handlers (including `jetbrains`, XDG default PDF viewer with `--`, `FileManager1` via `QDBusInterface`, and Qt clipboard).
 
-#### Scenario: Filtering candidate segments failing quality threshold
-- **WHEN** a search query produces candidate segments with Z-score below 2.0 and coverage below 0.5
-- **THEN** those candidate segments are eliminated from both primary and weaker result sets
-
-#### Scenario: Partitioning results below 50% top score into weaker matches
-- **WHEN** search results contain qualifying hits scoring below half of the highest candidate score
-- **THEN** those hits are separated into the weaker matches list and hidden until explicitly unfolded
-
-### Requirement: CLI Activation and IPC Message Dispatch
-The command-line interface SHALL support flags to trigger the quick search panel, settings dialog, and background daemon mode, while defaulting to background system tray daemon mode when invoked without flags. Invocations of the CLI while an instance is already running SHALL forward the requested action to the active instance via local inter-process communication and terminate the invoking process immediately.
-
-#### Scenario: Dispatching quick search panel from command line
-- **WHEN** the command-line interface is launched with the panel flag
-- **THEN** the floating quick search panel is displayed and focused
-
-#### Scenario: Dispatching full search window from command line
-- **WHEN** the command-line interface is launched without flags or with the daemon flag
-- **THEN** the application starts anchored in the system tray without opening a search window or panel
-
-#### Scenario: Dispatching settings dialog from command line
-- **WHEN** the command-line interface is launched with the settings flag
-- **THEN** the preferences settings dialog is displayed and focused
-
-#### Scenario: Forwarding CLI command to existing running instance
-- **WHEN** a second CLI process is launched while an instance is already active
-- **THEN** the command is forwarded over local socket communication to the active instance and the secondary process exits
-
-### Requirement: Strict Zero OCR and Multimodal Model Invariants
-The system SHALL strictly maintain the zero OCR architectural invariant across all image and PDF extractors without importing or executing any optical character recognition engines. The system configuration SHALL default to the verified multimodal model `embeddinggemma-2` and prevent selection of non-multimodal models.
-
-#### Scenario: Enforcing zero OCR invariant across extractors
-- **WHEN** image, screenshot, and PDF files are ingested and extracted
-- **THEN** visual contents are processed purely via native renderers and vision embeddings without calling OCR tools
-
-#### Scenario: Enforcing multimodal model default configuration
-- **WHEN** application configuration is initialized or inspected
-- **THEN** the default embedding model is set to `embeddinggemma-2` and model selection options are restricted to multimodal models
-
-### Requirement: Desktop Deep Linking Action Dispatch
-The system SHALL dispatch native desktop actions corresponding to result kinds and hit locations. Code results with target lines SHALL invoke the code editor at the specified line; PDF results with page targets SHALL launch document viewers at the specified page; and media results with timestamp offsets SHALL launch media players at the target timestamp.
-
-#### Scenario: Activating code result at target line
-- **WHEN** a code search hit with a valid line anchor is activated
-- **THEN** the configured or auto-detected code editor is launched targeting the specific file and line
-
-#### Scenario: Activating PDF result at target page
-- **WHEN** a PDF search hit with a page number is activated
-- **THEN** a compatible PDF viewer is launched with the page navigation parameter
-
-#### Scenario: Activating media result at target timestamp
-- **WHEN** an audio or video search hit with a timestamp offset is activated
-- **THEN** a compatible media player is launched seeking to the target playback timestamp
-
-#### Scenario: Revealing result item in file manager
-- **WHEN** the reveal file manager action is triggered for any search hit
-- **THEN** the system file manager is opened with the target file highlighted in its parent folder
+#### Scenario: KRunner and GNOME SearchProvider2 end-to-end query and activation
+- **WHEN** KRunner calls `Actions`, `Match`, and `Run`, or GNOME Shell calls `GetInitialResultSet`, `GetResultMetas`, `ActivateResult`, and `LaunchSearch`
+- **THEN** both providers return consistent ranked metadata from `SearchService`, open files at exact page/line/timestamp anchors, and pre-fill the Quick Panel on `LaunchSearch`

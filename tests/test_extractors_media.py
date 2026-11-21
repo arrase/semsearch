@@ -1,4 +1,4 @@
-"""Unit tests for media extractor (audio windowing and video perceptual hash deduplication)."""
+"""Unit tests for media extractor (audio windowing, video dedup, ffprobe, and ffmpeg guards)."""
 
 import base64
 import io
@@ -7,14 +7,17 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from semsearch.core.types import Modality, SegmentKind
+from semsearch.extractors import probe_media_duration as exported_probe_media_duration
 from semsearch.extractors.media import (
     average_hash,
     extract_audio,
     extract_video,
     hamming_distance,
+    probe_media_duration,
 )
 
 
@@ -132,3 +135,59 @@ def test_extract_video_deduplication(tmp_path: Path) -> None:
     assert len(audio) >= 1
     assert all(s.modality == Modality.IMAGE for s in frames)
     assert all(s.modality == Modality.AUDIO for s in audio)
+
+
+def test_probe_media_duration_real_and_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert exported_probe_media_duration is probe_media_duration
+
+    wav_path = tmp_path / "clip.wav"
+    sr = 16000
+    duration_sec = 2
+    samples = np.zeros(sr * duration_sec, dtype=np.int16)
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(samples.tobytes())
+
+    assert probe_media_duration(str(wav_path)) == pytest.approx(2.0, abs=0.2)
+    assert probe_media_duration(str(tmp_path / "missing.wav")) == 0.0
+
+    def raise_missing(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("ffprobe not found")
+
+    monkeypatch.setattr(subprocess, "run", raise_missing)
+    assert probe_media_duration(str(wav_path)) == 0.0
+
+    def raise_timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["ffprobe"], timeout=10)
+
+    monkeypatch.setattr(subprocess, "run", raise_timeout)
+    assert probe_media_duration(str(wav_path)) == 0.0
+
+    def return_na(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=["ffprobe"], returncode=0, stdout="N/A\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", return_na)
+    assert probe_media_duration(str(wav_path)) == 0.0
+
+
+def test_ffmpeg_calls_include_safety_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(str(tmp_path / "sample.mp3"))
+    extract_video(str(tmp_path / "sample.mp4"))
+
+    assert len(calls) == 3
+    for cmd, kwargs in calls:
+        assert cmd[0] == "ffmpeg"
+        assert "-nostdin" in cmd
+        t_index = cmd.index("-t")
+        assert cmd[t_index + 1] == "3600"
+        assert kwargs["timeout"] == 60

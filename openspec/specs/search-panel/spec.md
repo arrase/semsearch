@@ -1,141 +1,68 @@
 # search-panel Specification
 
 ## Purpose
-Provides a fast, borderless, keyboard-driven floating quick search panel with instant lexical search, debounced semantic ranking, two-column results, and synchronized multimodal previews.
+Provides a fast, frameless, keyboard-driven floating quick search panel (`748px` wide) with instant lexical search, debounced semantic ranking, selection preservation, Drag & Drop, Quick Actions menu, and a modular asynchronous multimodal preview package.
 
 ## Requirements
 
-### Requirement: Floating Borderless Geometry and Dynamic Expansion
-The quick search panel MUST render as a frameless floating window with 18px rounded corners centered in the upper third of the active screen, styled with a fully opaque elevated dark surface and a prominent brand-colored border to contrast against dark desktop backgrounds without content bleed-through. The panel MUST size its width and margins so the search header, two-column body, and shortcut footer fit without horizontal or vertical clipping when expanded.
+### Requirement: Floating Borderless Geometry (`748px`), Multi-Monitor Positioning, and Contrast
+The quick search panel MUST render as a frameless floating window (`PANEL_WIDTH = 748`, composed of `LIST_WIDTH = 328` and `PREVIEW_WIDTH = 416`, `PANEL_RADIUS = 18`, `PANEL_HEIGHT_COLLAPSED = 56`, `PANEL_HEIGHT_EXPANDED = 480`) centered in the upper third (`16%` vertical offset) of the monitor currently containing the mouse cursor (`QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()`). Expanded height MUST be clamped to `screen.availableGeometry().height() - 40` for small or HiDPI displays. Muted text tokens (`ThemeColors.TEXT_MUTED = "#94A3B8"`) MUST meet WCAG AA contrast on dark surfaces, items MUST expose `Qt.ItemDataRole.AccessibleTextRole`, and RTL layouts MUST flip the list divider border (`border-left` vs `border-right`) and weaker-matches arrow (`◂` vs `▸`).
 
-#### Scenario: Displaying collapsed input bar on invocation
-- **WHEN** the search panel is invoked without an active search query
-- **THEN** it displays centered with an 18px rounded frame, an opaque elevated surface background, a visible brand-accent border, and a high-contrast search prompt at its collapsed height focusing the search input without clipping or background bleed-through
+#### Scenario: Centering on active cursor monitor and clamping height
+- **WHEN** the quick search panel opens on a multi-monitor or small HiDPI display
+- **THEN** it positions horizontally centered at `748px` (`328px` list + `416px` preview) on the cursor's active screen and clamps expanded height to stay within `availableGeometry()`
 
-#### Scenario: Expanding panel when results are present
-- **WHEN** a search query yields one or more matching results
-- **THEN** the panel expands vertically to reveal the two-column result list and preview pane plus the bottom status/shortcut bar without horizontal overflow
+### Requirement: Dual-Cadence Search, `prefix_last=True`, and Selection Preservation
+Upon typing, `SearchPanel` MUST delegate immediate lexical matching to `SearchService.lexical_search(query, limit=50)` (without direct SQLite access) and schedule a 120ms debounced `SearchWorker` executing `search_service.search(..., prefix_last=True)` serialized by `_search_lock`. When asynchronous semantic results arrive or when weaker matches are expanded/collapsed, `_populate_list()` MUST preserve the user's currently selected `hit.path` if it remains present in the updated list instead of jumping back to row 0.
 
-#### Scenario: Collapsing panel when search input is cleared
-- **WHEN** the user clears the search input text completely
-- **THEN** the panel collapses back to its compact height and hides the result list and preview pane
+#### Scenario: Preserving user selection when async semantic results arrive
+- **WHEN** the user navigates down to a specific result during instant lexical display and the 120ms semantic `SearchWorker` subsequently emits updated results containing the same `hit.path`
+- **THEN** the panel restores selection to that `hit.path` rather than resetting selection to the first item
 
-### Requirement: Dual-Cadence Search Execution
-The search panel MUST execute an immediate deduplicated full-text search against the SQLite FTS5 index upon keystroke input, and MUST trigger the hybrid semantic vector search with prefix matching enabled (`prefix_last=True`) after a 120ms debounce period.
+#### Scenario: Obsolete SearchWorker skipping and safe thread retention
+- **WHEN** rapid typing spawns multiple `SearchWorker` threads while an earlier query is waiting on Ollama
+- **THEN** active workers remain referenced in `_active_workers` until `finished` triggers `deleteLater()`, and cancelled intermediate workers exit immediately after acquiring `_search_lock` without calling `search_service.search()`
 
-#### Scenario: Instant lexical search feedback
-- **WHEN** the user types characters into the search input box
-- **THEN** deduplicated lexical FTS5 file matches populate the result list immediately and clear cleanly when no matches exist
+### Requirement: Full Keyboard Navigation, Quick Actions Menu, and Drag & Drop
+The panel MUST support:
+- `↑` / `↓`, `PageUp` / `PageDown` (step 5), and `Home` / `End` navigation across selectable rows.
+- `Enter`: activate selected hit via `execute_hit_action(hit, self.config)` and hide panel (or toggle weaker matches).
+- `Shift+Enter` / `Ctrl+Enter`: reveal file via `reveal_in_file_manager(hit.path)` and hide panel.
+- `Ctrl+C`: allow native Qt text copy when `search_input.hasSelectedText()` is `True`; otherwise copy selected file via `copy_file_to_clipboard(hit.path)`.
+- `Tab` or `Ctrl+K`: open the Quick Actions `QMenu` (`Open`, `Show in Files`, `Copy File`, `Copy Path`, `Copy Excerpt`, `Open Terminal Here`) without triggering auto-dismiss.
+- `Alt+←` / `Alt+→`: navigate previous/next page when PDF preview is active.
+- `Esc`: clear non-empty input (collapsing panel) or hide panel if empty.
+- Drag & Drop (`DraggableResultList`): initiate `QDrag` (`CopyAction`) carrying `QUrl.fromLocalFile(hit.path)` and path text.
+- Footer hint displaying `↵ Open    Shift+↵ Show in Files    Ctrl+C Copy    Tab Actions    Esc Dismiss`.
 
-#### Scenario: Debounced semantic search completion
-- **WHEN** user typing pauses for at least 120 milliseconds
-- **THEN** the semantic query embedding executes with prefix matching on the trailing token and updates the result list with hybrid ranked results
+#### Scenario: Respecting selected search text on Ctrl+C
+- **WHEN** the user highlights text inside `search_input` and presses `Ctrl+C`
+- **THEN** the event passes through to `QLineEdit` to copy the selected query text instead of copying the highlighted result file
 
-### Requirement: Result List Partitioning and Weaker Matches Folding
-The search panel result list MUST organize primary search results grouped under kind headers. The result list MUST isolate matches scoring below 50% of the top result score into a folded "Weaker Matches" section that toggles expansion on user activation.
+#### Scenario: Opening Quick Actions menu and dragging a result
+- **WHEN** the user presses `Tab` or `Ctrl+K` on a result, or drags a result row to another desktop application
+- **THEN** the Quick Actions menu displays file/clipboard/terminal actions without dismissing the panel, and dragging exports `QUrl.fromLocalFile(hit.path)`
 
-#### Scenario: Rendering kind headers for distinct result types
-- **WHEN** search results contain matches spanning multiple modalities (such as documents, images, and code)
-- **THEN** results are visually grouped beneath distinct modal category headers
+### Requirement: Modular Asynchronous Multimodal Preview Package (`gui/preview/`)
+The preview pane MUST be structured as the modular `semsearch.gui.preview` package (`__init__.py`, `loader.py`, `metadata.py`, `image_view.py`, `pdf_view.py`, `media_view.py`, `code_view.py`) coordinated by `PreviewLoader` (`QThreadPool`, max 2 threads) using per-channel request IDs to discard stale results:
+- **Disk Thumbnail Cache**: Video frames extracted via `ffmpeg` are cached atomically as PNGs under `~/.cache/semsearch/thumbs/` (max 200 entries, pruned by `mtime`).
+- **ImagePreviewWidget**: Scales rasters via `QImageReader` with HiDPI `devicePixelRatioF()`, rasterizes `.svg` via PyMuPDF, plays animated `.gif` via `QMovie`, and loads files `> 512 KB` asynchronously.
+- **PdfPreviewWidget**: Renders target page at `1.6 * dpr` zoom with yellow term highlights, supports `prev_page()` / `next_page()` (`Alt+←`/`Alt+→`), and shows controlled error states for missing, encrypted, or corrupt PDFs.
+- **AudioPreviewWidget & VideoPreviewWidget**: Provide real in-panel `QMediaPlayer` + `QAudioOutput` playback positioned at `hit.loc`, real duration from `hit.info["duration"]` / `probe_media_duration()` / `durationChanged`, real 64-bar RMS amplitude envelope (`WaveformWidget`) via `ffmpeg`, and debounced (150ms) async video frame scrubbing.
+- **CodePreviewWidget**: Renders `CodeEditor` with `LineNumberGutter`, `CodeSyntaxHighlighter`, UTF-16-safe diacritic-insensitive match highlights capped at `MAX_HIGHLIGHT_SELECTIONS = 200`, `256 KB` (`262_144` bytes) file truncation (`async_load` for files `> 128 KB`), line wrapping + excerpt scrolling for document/semantic matches without target line.
+- **MetadataCard**: Clicking `Open` executes `execute_hit_action(hit, config)` preserving deep-link jumps (PDF page, media timestamp, code line) and emits `action_triggered` to dismiss the panel.
 
-#### Scenario: Collapsing weaker matches below 50% score threshold
-- **WHEN** search results include candidate hits scoring below half of the top hit's score
-- **THEN** those items are hidden inside a folded row showing the count of weaker matches
+#### Scenario: Asynchronous preview switching without blocking UI thread
+- **WHEN** the user rapidly arrows through large images, videos, audio clips, PDFs, and large code files
+- **THEN** `PreviewLoader` cancels stale channel requests, serves cached frames from `~/.cache/semsearch/thumbs/`, truncates text previews at 256 KB, and keeps UI navigation responsive
 
-#### Scenario: Expanding folded weaker matches
-- **WHEN** the user activates the folded weaker matches toggle row
-- **THEN** the weaker matches expand in place and become selectable in the result list navigation
+#### Scenario: In-panel audio playback and deep-link MetadataCard Open
+- **WHEN** the user clicks Play on an audio preview or clicks `Open` in `MetadataCard` on a PDF/code/media hit
+- **THEN** `AudioPreviewWidget` plays audio at `hit.loc` via `QMediaPlayer` + `QAudioOutput` with its real RMS waveform, and `MetadataCard.Open` invokes `execute_hit_action(hit, config)` jumping to the exact page, line, or timestamp
 
-### Requirement: Full Keyboard Navigation and Action Shortcuts
-The search panel MUST support complete keyboard navigation. Up and Down arrow keys MUST navigate between result items; Enter MUST open the selected item using its default desktop action; Shift+Enter or Ctrl+Enter MUST reveal the selected file in the file manager; Ctrl+C MUST copy the file to the clipboard; and Escape MUST clear the input if non-empty, or hide the panel if empty. The shortcut footer MUST display `↵ Open    ⇧↵ Show in Files    ⌃C Copy    Esc Dismiss`.
+### Requirement: IME-Safe Focus Loss Dismissal, Preloading, and Clean Shutdown
+`WindowDeactivate` MUST dismiss `SearchPanel` only when `not self._menu_open and QApplication.activePopupWidget() is None` so Wayland/X11 IME candidate popups (`IBus`/`Fcitx5`) do not prematurely hide the panel. `show_panel()` MUST spawn at most one daemon thread calling `ollama.preload(model)`. `hide_panel()` MUST stop workers, clear results/preview, collapse geometry, and call `shrink_memory()` on active databases without unloading the model. `shutdown()` MUST stop and join all active `SearchWorker`s and call `preview_pane.shutdown()`.
 
-#### Scenario: Navigating items with arrow keys
-- **WHEN** the user presses Down or Up arrow keys in the search input or list
-- **THEN** the active highlight moves to the next or previous result row and updates the preview pane
-
-#### Scenario: Opening selected item with Enter
-- **WHEN** the user presses the Enter key while an item is highlighted
-- **THEN** the item opens in its registered system default application and the panel closes
-
-#### Scenario: Revealing selected file in file manager
-- **WHEN** the user presses Shift+Enter or Ctrl+Enter on a highlighted result
-- **THEN** the containing directory opens in the desktop file manager with the file selected
-
-#### Scenario: Escaping from active search
-- **WHEN** the user presses Escape while text is present in the search input
-- **THEN** the input text is cleared and the panel collapses to 56pt without closing
-
-#### Scenario: Dismissing panel when input is empty
-- **WHEN** the user presses Escape while the search input is empty
-- **THEN** the search panel window hides
-
-### Requirement: Synchronized Inline Multimodal Preview
-The search panel MUST host a synchronized preview pane that updates immediately when the highlighted result changes. It MUST render dynamically scaled images, PDF pages and document passages with highlighted query matches (without applying a full-width yellow line highlight when no explicit target line `line > 0` exists), audio waveform previews, extracted video frames at matched timestamps, syntax-highlighted code with line numbers and anchored lines, and `Open` / `Show in Files` buttons.
-
-#### Scenario: Updating preview when selecting an image file
-- **WHEN** an image result is highlighted in the result list
-- **THEN** the preview pane renders the scaled image preserving its aspect ratio within the available viewport
-
-#### Scenario: Updating preview when selecting a PDF file
-- **WHEN** a PDF result is highlighted in the result list
-- **THEN** the preview pane renders the matched page with query keyword occurrences highlighted in yellow
-
-#### Scenario: Updating preview when selecting a code file
-- **WHEN** a code search result with a positive target line (`line > 0`) is highlighted in the result list
-- **THEN** the preview pane renders syntax-highlighted code lines with gutter line numbers and highlights the definition anchor line in yellow
-
-#### Scenario: Updating preview when selecting a document or semantic text hit without target line
-- **WHEN** a document result (`FileKind.DOC`, including `.md` and `.txt`) or a text hit with `line <= 0` is highlighted in the result list
-- **THEN** the preview pane renders the document text with line wrapping enabled, highlights any literal query term occurrences, scrolls to the first matched term or chunk excerpt, and omits any full-width yellow line highlight bar
-
-### Requirement: Safe Asynchronous SearchWorker Lifecycle Management
-The search panel MUST retain active `SearchWorker` (`QThread`) references in an `_active_workers` set until each thread emits `finished`, connecting `finished` to remove the worker reference and call `deleteLater()` so slow workers exceeding 500ms during cancellation are never garbage-collected while still running.
-
-#### Scenario: Slow search worker outliving cancellation timeout
-- **WHEN** a new search or panel dismissal stops an active `SearchWorker` whose background execution takes longer than 500ms to finish
-- **THEN** the worker remains referenced in `_active_workers` until its `finished` signal fires, preventing premature Python garbage collection and `QThread` `SIGABRT` crashes
-
-### Requirement: Resource and SQLite Memory Cleanup on Panel Dismissal
-When `hide_panel()` dismisses the search panel back to the system tray, the panel MUST stop active search workers, clear result list widgets and `_current_result_set`, clear the `PreviewPane` to release preview buffers, collapse its geometry, and invoke `shrink_memory()` on the search databases.
-
-#### Scenario: Dismissing search panel releases UI and database memory
-- **WHEN** `hide_panel()` is called to hide the quick search panel
-- **THEN** the panel clears `result_list`, resets `_current_result_set`, calls `preview_pane.clear()`, collapses to its compact height, and calls `shrink_memory()` on `db` and `code_db`
-
-### Requirement: Automatic Panel Dismissal on Window Focus Loss and Preview Actions
-The quick search panel MUST automatically dismiss itself when the panel window loses active window status to another window or desktop element, or when the user activates the Open or Show in Files buttons in the preview pane. Moving focus between child widgets within the search panel MUST NOT dismiss the panel.
-
-#### Scenario: Dismissing panel when external window takes focus
-- **WHEN** the quick search panel is visible and another window or desktop element takes focus
-- **THEN** the search panel automatically hides and releases its UI and database buffers
-
-#### Scenario: Preserving panel visibility on internal widget interaction
-- **WHEN** the user clicks or moves focus to the result list or preview pane within the quick search panel
-- **THEN** the search panel remains visible and active
-
-#### Scenario: Dismissing panel when preview action buttons are clicked
-- **WHEN** the user clicks the Open or Show in Files button inside the quick search panel's preview pane
-- **THEN** the file action executes and the search panel automatically hides
-
-### Requirement: Asynchronous Model Preloading on Panel Invocation
-When `show_panel()` surfaces the quick search panel, the panel MUST launch a background daemon thread to preload the configured embedding model into VRAM via `OllamaClient.preload()`, ensuring at most one preload thread is active at a time and ignoring connection or model errors so the UI remains responsive. Dismissing the panel via `hide_panel()` MUST NOT force-unload the model from VRAM.
-
-#### Scenario: Preloading embedding model when search panel opens
-- **WHEN** `show_panel()` is called to display the quick search panel
-- **THEN** a background daemon thread invokes `preload()` for the configured model without blocking the UI thread
-
-#### Scenario: Deduplicating preload threads on rapid panel toggles
-- **WHEN** `show_panel()` is invoked while a previous preload thread is still alive
-- **THEN** no second concurrent preload thread is spawned
-
-#### Scenario: Preserving model in VRAM when panel is dismissed
-- **WHEN** `hide_panel()` dismisses the quick search panel
-- **THEN** no unload request is sent to Ollama, leaving the model loaded until Ollama's default `keep_alive` expires
-
-### Requirement: Obsolete Semantic Search Request Skipping
-Background `SearchWorker` threads MUST serialize execution of `search_service.search()` and verify `is_stopped` immediately after acquiring the execution lock so intermediate workers cancelled while an earlier request is still waiting on Ollama exit immediately without dispatching obsolete `/api/embed` requests.
-
-#### Scenario: Skipping intermediate debounced queries queued during slow model load
-- **WHEN** multiple debounced queries trigger new `SearchWorker` instances while the first worker is still executing `search_service.search()`
-- **THEN** intermediate workers marked stopped while waiting on the execution lock exit immediately upon acquiring the lock without calling `search_service.search()`, and only the latest active query executes
-
+#### Scenario: Preserving panel visibility while IME popup or Quick Actions menu is active
+- **WHEN** an IME candidate popup or the Quick Actions menu temporarily activates while the user is typing or choosing an action
+- **THEN** `SearchPanel` remains open and retains query state

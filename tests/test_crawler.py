@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from semsearch.core.crawler import crawl_folder, sync_candidates
+from semsearch.core.crawler import crawl_folder, purge_outside_roots, sync_candidates
 from semsearch.core.database import Database
 from semsearch.core.rules import (
     classify_file,
@@ -278,7 +278,7 @@ def test_delete_entire_subfolder_cascades_in_db(db: Database, tmp_path: Path) ->
     assert db.find_by_path(str(f_root.resolve())) is not None
 
     # Check that segment was cascade deleted
-    cursor = db._conn.cursor()
+    cursor = db._write_conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM segments WHERE id = ?", (seg_id,))
     assert cursor.fetchone()[0] == 0
 
@@ -332,7 +332,9 @@ def test_move_and_modify(db: Database, tmp_path: Path) -> None:
     rec = db.find_by_path(str(orig_file.resolve()))
     assert rec is not None
     db.update_file_state(rec.id, FileState.DONE, detail="indexed")
-    assert db.find_by_path(str(orig_file.resolve())).state == FileState.DONE
+    done_rec = db.find_by_path(str(orig_file.resolve()))
+    assert done_rec is not None
+    assert done_rec.state == FileState.DONE
 
     # Move and alter content
     target_file = work_dir / "final.txt"
@@ -401,3 +403,83 @@ def test_crawl_and_sync_with_excluded_folders_and_types(tmp_path: Path) -> None:
         "keep.md": FileKind.DOC,
         "Captura de pantalla_20260927.png": FileKind.SCREENSHOT,
     }
+
+
+def test_crawl_folder_top_down_project_ignores_parent_git(tmp_path: Path) -> None:
+    """Verify .git above root_path does not hide files, while nested code projects under root are filtered."""
+    # Ancestor above root_path has .git (simulating dotfiles repo in $HOME)
+    (tmp_path / ".git").mkdir()
+
+    docs_root = tmp_path / "Documents"
+    docs_root.mkdir()
+    top_note = docs_root / "notes.md"
+    top_note.write_text("personal notes")
+
+    nested_proj = docs_root / "my_app"
+    nested_proj.mkdir()
+    (nested_proj / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+    (nested_proj / "README.md").write_text("project readme")
+    (nested_proj / "Screenshot_ui.png").write_text("png")
+    sub = nested_proj / "docs"
+    sub.mkdir()
+    (sub / "design.md").write_text("nested doc inside project")
+
+    candidates = crawl_folder(str(docs_root), is_code=False)
+    names = {Path(c.path).name for c in candidates}
+    assert names == {"notes.md", "Screenshot_ui.png"}
+
+
+def test_crawl_folder_respects_gitignore_and_minified_and_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify .gitignore rules (including negation/dir-only/anchored), minified assets, and MAX_TEXT_FILE_BYTES."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("# comment\n*.generated.py\n!keep.generated.py\nignored_dir/\n/root_only.py\n")
+    (repo / "main.py").write_text("print('ok')\n")
+    (repo / "skip.generated.py").write_text("x = 1\n")
+    (repo / "keep.generated.py").write_text("x = 2\n")
+    (repo / "root_only.py").write_text("x = 3\n")
+    (repo / "bundle.min.js").write_text("var a=1;")
+
+    ignored_dir = repo / "ignored_dir"
+    ignored_dir.mkdir()
+    (ignored_dir / "hidden.py").write_text("x = 4\n")
+
+    sub = repo / "sub"
+    sub.mkdir()
+    (sub / "root_only.py").write_text("x = 5\n")
+    (sub / "huge.py").write_text("a" * 500)
+
+    monkeypatch.setattr("semsearch.core.crawler.MAX_TEXT_FILE_BYTES", 200)
+
+    candidates = crawl_folder(str(repo), is_code=True)
+    rel_paths = {Path(c.path).relative_to(repo.resolve()).as_posix() for c in candidates}
+    assert rel_paths == {"main.py", "keep.generated.py", "sub/root_only.py"}
+
+
+def test_purge_outside_roots(db: Database, tmp_path: Path) -> None:
+    """Verify purge_outside_roots deletes orphaned records and cascades to segments/FTS."""
+    root_a = tmp_path / "root_a"
+    root_b = tmp_path / "root_b"
+    root_a.mkdir()
+    root_b.mkdir()
+    fa = root_a / "alpha_doc.txt"
+    fb = root_b / "beta_doc.txt"
+    fa.write_text("alpha")
+    fb.write_text("beta")
+
+    sync_candidates(db, crawl_folder(str(root_a)) + crawl_folder(str(root_b)))
+    assert db.stats()["files"] == 2
+
+    purged = purge_outside_roots(db, [str(root_a)])
+    assert purged == 1
+    assert db.find_by_path(str(fa.resolve())) is not None
+    assert db.find_by_path(str(fb.resolve())) is None
+    assert db.fts_search("beta_doc") == []
+    assert len(db.fts_search("alpha_doc")) == 1
+
+    # Purging with empty active roots clears remaining records
+    assert purge_outside_roots(db, []) == 1
+    assert db.stats()["files"] == 0
