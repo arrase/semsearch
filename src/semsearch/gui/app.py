@@ -8,7 +8,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
@@ -239,6 +239,8 @@ class SemSearchApp(QApplication):
         )
 
     def _start_hotkey_listener(self) -> None:
+        if self.is_shutdown:
+            return
         self.hotkey_listener.start()
         self._sync_hotkey_status()
         self.hotkey_listener.status_changed.connect(self._sync_hotkey_status)
@@ -325,7 +327,9 @@ class SemSearchApp(QApplication):
         else:
             self._start_indexing()
 
-        self._start_hotkey_listener()
+        # Defer hotkey startup to the event loop so Qt's host-portal Registry.Register
+        # runs before any GlobalShortcuts portal call on the shared D-Bus connection.
+        QTimer.singleShot(0, self, self._start_hotkey_listener)
         self.desktop_providers.register()
 
         if not tray_available and not daemon_mode and self.config.onboarded:

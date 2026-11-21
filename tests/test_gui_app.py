@@ -732,8 +732,7 @@ def test_start_no_tray_fallback_and_daemon_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify start() shows panel when no tray is available unless daemon_mode=True."""
-    del qapp
+    """Verify start() shows panel without tray unless daemon_mode=True and defers hotkey startup."""
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: False))
 
     interactive = _make_harness(tmp_path / "interactive", onboarded=True)
@@ -742,11 +741,14 @@ def test_start_no_tray_fallback_and_daemon_mode(
     try:
         interactive.app.start(daemon_mode=False)
         interactive_index_spy.assert_called_once()
-        interactive.hotkey_listener.start.assert_called_once()
-        interactive.settings_dialog.set_hotkey_status.assert_called_once_with("pynput", "")
+        interactive.hotkey_listener.start.assert_not_called()
         interactive.desktop_providers.register.assert_called_once()
         interactive.tray.show.assert_not_called()
         interactive.panel.show_panel.assert_called_once()
+
+        qapp.processEvents()
+        interactive.hotkey_listener.start.assert_called_once()
+        interactive.settings_dialog.set_hotkey_status.assert_called_once_with("pynput", "")
     finally:
         interactive.app.shutdown()
 
@@ -760,6 +762,9 @@ def test_start_no_tray_fallback_and_daemon_mode(
         daemon.panel.show_panel.assert_not_called()
     finally:
         daemon.app.shutdown()
+
+    qapp.processEvents()
+    daemon.hotkey_listener.start.assert_not_called()
 
 
 def test_shutdown_closes_all_resources_and_is_idempotent(

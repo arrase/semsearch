@@ -14,7 +14,7 @@ Provides desktop application lifecycle services including secure single-instance
 
 ### Requirement: Hybrid Global Hotkey Listener (Wayland XDG Portal + X11 pynput)
 `HotkeyListener` MUST support both Wayland and X11 desktop sessions:
-- On Wayland (`XDG_SESSION_TYPE=wayland` or `WAYLAND_DISPLAY` set), it MUST attempt registration via `PortalShortcutListener` using `org.freedesktop.portal.GlobalShortcuts` (`CreateSession`, `BindShortcuts`, `Activated` over `PySide6.QtDBus` with XDG trigger formatting such as `<Control><Shift>space`).
+- On Wayland (`XDG_SESSION_TYPE=wayland` or `WAYLAND_DISPLAY` set), it MUST attempt registration via `PortalShortcutListener` using `org.freedesktop.portal.GlobalShortcuts` (`CreateSession`, `BindShortcuts`, `Activated` over `PySide6.QtDBus` with XDG trigger formatting such as `CTRL+SHIFT+space`).
 - On X11 (or when the portal is unavailable and `DISPLAY` is set), it MUST fall back to `pynput` `GlobalHotKeys` using `normalize_hotkey()` (mapping `super`/`meta`/`win`/`windows` -> `<cmd>`, `control` -> `<ctrl>`, `return` -> `<enter>`, `escape` -> `<esc>`).
 - `HotkeyListener` MUST expose `backend_name` (`"portal"`, `"pynput"`, `"none"`), `last_error`, and `status_changed` displayed live in **Settings → General**.
 

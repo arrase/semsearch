@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QObject, QSize, QXmlStreamReader, Signal
-from PySide6.QtDBus import QDBusConnection, QDBusMessage, QDBusObjectPath, QDBusVariant
+from PySide6.QtDBus import QDBusConnection, QDBusMessage, QDBusObjectPath
 from PySide6.QtGui import QIcon
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
@@ -216,16 +216,16 @@ def test_normalize_hotkey_invalid_inputs(invalid: str) -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("ctrl+shift+space", "<Control><Shift>space"),
-        ("<ctrl>+<shift>+<space>", "<Control><Shift>space"),
-        ("super+space", "<Super>space"),
-        ("meta+space", "<Super>space"),
-        ("win+k", "<Super>k"),
-        ("alt+k", "<Alt>k"),
-        ("alt+enter", "<Alt>Return"),
-        ("ctrl+return", "<Control>Return"),
-        ("ctrl+escape", "<Control>Escape"),
-        ("ctrl+shift+f12", "<Control><Shift>F12"),
+        ("ctrl+shift+space", "CTRL+SHIFT+space"),
+        ("<ctrl>+<shift>+<space>", "CTRL+SHIFT+space"),
+        ("super+space", "LOGO+space"),
+        ("meta+space", "LOGO+space"),
+        ("win+k", "LOGO+k"),
+        ("alt+k", "ALT+k"),
+        ("alt+enter", "ALT+Return"),
+        ("ctrl+return", "CTRL+Return"),
+        ("ctrl+escape", "CTRL+Escape"),
+        ("ctrl+shift+f12", "CTRL+SHIFT+F12"),
     ],
 )
 def test_format_portal_trigger_valid(raw: str, expected: str) -> None:
@@ -364,8 +364,10 @@ def test_portal_listener_create_bind_activate_and_close(monkeypatch: pytest.Monk
     method_name, call_args = fake_iface.calls[0]
     assert method_name == "CreateSession"
     assert isinstance(call_args[0], dict)
-    assert isinstance(call_args[0]["handle_token"], QDBusVariant)
-    assert isinstance(call_args[0]["session_handle_token"], QDBusVariant)
+    assert isinstance(call_args[0]["handle_token"], str)
+    assert call_args[0]["handle_token"].startswith("semsearch_")
+    assert isinstance(call_args[0]["session_handle_token"], str)
+    assert call_args[0]["session_handle_token"].startswith("semsearch_session_")
 
     session_path = "/org/freedesktop/portal/desktop/session/1_99/semsearch_session_abc"
     listener._on_create_session_response(0, {"session_handle": session_path})
@@ -376,7 +378,7 @@ def test_portal_listener_create_bind_activate_and_close(monkeypatch: pytest.Monk
         (
             fake_bus,
             session_path,
-            [(SHORTCUT_ID, {"description": SHORTCUT_DESCRIPTION, "preferred_trigger": "<Super>space"})],
+            [(SHORTCUT_ID, {"description": SHORTCUT_DESCRIPTION, "preferred_trigger": "LOGO+space"})],
             bind_calls[0][3],
         )
     ]

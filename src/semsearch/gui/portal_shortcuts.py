@@ -7,7 +7,7 @@ from typing import cast
 from uuid import uuid4
 
 from PySide6.QtCore import SLOT, QObject, Signal, Slot
-from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage, QDBusObjectPath, QDBusVariant
+from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage, QDBusObjectPath
 
 PORTAL_SERVICE = "org.freedesktop.portal.Desktop"
 PORTAL_PATH = "/org/freedesktop/portal/desktop"
@@ -35,22 +35,22 @@ _DBUS_TYPE_STRING = ord("s")
 _DBUS_TYPE_STRUCT = ord("r")
 _DBUS_TYPE_VARIANT = ord("v")
 
-_MOD_CONTROL = "<Control>"
-_MOD_SUPER = "<Super>"
+_MOD_CONTROL = "CTRL"
+_MOD_LOGO = "LOGO"
 
 _PORTAL_MODIFIERS: dict[str, str] = {
     "ctrl": _MOD_CONTROL,
     "control": _MOD_CONTROL,
     "primary": _MOD_CONTROL,
-    "shift": "<Shift>",
-    "alt": "<Alt>",
-    "super": _MOD_SUPER,
-    "meta": _MOD_SUPER,
-    "cmd": _MOD_SUPER,
-    "win": _MOD_SUPER,
-    "windows": _MOD_SUPER,
-    "logo": _MOD_SUPER,
-    "hyper": "<Hyper>",
+    "shift": "SHIFT",
+    "alt": "ALT",
+    "super": _MOD_LOGO,
+    "meta": _MOD_LOGO,
+    "cmd": _MOD_LOGO,
+    "win": _MOD_LOGO,
+    "windows": _MOD_LOGO,
+    "logo": _MOD_LOGO,
+    "hyper": _MOD_LOGO,
 }
 
 _PORTAL_KEYSYMS: dict[str, str] = {
@@ -248,7 +248,7 @@ def is_wayland_session() -> bool:
 
 
 def format_portal_trigger(shortcut: str) -> str:
-    """Convert shortcut string into XDG Shortcuts Specification format (e.g. '<Control><Shift>space')."""
+    """Convert shortcut string into XDG Shortcuts Specification format (e.g. 'CTRL+SHIFT+space')."""
     stripped = shortcut.strip()
     raw_parts = stripped.split("+")
     if not stripped or any(not part.strip() for part in raw_parts):
@@ -271,7 +271,7 @@ def format_portal_trigger(shortcut: str) -> str:
         raise ValueError(f"Shortcut must include at least one modifier: {shortcut!r}")
     if len(keys) != 1:
         raise ValueError(f"Shortcut must include exactly one key: {shortcut!r}")
-    return "".join(modifiers) + keys[0]
+    return "+".join([*modifiers, keys[0]])
 
 
 class PortalShortcutListener(QObject):
@@ -322,9 +322,9 @@ class PortalShortcutListener(QObject):
         self._trigger = trigger
         self.last_error = ""
 
-        options: dict[str, QDBusVariant] = {
-            "handle_token": QDBusVariant(handle_token),
-            "session_handle_token": QDBusVariant(session_token),
+        options: dict[str, str] = {
+            "handle_token": handle_token,
+            "session_handle_token": session_token,
         }
         reply = portal.call("CreateSession", options)
         if reply.type() == QDBusMessage.MessageType.ErrorMessage:
