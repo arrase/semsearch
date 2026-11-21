@@ -229,10 +229,11 @@ def crawl_folder(
         if has_gitignore and (is_code or dir_in_project):
             active_rules = gitignore_rules + _load_gitignore(current_dir)
 
+        subdir_paths = (Path(subdir.path) for subdir in subdirs)
         dir_stack.extend(
             (subdir_path, dir_in_project, active_rules)
-            for subdir in subdirs
-            if not _is_gitignored(subdir_path := Path(subdir.path), is_dir=True, rules=active_rules)
+            for subdir_path in subdir_paths
+            if not _is_gitignored(subdir_path, is_dir=True, rules=active_rules)
         )
         candidates.extend(
             _collect_dir_candidates(
