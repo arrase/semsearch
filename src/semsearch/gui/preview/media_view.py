@@ -25,6 +25,7 @@ _WAVEFORM_BAR_COUNT = 64
 _DEFAULT_BAR_LEVEL = 0.25
 _SCRUB_DEBOUNCE_MS = 150
 _PADDING_PX = 12
+_PLAY_LABEL = "▶ Play"
 _PAUSE_LABEL = "⏸ Pause"
 _POSTER_FALLBACK_SIZE = QSize(390, 220)
 _POSTER_RENDER_SIZE = QSize(480, 270)
@@ -86,8 +87,8 @@ class WaveformWidget(QWidget):
         painter.end()
 
 
-class AudioPreviewWidget(QWidget):
-    """Audio preview widget with in-panel QtMultimedia playback and real RMS waveform."""
+class _MediaPreviewBase(QWidget):
+    """Shared QtMultimedia playback state, duration probing, and timeline controls for media previews."""
 
     action_triggered = Signal()
 
@@ -101,6 +102,82 @@ class AudioPreviewWidget(QWidget):
         self._loader = loader if loader is not None else PreviewLoader(self)
         self._owns_loader = loader is None
 
+        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
+        self.scrub_slider.setRange(0, _SLIDER_STEPS)
+
+        self.time_label = QLabel("0:00 / 0:00")
+        self.time_label.setFont(get_ui_font(11))
+        self.time_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
+
+        self.meta_card = MetadataCard(config=config)
+
+        self.player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio_output)
+        self.player.durationChanged.connect(self._on_player_duration_changed)
+
+        self._path: str = ""
+        self._duration: float = 0.0
+        self._current_pos: float = 0.0
+
+    def _on_probed_duration_ready(self, payload: object) -> None:
+        if isinstance(payload, (int, float)) and payload > 0.0:
+            self._apply_duration(float(payload))
+
+    def _on_player_duration_changed(self, duration_ms: int) -> None:
+        if duration_ms > 0:
+            self._apply_duration(duration_ms / 1000.0)
+
+    def _apply_duration(self, seconds: float) -> None:
+        if seconds <= 0.0:
+            return
+        self._duration = max(seconds, self._current_pos)
+        self._sync_position_ui()
+
+    def _sync_slider_and_time(self) -> float:
+        ratio = self._current_pos / self._duration if self._duration > 0.0 else 0.0
+        clamped = max(0.0, min(1.0, ratio))
+        with QSignalBlocker(self.scrub_slider):
+            self.scrub_slider.setValue(int(clamped * _SLIDER_STEPS))
+        self._update_time_label()
+        return clamped
+
+    def _sync_position_ui(self) -> None:
+        self._sync_slider_and_time()
+
+    def _update_time_label(self) -> None:
+        self.time_label.setText(f"{_format_mmss(self._current_pos)} / {_format_mmss(self._duration)}")
+
+    def clear(self) -> None:
+        """Stop playback, release media source, and reset shared timeline state."""
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self._path = ""
+        self._current_pos = 0.0
+        self._duration = 0.0
+        with QSignalBlocker(self.scrub_slider):
+            self.scrub_slider.setValue(0)
+        self._update_time_label()
+        self.meta_card.clear()
+
+    def shutdown(self) -> None:
+        """Clear media resources and wait for owned loader pool when standalone."""
+        self.clear()
+        if self._owns_loader:
+            self._loader.shutdown()
+
+
+class AudioPreviewWidget(_MediaPreviewBase):
+    """Audio preview widget with in-panel QtMultimedia playback and real RMS waveform."""
+
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        loader: PreviewLoader | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(config=config, loader=loader, parent=parent)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
@@ -108,39 +185,24 @@ class AudioPreviewWidget(QWidget):
         self.waveform = WaveformWidget()
 
         controls = QHBoxLayout()
-        self.play_btn = QPushButton(tr("▶ Play"))
+        self.play_btn = QPushButton(tr(_PLAY_LABEL))
         self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_btn.clicked.connect(self.toggle_playback)
 
-        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scrub_slider.setRange(0, _SLIDER_STEPS)
         self.scrub_slider.valueChanged.connect(self._on_scrub)
-
-        self.time_label = QLabel("0:00 / 0:00")
-        self.time_label.setFont(get_ui_font(11))
-        self.time_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
 
         controls.addWidget(self.play_btn)
         controls.addWidget(self.scrub_slider, stretch=1)
         controls.addWidget(self.time_label)
 
-        self.meta_card = MetadataCard(config=config)
-
         layout.addWidget(self.waveform, stretch=1)
         layout.addLayout(controls)
         layout.addWidget(self.meta_card)
 
-        self.player = QMediaPlayer(self)
-        self.audio_output = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.positionChanged.connect(self._on_player_position_changed)
-        self.player.durationChanged.connect(self._on_player_duration_changed)
         self.player.playbackStateChanged.connect(self._on_playback_state_changed)
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
 
-        self._path: str = ""
-        self._duration: float = 0.0
-        self._current_pos: float = 0.0
         self._pending_seek_ms: int | None = None
 
     def retranslate_ui(self) -> None:
@@ -148,7 +210,7 @@ class AudioPreviewWidget(QWidget):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.play_btn.setText(_PAUSE_LABEL)
         else:
-            self.play_btn.setText(tr("▶ Play"))
+            self.play_btn.setText(tr(_PLAY_LABEL))
         self.meta_card.retranslate_ui()
 
     def load_audio(
@@ -197,20 +259,6 @@ class AudioPreviewWidget(QWidget):
         if isinstance(payload, list):
             self.waveform.set_bars([float(v) for v in payload if isinstance(v, (int, float))])
 
-    def _on_probed_duration_ready(self, payload: object) -> None:
-        if isinstance(payload, (int, float)) and payload > 0.0:
-            self._apply_duration(float(payload))
-
-    def _on_player_duration_changed(self, duration_ms: int) -> None:
-        if duration_ms > 0:
-            self._apply_duration(duration_ms / 1000.0)
-
-    def _apply_duration(self, seconds: float) -> None:
-        if seconds <= 0.0:
-            return
-        self._duration = max(seconds, self._current_pos)
-        self._sync_position_ui()
-
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if self._pending_seek_ms is not None and status in (
             QMediaPlayer.MediaStatus.LoadedMedia,
@@ -229,7 +277,7 @@ class AudioPreviewWidget(QWidget):
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self.play_btn.setText(_PAUSE_LABEL)
         else:
-            self.play_btn.setText(tr("▶ Play"))
+            self.play_btn.setText(tr(_PLAY_LABEL))
 
     def toggle_playback(self) -> None:
         """Play or pause audio inside the preview panel starting from current scrub position."""
@@ -256,7 +304,7 @@ class AudioPreviewWidget(QWidget):
     def stop_playback(self) -> None:
         """Stop active audio playback without clearing current selection metadata."""
         self.player.stop()
-        self.play_btn.setText(tr("▶ Play"))
+        self.play_btn.setText(tr(_PLAY_LABEL))
 
     def _on_scrub(self, val: int) -> None:
         ratio = val / _SLIDER_STEPS
@@ -268,45 +316,21 @@ class AudioPreviewWidget(QWidget):
             self.player.setPosition(self._pending_seek_ms)
 
     def _sync_position_ui(self) -> None:
-        ratio = self._current_pos / self._duration if self._duration > 0.0 else 0.0
-        clamped = max(0.0, min(1.0, ratio))
-        with QSignalBlocker(self.scrub_slider):
-            self.scrub_slider.setValue(int(clamped * _SLIDER_STEPS))
-        self.waveform.set_progress(clamped)
-        self._update_time_label()
-
-    def _update_time_label(self) -> None:
-        self.time_label.setText(f"{_format_mmss(self._current_pos)} / {_format_mmss(self._duration)}")
+        self.waveform.set_progress(self._sync_slider_and_time())
 
     def clear(self) -> None:
         """Stop playback, release media source, cancel async tasks, and reset state."""
         self._loader.cancel("audio_waveform")
         self._loader.cancel("audio_duration")
-        self.player.stop()
-        self.player.setSource(QUrl())
-        self._path = ""
-        self._current_pos = 0.0
-        self._duration = 0.0
+        super().clear()
         self._pending_seek_ms = None
         self.waveform.set_bars([])
         self.waveform.set_progress(0.0)
-        with QSignalBlocker(self.scrub_slider):
-            self.scrub_slider.setValue(0)
-        self.play_btn.setText(tr("▶ Play"))
-        self._update_time_label()
-        self.meta_card.clear()
-
-    def shutdown(self) -> None:
-        """Clear audio resources and wait for owned loader pool when standalone."""
-        self.clear()
-        if self._owns_loader:
-            self._loader.shutdown()
+        self.play_btn.setText(tr(_PLAY_LABEL))
 
 
-class VideoPreviewWidget(QWidget):
+class VideoPreviewWidget(_MediaPreviewBase):
     """Video preview with async cached ffmpeg thumbnails, debounced scrubbing, and moment jump."""
-
-    action_triggered = Signal()
 
     def __init__(
         self,
@@ -314,9 +338,7 @@ class VideoPreviewWidget(QWidget):
         loader: PreviewLoader | None = None,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
-        self._loader = loader if loader is not None else PreviewLoader(self)
-        self._owns_loader = loader is None
+        super().__init__(config=config, loader=loader, parent=parent)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -329,41 +351,25 @@ class VideoPreviewWidget(QWidget):
         self.poster_label.setStyleSheet("border-radius: 8px; background-color: rgba(0, 0, 0, 0.4);")
 
         controls = QHBoxLayout()
-        self.scrub_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scrub_slider.setRange(0, _SLIDER_STEPS)
         self.scrub_slider.valueChanged.connect(self._on_scrub)
 
         self.jump_btn = QPushButton(tr("▶ Open at Moment"))
         self.jump_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.jump_btn.clicked.connect(self._jump_to_timestamp)
 
-        self.time_label = QLabel("0:00 / 0:00")
-        self.time_label.setFont(get_ui_font(11))
-        self.time_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
-
         controls.addWidget(self.scrub_slider, stretch=1)
         controls.addWidget(self.time_label)
         controls.addWidget(self.jump_btn)
 
-        self.meta_card = MetadataCard(config=config)
-
         layout.addWidget(self.poster_label, stretch=1)
         layout.addLayout(controls)
         layout.addWidget(self.meta_card)
-
-        self.player = QMediaPlayer(self)
-        self.audio_output = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio_output)
-        self.player.durationChanged.connect(self._on_player_duration_changed)
 
         self._scrub_timer = QTimer(self)
         self._scrub_timer.setSingleShot(True)
         self._scrub_timer.setInterval(_SCRUB_DEBOUNCE_MS)
         self._scrub_timer.timeout.connect(self._request_scrub_frame)
 
-        self._path: str = ""
-        self._current_pos: float = 0.0
-        self._duration: float = 0.0
         self._poster_pixmap = QPixmap()
 
     def retranslate_ui(self) -> None:
@@ -454,20 +460,6 @@ class VideoPreviewWidget(QWidget):
         if isinstance(payload, QImage) and not payload.isNull():
             self._set_poster_from_image(payload)
 
-    def _on_probed_duration_ready(self, payload: object) -> None:
-        if isinstance(payload, (int, float)) and payload > 0.0:
-            self._apply_duration(float(payload))
-
-    def _on_player_duration_changed(self, duration_ms: int) -> None:
-        if duration_ms > 0:
-            self._apply_duration(duration_ms / 1000.0)
-
-    def _apply_duration(self, seconds: float) -> None:
-        if seconds <= 0.0:
-            return
-        self._duration = max(seconds, self._current_pos)
-        self._sync_position_ui()
-
     def _rescale_poster(self) -> None:
         if self._poster_pixmap.isNull():
             return
@@ -516,35 +508,11 @@ class VideoPreviewWidget(QWidget):
         self._scrub_timer.stop()
         self.player.stop()
 
-    def _sync_position_ui(self) -> None:
-        ratio = self._current_pos / self._duration if self._duration > 0.0 else 0.0
-        clamped = max(0.0, min(1.0, ratio))
-        with QSignalBlocker(self.scrub_slider):
-            self.scrub_slider.setValue(int(clamped * _SLIDER_STEPS))
-        self._update_time_label()
-
-    def _update_time_label(self) -> None:
-        self.time_label.setText(f"{_format_mmss(self._current_pos)} / {_format_mmss(self._duration)}")
-
     def clear(self) -> None:
         """Release media resources, cancel thumbnail workers, and reset state."""
         self._scrub_timer.stop()
         self._loader.cancel("video_frame")
         self._loader.cancel("video_duration")
-        self.player.stop()
-        self.player.setSource(QUrl())
+        super().clear()
         self._poster_pixmap = QPixmap()
         self.poster_label.clear()
-        self._path = ""
-        self._current_pos = 0.0
-        self._duration = 0.0
-        with QSignalBlocker(self.scrub_slider):
-            self.scrub_slider.setValue(0)
-        self._update_time_label()
-        self.meta_card.clear()
-
-    def shutdown(self) -> None:
-        """Clear video resources and wait for owned loader pool when standalone."""
-        self.clear()
-        if self._owns_loader:
-            self._loader.shutdown()

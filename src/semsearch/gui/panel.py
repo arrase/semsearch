@@ -484,17 +484,20 @@ class SearchPanel(QWidget):
         self.result_list.setItemWidget(item, widget)
         return item
 
-    def _populate_list(self, result_set: ResultSet) -> None:
-        selected_hit = self._current_hit()
-        selected_path = selected_hit.path if selected_hit is not None else None
-        restored_item: QListWidgetItem | None = None
+    def _add_hit_items(self, hits: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
+        matched_item: QListWidgetItem | None = None
+        for hit in hits:
+            item = self._add_hit_item(hit)
+            if matched_item is None and hit.path == selected_path:
+                matched_item = item
+        return matched_item
 
-        self.result_list.clear()
-
+    def _add_ranked_groups(self, ranked: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
         grouped: dict[FileKind, list[SearchHit]] = {}
-        for hit in result_set.ranked:
+        for hit in ranked:
             grouped.setdefault(hit.kind, []).append(hit)
 
+        restored_item: QListWidgetItem | None = None
         for kind, hits in grouped.items():
             header_item = QListWidgetItem(tr(KIND_GROUP_NAMES.get(kind, "Other")).upper())
             header_item.setFont(get_ui_font(10, QFont.Weight.Bold))
@@ -503,27 +506,36 @@ class SearchPanel(QWidget):
             header_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 24))
             self.result_list.addItem(header_item)
 
-            for hit in hits:
-                item = self._add_hit_item(hit)
-                if selected_path is not None and hit.path == selected_path and restored_item is None:
-                    restored_item = item
+            group_match = self._add_hit_items(hits, selected_path)
+            if restored_item is None:
+                restored_item = group_match
+        return restored_item
 
+    def _add_weaker_section(self, weaker: list[SearchHit], selected_path: str | None) -> QListWidgetItem | None:
+        collapsed_arrow = "◂" if self._is_rtl_layout() else "▸"
+        arrow = "▾" if self.weaker_expanded else collapsed_arrow
+        toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(weaker))
+        toggle_item = QListWidgetItem(toggle_text)
+        toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
+        toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
+        toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
+        toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
+        self.result_list.addItem(toggle_item)
+        if not self.weaker_expanded:
+            return None
+        return self._add_hit_items(weaker, selected_path)
+
+    def _populate_list(self, result_set: ResultSet) -> None:
+        selected_hit = self._current_hit()
+        selected_path = selected_hit.path if selected_hit is not None else None
+
+        self.result_list.clear()
+
+        restored_item = self._add_ranked_groups(result_set.ranked, selected_path)
         if result_set.weaker:
-            collapsed_arrow = "◂" if self._is_rtl_layout() else "▸"
-            arrow = "▾" if self.weaker_expanded else collapsed_arrow
-            toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(result_set.weaker))
-            toggle_item = QListWidgetItem(toggle_text)
-            toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
-            toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
-            toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
-            toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
-            self.result_list.addItem(toggle_item)
-
-            if self.weaker_expanded:
-                for hit in result_set.weaker:
-                    item = self._add_hit_item(hit)
-                    if selected_path is not None and hit.path == selected_path and restored_item is None:
-                        restored_item = item
+            weaker_match = self._add_weaker_section(result_set.weaker, selected_path)
+            if restored_item is None:
+                restored_item = weaker_match
 
         if restored_item is not None:
             self.result_list.setCurrentItem(restored_item)

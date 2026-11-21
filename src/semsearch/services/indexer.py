@@ -305,12 +305,26 @@ class IndexService:
             excluded_types=excl_types,
         )
 
-    def crawl_and_sync(self, roots: list[str] | None = None, *, is_code: bool = False) -> None:
-        """Crawl folders and synchronize database records."""
-        if self._stop_event.is_set() or (is_code and not self.code_db):
-            return
+    def _resolve_sync_target(
+        self,
+        roots: list[str] | None,
+        *,
+        is_code: bool,
+    ) -> tuple[Database, list[str], list[str] | None] | None:
+        if is_code:
+            if self.code_db is None:
+                return None
+            target_db = self.code_db
+            default_roots = self.config.code_folders
+            excl_types: list[str] | None = None
+        else:
+            target_db = self.db
+            default_roots = self.config.folders
+            excl_types = self.config.excluded_types
+        scan_roots = default_roots if roots is None else roots
+        return target_db, scan_roots, excl_types
 
-        self.sync_model_state()
+    def _enter_sync_state(self) -> None:
         was_idle = False
         with self._lock:
             if not self.status.paused and self.status.activity in (EngineActivity.STARTING, EngineActivity.IDLE):
@@ -319,19 +333,7 @@ class IndexService:
         if was_idle:
             self._notify_work_listeners()
 
-        target_db = self.code_db if is_code and self.code_db is not None else self.db
-        scan_roots = (self.config.code_folders if is_code else self.config.folders) if roots is None else roots
-        excl_types = None if is_code else self.config.excluded_types
-
-        for root in scan_roots:
-            if self._stop_event.is_set():
-                break
-            candidates = self._crawl_single_root(root, is_code=is_code, excl_types=excl_types)
-            sync_candidates(target_db, candidates, roots=[root])
-
-        if roots is None and not self._stop_event.is_set():
-            purge_outside_roots(target_db, scan_roots)
-
+    def _finish_sync_state(self) -> None:
         self._update_status_counts()
         with self._lock:
             if self.status.paused:
@@ -342,6 +344,29 @@ class IndexService:
         self._work_event.set()
         if has_pending:
             self._notify_work_listeners()
+
+    def crawl_and_sync(self, roots: list[str] | None = None, *, is_code: bool = False) -> None:
+        """Crawl folders and synchronize database records."""
+        if self._stop_event.is_set():
+            return
+        resolved = self._resolve_sync_target(roots, is_code=is_code)
+        if resolved is None:
+            return
+        target_db, scan_roots, excl_types = resolved
+
+        self.sync_model_state()
+        self._enter_sync_state()
+
+        for root in scan_roots:
+            if self._stop_event.is_set():
+                break
+            candidates = self._crawl_single_root(root, is_code=is_code, excl_types=excl_types)
+            sync_candidates(target_db, candidates, roots=[root])
+
+        if roots is None and not self._stop_event.is_set():
+            purge_outside_roots(target_db, scan_roots)
+
+        self._finish_sync_state()
 
     def _pop_next_queued_file(self) -> tuple[FileRecord, Database] | None:
         with self._lock:
@@ -446,6 +471,26 @@ class IndexService:
                 embed_inputs.append(None)
         return embed_inputs
 
+    def _encode_embeddings(
+        self,
+        target_db: Database,
+        segment_count: int,
+        valid_indices: list[int],
+        embeddings: list[list[float]],
+    ) -> list[bytes | None]:
+        vectors: list[bytes | None] = [None] * segment_count
+        first_dim: int | None = None
+        for idx, emb in zip(valid_indices, embeddings, strict=False):
+            if not emb:
+                continue
+            if first_dim is None:
+                first_dim = len(emb)
+            vec_arr = l2_normalize(np.array(emb, dtype=np.float32))
+            vectors[idx] = float16_to_bytes(vec_arr)
+        if first_dim is not None and target_db.get_meta("embedding_dim") is None:
+            target_db.sync_model_metadata(self.config.model, dim=first_dim)
+        return vectors
+
     def _embed_segments(
         self,
         target_db: Database,
@@ -464,23 +509,12 @@ class IndexService:
                 valid_indices.append(idx)
                 valid_inputs.append(item)
 
-        vectors: list[bytes | None] = [None] * len(segments)
         if not valid_inputs:
-            return vectors
+            return [None] * len(segments)
 
         embeddings = self.ollama.embed(self.config.model, valid_inputs)
         self._did_embed_since_idle = True
-
-        recorded_dim = False
-        for idx, emb in zip(valid_indices, embeddings, strict=False):
-            if emb:
-                if not recorded_dim:
-                    if target_db.get_meta("embedding_dim") is None:
-                        target_db.sync_model_metadata(self.config.model, dim=len(emb))
-                    recorded_dim = True
-                vec_arr = l2_normalize(np.array(emb, dtype=np.float32))
-                vectors[idx] = float16_to_bytes(vec_arr)
-        return vectors
+        return self._encode_embeddings(target_db, len(segments), valid_indices, embeddings)
 
     def process_file(self, file_record: FileRecord, target_db: Database) -> bool:
         """Execute pipelined extraction, Ollama embedding, and atomic database commit for a file."""

@@ -134,7 +134,12 @@ class MetadataCard(QFrame):
     ) -> None:
         """Update displayed metadata fields and bind optional SearchHit for deep-link Open."""
         self._path = path
-        self._reason = str(reason) if reason else (str(hit.reason) if hit is not None else "")
+        if reason:
+            self._reason = str(reason)
+        elif hit is not None:
+            self._reason = str(hit.reason)
+        else:
+            self._reason = ""
         self._hit = hit
         self.name_label.setText(name)
         self.path_label.setText(format_tilde_path(path))

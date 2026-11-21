@@ -288,8 +288,9 @@ class OllamaModelPicker(QWidget):
 
     def shutdown(self) -> None:
         """Wait for any running background connection probe threads to finish."""
-        for worker in list(self._active_workers):
-            worker.wait(2000)
+        workers = self._active_workers.copy()
         self._active_workers.clear()
+        for worker in workers:
+            worker.wait(2000)
         self._worker = None
         self.test_btn.setEnabled(True)

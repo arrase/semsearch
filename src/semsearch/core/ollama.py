@@ -36,6 +36,7 @@ _HTTP_NOT_FOUND = 404
 _HTTP_BAD_REQUEST = 400
 _MIN_PARAMETER_PARTS = 3
 _MULTIMODAL_BATCH_SIZE = 4
+_EMBED_ENDPOINT = "/api/embed"
 
 
 def format_query_prompt(text: str) -> str:
@@ -311,7 +312,7 @@ class OllamaClient:
         if effective_ctx > 0:
             payload["options"] = {"num_ctx": effective_ctx}
         self._request(
-            "/api/embed",
+            _EMBED_ENDPOINT,
             timeout=self.embed_timeout,
             payload=payload,
             model_name=model,
@@ -326,7 +327,7 @@ class OllamaClient:
             "keep_alive": 0,
         }
         self._request(
-            "/api/embed",
+            _EMBED_ENDPOINT,
             timeout=self.timeout,
             payload=payload,
             model_name=model,
@@ -362,7 +363,7 @@ class OllamaClient:
             if effective_ctx > 0:
                 payload["options"] = {"num_ctx": effective_ctx}
             data = self._request(
-                "/api/embed",
+                _EMBED_ENDPOINT,
                 timeout=self.embed_timeout,
                 payload=payload,
                 model_name=model,

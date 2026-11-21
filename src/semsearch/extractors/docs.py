@@ -18,7 +18,7 @@ MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024
 _HTML_SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "head"})
 _HTML_BLOCK_TAGS = frozenset({"p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"})
 
-_RTF_SKIP_GROUP_RE = re.compile(r"\{\s*\\(?:(?:\*)|(?:fonttbl|colortbl|stylesheet|info|pict)(?![a-zA-Z]))")
+_RTF_SKIP_GROUP_RE = re.compile(r"\{\s*\\(?:\*|(?:fonttbl|colortbl|stylesheet|info|pict)(?![a-zA-Z]))")
 _RTF_UNICODE_RE = re.compile(r"\\u(-?\d+) ?(?:\\'[0-9a-fA-F]{2}|[^\\{}\r\n])?")
 _RTF_HEX_RE = re.compile(r"\\'([0-9a-fA-F]{2})")
 _RTF_UTF16_MODULO = 65536

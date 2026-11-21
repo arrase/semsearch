@@ -51,6 +51,23 @@ _MIN_LEXICAL_LIMIT = 100
 _LEXICAL_OVERFETCH_FACTOR = 4
 
 
+def _resolve_hit_snippet(
+    default_snippet: str,
+    segment_id: int,
+    keyword: tuple[int, FtsMatchRow] | None,
+    terms: list[str] | None,
+) -> str:
+    if keyword is None or keyword[1]["segment_id"] != segment_id:
+        return default_snippet
+    row = keyword[1]
+    source_text = row["original"] or row["body"]
+    refined = extract_snippet(source_text, terms) if terms and source_text else None
+    raw_snip = refined or row["snippet"]
+    if raw_snip and "«" in raw_snip:
+        return raw_snip
+    return default_snippet
+
+
 @dataclass
 class ResultSet:
     """Search results partitioned into primary ranked hits and folded weaker hits."""
@@ -451,30 +468,33 @@ class SearchService:
         focus_line: float,
         terms: list[str] | None,
     ) -> SearchHit:
-        s_kind = seg_meta.kind if seg_meta is not None else SegmentKind.NAME
-        s_id = seg_meta.id if seg_meta is not None else 0
-        s_loc = seg_meta.loc if seg_meta is not None else 0.0
-        s_loc_end = seg_meta.loc_end if seg_meta is not None else 0.0
-        snippet = seg_meta.excerpt if seg_meta is not None else ""
+        if seg_meta is not None:
+            s_kind = seg_meta.kind
+            s_id = seg_meta.id
+            s_loc = seg_meta.loc
+            s_loc_end = seg_meta.loc_end
+            base_snippet = seg_meta.excerpt
+            seg_focus = seg_meta.focus
+        else:
+            s_kind = SegmentKind.NAME
+            s_id = 0
+            s_loc = 0.0
+            s_loc_end = 0.0
+            base_snippet = ""
+            seg_focus = 0.0
 
-        if keyword is not None and keyword[1]["segment_id"] == s_id:
-            source_text = keyword[1]["original"] or keyword[1]["body"]
-            refined = extract_snippet(source_text, terms) if terms and source_text else None
-            raw_snip = refined or keyword[1]["snippet"]
-            if raw_snip and "«" in raw_snip:
-                snippet = raw_snip
-
-        effective_focus = focus_line
-        if effective_focus <= 0.0 and seg_meta is not None and seg_meta.focus > 0.0:
-            effective_focus = seg_meta.focus
+        snippet = _resolve_hit_snippet(base_snippet, s_id, keyword, terms)
+        effective_focus = seg_focus if focus_line <= 0.0 and seg_focus > 0.0 else focus_line
+        z, cosine = (semantic[0], semantic[1]) if semantic is not None else (0.0, 0.0)
+        keyword_rank = keyword[0] if keyword is not None else 0
 
         return SearchHit(
             path=f_rec.path,
             kind=f_rec.kind,
             score=score,
-            z=semantic[0] if semantic else 0.0,
-            cosine=semantic[1] if semantic else 0.0,
-            keyword_rank=keyword[0] if keyword else 0,
+            z=z,
+            cosine=cosine,
+            keyword_rank=keyword_rank,
             segment=s_kind,
             segment_id=s_id,
             loc=s_loc,

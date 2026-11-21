@@ -50,7 +50,7 @@ _EXTENDED_LATIN_TABLE = str.maketrans(
     }
 )
 _CAMEL_BOUNDARY_1 = re.compile(r"([a-z])([A-Z])")
-_CAMEL_BOUNDARY_2 = re.compile(r"([A-Z]+|[0-9]+)([A-Z][a-z])")
+_CAMEL_BOUNDARY_2 = re.compile(r"([A-Z\d])([A-Z][a-z])", re.ASCII)
 _FILTER_TOKEN_RE = re.compile(
     r'(?<!\S)(?P<key>kind|ext|path|after):(?:"(?P<dq>[^"]*)"|\'(?P<sq>[^\']*)\'|(?P<val>\S+))',
     re.IGNORECASE,
@@ -704,19 +704,12 @@ def _resolve_match_bounds(
 def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
     """Locate occurrences of word in text with boundary checks, diacritic folding, and suffix extension."""
     needle = _fold_latin_diacritics(word)
-    if not needle:
-        return []
-    folded_full = _fold_latin_diacritics(text)
-    if needle not in folded_full:
+    if not needle or needle not in _fold_latin_diacritics(text):
         return []
 
     prefix = inflects(word)
     is_cjk = any(_is_cjk_char(ch) for ch in word)
-    if text.isascii():
-        haystack = text.lower()
-        origin: list[int] | None = None
-    else:
-        haystack, origin = _build_folded_index(text)
+    haystack, origin = (text.lower(), None) if text.isascii() else _build_folded_index(text)
 
     found: list[tuple[int, int]] = []
     cursor = 0
@@ -725,19 +718,13 @@ def find_term_matches(word: str, text: str) -> list[tuple[int, int]]:
         if pos == -1:
             break
         hit_end = pos + len(needle)
-        if origin is None:
-            orig_start, orig_end = pos, hit_end
-        else:
-            if hit_end > len(origin):
-                cursor = pos + 1
-                continue
-            orig_start, orig_end = origin[pos], origin[hit_end - 1] + 1
+        orig_start, orig_end = (pos, hit_end) if origin is None else (origin[pos], origin[hit_end - 1] + 1)
         bounds = _resolve_match_bounds(text, orig_start, orig_end, prefix=prefix, is_cjk=is_cjk)
-        if bounds is not None:
-            found.append(bounds)
-            cursor = hit_end
-        else:
+        if bounds is None:
             cursor = pos + 1
+            continue
+        found.append(bounds)
+        cursor = hit_end
     return found
 
 

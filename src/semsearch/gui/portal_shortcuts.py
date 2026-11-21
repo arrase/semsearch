@@ -35,18 +35,21 @@ _DBUS_TYPE_STRING = ord("s")
 _DBUS_TYPE_STRUCT = ord("r")
 _DBUS_TYPE_VARIANT = ord("v")
 
+_MOD_CONTROL = "<Control>"
+_MOD_SUPER = "<Super>"
+
 _PORTAL_MODIFIERS: dict[str, str] = {
-    "ctrl": "<Control>",
-    "control": "<Control>",
-    "primary": "<Control>",
+    "ctrl": _MOD_CONTROL,
+    "control": _MOD_CONTROL,
+    "primary": _MOD_CONTROL,
     "shift": "<Shift>",
     "alt": "<Alt>",
-    "super": "<Super>",
-    "meta": "<Super>",
-    "cmd": "<Super>",
-    "win": "<Super>",
-    "windows": "<Super>",
-    "logo": "<Super>",
+    "super": _MOD_SUPER,
+    "meta": _MOD_SUPER,
+    "cmd": _MOD_SUPER,
+    "win": _MOD_SUPER,
+    "windows": _MOD_SUPER,
+    "logo": _MOD_SUPER,
     "hyper": "<Hyper>",
 }
 

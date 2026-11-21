@@ -1,5 +1,6 @@
 """Native Linux desktop search providers over D-Bus for KDE KRunner and GNOME Shell."""
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QMetaType, QObject, Signal
@@ -105,7 +106,14 @@ def _format_hit_subtext(hit: SearchHit) -> str:
     return f"{folder} — {excerpt}"
 
 
-def _as_str_list(raw: object) -> list[str]:
+def _str_arg(args: Sequence[object], index: int) -> str:
+    return str(args[index]) if len(args) > index else ""
+
+
+def _str_list_arg(args: Sequence[object], index: int) -> list[str]:
+    if len(args) <= index:
+        return []
+    raw = args[index]
     if isinstance(raw, (list, tuple)):
         return [str(item) for item in raw]
     return []
@@ -241,12 +249,10 @@ class KRunnerProvider(QDBusVirtualObject):
         if member == "Actions":
             reply.setArguments([[_encode_krunner_action(act) for act in self.actions_payload()]])
         elif member == "Match":
-            query = str(args[0]) if args else ""
+            query = _str_arg(args, 0)
             reply.setArguments([[_encode_krunner_match(match) for match in self.match_query(query)]])
         elif member == "Run":
-            match_id = str(args[0]) if args else ""
-            action_id = str(args[1]) if len(args) > 1 else ""
-            self.run_match(match_id, action_id)
+            self.run_match(_str_arg(args, 0), _str_arg(args, 1))
         else:
             return False
 
@@ -325,18 +331,18 @@ class GnomeSearchProvider(QDBusVirtualObject):
         args = message.arguments()
         reply = message.createReply()
         if member == "GetInitialResultSet":
-            ids = self.get_result_ids(_as_str_list(args[0]) if args else [])
+            ids = self.get_result_ids(_str_list_arg(args, 0))
             reply.setArguments([_encode_string_list(ids)])
         elif member == "GetSubsearchResultSet":
-            ids = self.get_result_ids(_as_str_list(args[1]) if len(args) > 1 else [])
+            ids = self.get_result_ids(_str_list_arg(args, 1))
             reply.setArguments([_encode_string_list(ids)])
         elif member == "GetResultMetas":
-            metas = self.get_result_metas(_as_str_list(args[0]) if args else [])
+            metas = self.get_result_metas(_str_list_arg(args, 0))
             reply.setArguments([_encode_variant_map_list(metas)])
         elif member == "ActivateResult":
-            self.activate_result(str(args[0]) if args else "")
+            self.activate_result(_str_arg(args, 0))
         elif member == "LaunchSearch":
-            self.launch_search(_as_str_list(args[0]) if args else [])
+            self.launch_search(_str_list_arg(args, 0))
         else:
             return False
 

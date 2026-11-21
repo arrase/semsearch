@@ -22,6 +22,7 @@ from semsearch.core.rules import (
 from semsearch.core.types import Candidate, FileKind, FileRecord, FileState
 
 _MTIME_TOLERANCE = 0.001
+_DATASET_MEDIA_KINDS = frozenset({FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO})
 
 
 @dataclass
@@ -171,6 +172,36 @@ def _build_candidate(
     )
 
 
+def _collect_dir_candidates(
+    dir_files: list[os.DirEntry[str]],
+    *,
+    is_root: bool,
+    is_code: bool,
+    in_code_project: bool,
+    rules: tuple[_GitIgnoreRule, ...],
+    excluded_folders: frozenset[str],
+    excluded_types: frozenset[str],
+) -> list[Candidate]:
+    filtered = [entry for entry in dir_files if not _is_gitignored(Path(entry.path), is_dir=False, rules=rules)]
+    if not is_root and not is_code and is_dataset_folder([entry.path for entry in filtered]):
+        filtered = [
+            entry for entry in filtered if classify_file(entry.path, is_code_mode=is_code) not in _DATASET_MEDIA_KINDS
+        ]
+
+    found: list[Candidate] = []
+    for entry in filtered:
+        candidate = _build_candidate(
+            entry,
+            is_code=is_code,
+            in_code_project=in_code_project,
+            excluded_folders=excluded_folders,
+            excluded_types=excluded_types,
+        )
+        if candidate is not None:
+            found.append(candidate)
+    return found
+
+
 def crawl_folder(
     root: str,
     *,
@@ -192,39 +223,28 @@ def crawl_folder(
         current_dir, in_code_project, gitignore_rules = dir_stack.pop()
         subdirs, dir_files, has_project_marker, has_gitignore = _scan_dir_entries(current_dir, norm_folders)
 
-        dir_in_project = in_code_project or (current_dir != root_path and has_project_marker)
-        active_rules = (
-            gitignore_rules + _load_gitignore(current_dir)
-            if (is_code or dir_in_project) and has_gitignore
-            else gitignore_rules
+        is_root = current_dir == root_path
+        dir_in_project = in_code_project or (not is_root and has_project_marker)
+        active_rules = gitignore_rules
+        if has_gitignore and (is_code or dir_in_project):
+            active_rules = gitignore_rules + _load_gitignore(current_dir)
+
+        dir_stack.extend(
+            (subdir_path, dir_in_project, active_rules)
+            for subdir in subdirs
+            if not _is_gitignored(subdir_path := Path(subdir.path), is_dir=True, rules=active_rules)
         )
-
-        for subdir in subdirs:
-            subdir_path = Path(subdir.path)
-            if not _is_gitignored(subdir_path, is_dir=True, rules=active_rules):
-                dir_stack.append((subdir_path, dir_in_project, active_rules))
-
-        filtered_files = [
-            entry for entry in dir_files if not _is_gitignored(Path(entry.path), is_dir=False, rules=active_rules)
-        ]
-
-        if current_dir != root_path and not is_code and is_dataset_folder([e.path for e in filtered_files]):
-            filtered_files = [
-                e
-                for e in filtered_files
-                if classify_file(e.path, is_code_mode=is_code) not in (FileKind.IMAGE, FileKind.AUDIO, FileKind.VIDEO)
-            ]
-
-        for entry in filtered_files:
-            candidate = _build_candidate(
-                entry,
+        candidates.extend(
+            _collect_dir_candidates(
+                dir_files,
+                is_root=is_root,
                 is_code=is_code,
                 in_code_project=dir_in_project,
+                rules=active_rules,
                 excluded_folders=norm_folders,
                 excluded_types=norm_types,
             )
-            if candidate is not None:
-                candidates.append(candidate)
+        )
 
     return candidates
 

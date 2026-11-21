@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt
@@ -115,9 +116,42 @@ _KEYWORDS = (
 )
 _KEYWORDS_RE = re.compile(r"\b(?:" + "|".join(_KEYWORDS) + r")\b")
 _DEFINITION_RE = re.compile(r"\b(?:def|class|fn|func|interface|struct)\s+([A-Za-z_]\w*)")
-_STRING_OR_COMMENT_RE = re.compile(
-    r'"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'|`[^`\\]*(?:\\.[^`\\]*)*`|#[^\n]*|//[^\n]*'
-)
+_TOKEN_START_RE = re.compile(r"""["'`#]|//""")
+
+
+def _find_quoted_end(text: str, start: int, quote: str) -> int:
+    """Return index immediately after the matching closing quote, or -1 if unclosed."""
+    i = start + 1
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i + 1
+        i += 1
+    return -1
+
+
+def _iter_string_or_comment_spans(text: str) -> Iterator[tuple[int, int, bool]]:
+    """Yield non-overlapping (start, end, is_comment) spans in left-to-right order."""
+    pos = 0
+    while (match := _TOKEN_START_RE.search(text, pos)) is not None:
+        start = match.start()
+        token = match.group(0)
+        if token in {"#", "//"}:
+            line_end = text.find("\n", start)
+            end = len(text) if line_end == -1 else line_end
+            yield start, end, True
+            pos = end
+            continue
+        end = _find_quoted_end(text, start, token)
+        if end == -1:
+            pos = start + 1
+            continue
+        yield start, end, False
+        pos = end
 
 
 def _build_utf16_offset_map(text: str) -> list[int]:
@@ -188,10 +222,8 @@ class CodeSyntaxHighlighter(QSyntaxHighlighter):
         for match in _DEFINITION_RE.finditer(text):
             apply_span(match.start(1), match.end(1), self._def_fmt)
 
-        for match in _STRING_OR_COMMENT_RE.finditer(text):
-            token = match.group(0)
-            fmt = self._comment_fmt if token.startswith(("#", "//")) else self._string_fmt
-            apply_span(match.start(), match.end(), fmt)
+        for start, end, is_comment in _iter_string_or_comment_spans(text):
+            apply_span(start, end, self._comment_fmt if is_comment else self._string_fmt)
 
 
 class LineNumberGutter(QWidget):

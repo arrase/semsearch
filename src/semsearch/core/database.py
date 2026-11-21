@@ -32,7 +32,7 @@ CODE_DB_FILE = "code.sqlite"
 FILE_COLUMNS = "id, path, kind, size, mtime, inode, device, state, detail, info, indexed_at"
 _MIN_FTS_WORD_LEN = 2
 _SQLITE_MAX_VARS = 900
-_PREBUILT_FTS_EXPR_RE = re.compile(r'^(?:"(?:[^"\x00]|"")+"\*?)(?:\s+(?:OR|AND)\s+"(?:[^"\x00]|"")+"\*?)*$')
+_PREBUILT_FTS_EXPR_RE = re.compile(r'^"(?:[^"\x00]|"")+"\*?(?:\s+(?:OR|AND)\s+"(?:[^"\x00]|"")+"\*?)*$')
 
 
 class FtsMatchRow(TypedDict):
