@@ -22,6 +22,12 @@ class _FakeOnboardingProbe:
         self._error = error
         self.closed = False
 
+    def __enter__(self) -> "_FakeOnboardingProbe":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
     def close(self) -> None:
         self.closed = True
 

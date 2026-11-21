@@ -145,15 +145,13 @@ class OllamaConnectionWorker(QThread):
         self.base_url = base_url
 
     def run(self) -> None:
-        client = OllamaClient(base_url=self.base_url)
         try:
-            models = client.list_multimodal_models()
+            with OllamaClient(base_url=self.base_url) as client:
+                models = client.list_multimodal_models()
         except Exception as exc:  # noqa: BLE001 — GUI probe boundary formats error text without crashing UI
             self.failed.emit(str(exc))
         else:
             self.succeeded.emit(models)
-        finally:
-            client.close()
 
 
 class OllamaModelPicker(QWidget):
@@ -257,14 +255,12 @@ class OllamaModelPicker(QWidget):
 
     def test_connection(self) -> list[str] | None:
         """Synchronously probe the entered Ollama URL using a temporary closed OllamaClient."""
-        client = OllamaClient(base_url=self.url())
         try:
-            models = client.list_multimodal_models()
+            with OllamaClient(base_url=self.url()) as client:
+                models = client.list_multimodal_models()
         except Exception as exc:  # noqa: BLE001 — GUI probe boundary formats error text without crashing UI
             self._apply_connection_error(str(exc))
             return None
-        finally:
-            client.close()
         self._apply_connection_success(models)
         return models
 

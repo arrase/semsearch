@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
@@ -74,6 +74,10 @@ class _IpcHostHarness(QObject):
 
     def _on_ipc_connection(self) -> None:
         SemSearchApp._on_ipc_connection(cast(SemSearchApp, self))
+
+    @Slot()
+    def _on_ipc_ready_read(self) -> None:
+        SemSearchApp._on_ipc_ready_read(cast(SemSearchApp, self))
 
     def _handle_ipc_message(self, client: QLocalSocket) -> None:
         SemSearchApp._handle_ipc_message(cast(SemSearchApp, self), client)

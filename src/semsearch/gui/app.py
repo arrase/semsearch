@@ -2,14 +2,13 @@
 
 import contextlib
 import fcntl
-import functools
 import os
 import socket
 import tempfile
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
@@ -172,6 +171,7 @@ class SemSearchApp(QApplication):
     def _close_ipc_server(self) -> None:
         if self.ipc_server is not None:
             self.ipc_server.close()
+            self.ipc_server.deleteLater()
             self.ipc_server = None
             if self._instance_lock_fd is not None and self._ipc_server_name:
                 QLocalServer.removeServer(self._ipc_server_name)
@@ -187,7 +187,13 @@ class SemSearchApp(QApplication):
             if client.bytesAvailable() > 0:
                 self._handle_ipc_message(client)
             else:
-                client.readyRead.connect(functools.partial(self._handle_ipc_message, client))
+                client.readyRead.connect(self._on_ipc_ready_read)
+
+    @Slot()
+    def _on_ipc_ready_read(self) -> None:
+        client = self.sender()
+        if isinstance(client, QLocalSocket):
+            self._handle_ipc_message(client)
 
     def _handle_ipc_message(self, client: QLocalSocket) -> None:
         msg = bytes(client.read(_MAX_IPC_MESSAGE_BYTES).data()).decode("utf-8", errors="ignore").strip()

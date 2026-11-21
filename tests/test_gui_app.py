@@ -3,12 +3,14 @@
 import fcntl
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import weakref
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +19,8 @@ from unittest.mock import MagicMock, create_autospec
 
 import pytest
 from pynput.keyboard import HotKey
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, Slot
+from PySide6.QtNetwork import QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
 
 import semsearch.gui.app as app_module
@@ -81,6 +84,10 @@ class _AppHarness(QObject):
 
     def setLayoutDirection(self, direction: Qt.LayoutDirection) -> None:  # noqa: N802
         self.layout_direction = direction
+
+    @Slot()
+    def _on_ipc_ready_read(self) -> None:
+        SemSearchApp._on_ipc_ready_read(cast(SemSearchApp, self))
 
 
 for _method_name in _BOUND_APP_METHODS:
@@ -442,6 +449,8 @@ def test_ipc_lockfile_prevents_stealing_socket_and_delivers_commands(
         assert len(received[2]) == 4096
     finally:
         primary.app.shutdown()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        qapp.processEvents()
 
     # After primary shutdown, lock is released and socket is removed so a new instance can bind.
     assert not Path(get_ipc_server_name()).exists()
@@ -451,6 +460,39 @@ def test_ipc_lockfile_prevents_stealing_socket_and_delivers_commands(
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+
+
+def test_ipc_ready_read_teardown_without_flushing_deferred_deletes(
+    qapp: QApplication,
+    tmp_path: Path,
+    short_ipc_dir: Path,
+) -> None:
+    """Verify dropping an IPC harness after readyRead without flushing DeferredDelete never crashes."""
+    del short_ipc_dir
+
+    def run_ipc_session() -> tuple[MagicMock, weakref.ref[SemSearchApp]]:
+        bundle = _make_harness(tmp_path / "ipc_teardown", init_ipc=True)
+        try:
+            server = bundle.app.ipc_server
+            assert server is not None
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_sock:
+                client_sock.connect(get_ipc_server_name())
+                assert _process_until(
+                    qapp,
+                    lambda: bool(server.findChildren(QLocalSocket)) and not server.hasPendingConnections(),
+                )
+                client_sock.sendall(b"TOGGLE")
+                assert _process_until(qapp, lambda: bundle.panel.show_panel.call_count == 1)
+        finally:
+            bundle.app.shutdown()
+        return bundle.panel, weakref.ref(bundle.app)
+
+    panel, app_ref = run_ipc_session()
+    assert app_ref() is None
+    qapp.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    panel.show_panel.assert_called_once()
 
 
 def test_handle_cli_action_routes_all_commands(

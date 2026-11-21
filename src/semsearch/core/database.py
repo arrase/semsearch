@@ -781,14 +781,7 @@ class Database:
             scale_mask=scale_arr,
         )
 
-    def get_vector_snapshot(self) -> VectorSnapshot:
-        """Return a cached, immutable RAM snapshot of all indexed vectors."""
-        with self._vec_cache_lock:
-            use_cache = not (self._is_memory and self._vec_dirty_in_tx)
-            if use_cache and self._vec_cache is not None and self._vec_cache_gen == self._vec_generation:
-                return self._vec_cache
-            gen_before = self._vec_generation
-
+    def _load_vector_snapshot(self) -> VectorSnapshot:
         with self._read_cursor() as cursor:
             cursor.execute(
                 """
@@ -799,10 +792,26 @@ class Database:
                 """
             )
             rows = cursor.fetchall()
+            return self._build_vector_snapshot(rows) if rows else _empty_vector_snapshot()
 
-        snapshot = self._build_vector_snapshot(rows) if rows else _empty_vector_snapshot()
+    def _read_cached_vector_snapshot(self) -> tuple[VectorSnapshot | None, int]:
         with self._vec_cache_lock:
-            if use_cache and gen_before == self._vec_generation:
+            if self._vec_cache is not None and self._vec_cache_gen == self._vec_generation:
+                return self._vec_cache, self._vec_generation
+            return None, self._vec_generation
+
+    def get_vector_snapshot(self) -> VectorSnapshot:
+        """Return a cached, immutable RAM snapshot of all indexed vectors."""
+        if self._is_memory and self._vec_dirty_in_tx:
+            return self._load_vector_snapshot()
+
+        cached, gen_before = self._read_cached_vector_snapshot()
+        if cached is not None:
+            return cached
+
+        snapshot = self._load_vector_snapshot()
+        with self._vec_cache_lock:
+            if not (self._is_memory and self._vec_dirty_in_tx) and gen_before == self._vec_generation:
                 self._vec_cache = snapshot
                 self._vec_cache_gen = gen_before
         return snapshot
