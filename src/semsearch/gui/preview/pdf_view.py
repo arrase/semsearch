@@ -11,7 +11,7 @@ from semsearch.config import AppConfig
 from semsearch.core.search_text import extract_terms
 from semsearch.core.types import SearchHit
 from semsearch.gui.preview.metadata import MetadataCard
-from semsearch.gui.theme import ThemeColors, get_ui_font
+from semsearch.gui.theme import get_palette, get_ui_font
 from semsearch.i18n import tr
 
 _PAGE_INFO_TEMPLATE = "Page {current} of {total}"
@@ -32,14 +32,12 @@ class PdfPreviewWidget(QWidget):
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_label.setMinimumSize(200, 160)
         self.page_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.page_label.setStyleSheet("border-radius: 8px; background-color: rgba(255, 255, 255, 0.04);")
 
         nav_row = QHBoxLayout()
         self.prev_btn = QPushButton(tr("◀ Prev"))
         self.prev_btn.clicked.connect(self.prev_page)
         self.page_info = QLabel(tr(_PAGE_INFO_TEMPLATE, current=1, total=1))
         self.page_info.setFont(get_ui_font(11))
-        self.page_info.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
         self.page_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.next_btn = QPushButton(tr("Next ▶"))
         self.next_btn.clicked.connect(self.next_page)
@@ -53,6 +51,7 @@ class PdfPreviewWidget(QWidget):
         layout.addWidget(self.page_label, stretch=1)
         layout.addLayout(nav_row)
         layout.addWidget(self.meta_card)
+        self.refresh_theme()
 
         self._doc: pymupdf.Document | None = None
         self._current_page: int = 0
@@ -60,6 +59,13 @@ class PdfPreviewWidget(QWidget):
         self._query_terms: list[str] = []
         self._rendered_pixmap = QPixmap()
         self._doc_name: str = ""
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette to PDF preview canvas, page indicator, and metadata card."""
+        p = get_palette()
+        self.page_label.setStyleSheet(f"border-radius: 8px; background-color: {p.bg_subtle};")
+        self.page_info.setStyleSheet(f"color: {p.text_secondary};")
+        self.meta_card.refresh_theme()
 
     def retranslate_ui(self) -> None:
         """Refresh translated navigation buttons and page info."""

@@ -367,6 +367,19 @@ def test_video_frame_disk_cache_and_pruning(tmp_path: Path, monkeypatch: pytest.
     assert len(list(cache_dir.glob("*.png"))) == 3
 
 
+def test_video_frame_disk_cache_respects_xdg_cache_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify thumbnail cache path resolves dynamically under XDG_CACHE_HOME when not monkeypatched."""
+    xdg_cache = tmp_path / "xdg_cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
+
+    cache_path = preview_loader_mod._thumb_cache_path("/tmp/clip.mp4", 1700000000.0, 5.0)
+    assert cache_path.parent == xdg_cache / "semsearch" / "thumbs"
+    assert cache_path.suffix == ".png"
+
+
 def test_preview_loader_discards_stale_requests(qapp: QApplication) -> None:
     """Verify PreviewLoader ignores superseded request_id results from slower earlier tasks."""
     loader = PreviewLoader(max_threads=2)

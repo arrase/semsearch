@@ -55,8 +55,9 @@ class SemanticMockOllama(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del model, truncate, num_ctx
+        del model, truncate, num_ctx, keep_alive
         return [self._embed_single(inp) for inp in inputs]
 
     def _embed_single(self, inp: str | dict[str, str]) -> list[float]:

@@ -1,13 +1,23 @@
 """Unit tests for file classification, secret detection, minified assets, and skip rules."""
 
+from pathlib import Path
+
 from semsearch.core.rules import (
+    CODE_ALLOWED_DOT_DIRS,
+    CODE_MANIFEST_FILENAMES,
+    CODE_ONLY_SKIPPED_FOLDERS,
     DOC_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_TEXT_FILE_BYTES,
+    SKIPPED_FOLDER_NAMES,
+    UNIVERSAL_SKIPPED_FOLDERS,
     classify_file,
+    is_dataset_folder,
+    is_inside_code_project,
     is_minified_file,
     is_path_excluded,
     is_secret,
+    looks_machine_named,
     should_skip,
 )
 from semsearch.core.types import FileKind
@@ -96,3 +106,147 @@ def test_should_skip_exclusions_and_relative_path_boundary() -> None:
     assert skip_doc is True
     skip_shot, _ = should_skip("/repo/Screenshot_1.png", is_code_mode=False, in_code_project=True)
     assert skip_shot is False
+
+
+def test_context_sensitive_skipped_folders_and_allowed_dot_dirs() -> None:
+    """Verify CODE_ONLY_SKIPPED_FOLDERS apply only in code context while UNIVERSAL_SKIPPED_FOLDERS always apply."""
+    assert SKIPPED_FOLDER_NAMES == UNIVERSAL_SKIPPED_FOLDERS | CODE_ONLY_SKIPPED_FOLDERS
+    assert {".github", ".devcontainer", ".circleci"} <= CODE_ALLOWED_DOT_DIRS
+    assert ".git" not in CODE_ALLOWED_DOT_DIRS
+    assert ".ssh" not in CODE_ALLOWED_DOT_DIRS
+
+    # General mode outside code projects does NOT skip vendor/target/build/dist
+    assert should_skip("/home/user/Documents/vendor/invoice.pdf", is_code_mode=False)[0] is False
+    assert should_skip("/home/user/Documents/Sales/target/q4.pdf", is_code_mode=False)[0] is False
+
+    # Code mode and nested code projects DO skip CODE_ONLY_SKIPPED_FOLDERS
+    skip_code, reason_code = should_skip("/home/user/Develop/app/target/main.rs", is_code_mode=True)
+    assert skip_code is True
+    assert "skipped folder target" in reason_code
+
+    skip_proj, reason_proj = should_skip(
+        "/home/user/Documents/app/vendor/Screenshot_1.png",
+        is_code_mode=False,
+        in_code_project=True,
+    )
+    assert skip_proj is True
+    assert "skipped folder vendor" in reason_proj
+
+    # Universal skipped folders always apply
+    assert should_skip("/home/user/Documents/node_modules/manual.pdf", is_code_mode=False)[0] is True
+
+
+def test_looks_machine_named_camera_timestamps_vs_datasets() -> None:
+    """Verify phone/camera timestamp stems are not treated as machine-generated dataset files."""
+    for camera_stem in (
+        "20260815_143022",
+        "20260815-143022",
+        "20260815_143022_1",
+        "20260815_143022-2",
+        "2026-08-15_14-30-22",
+        "2026-08-15_14-30-22_1",
+        "2026-08-15 14.30.22",
+    ):
+        assert looks_machine_named(camera_stem) is False
+
+    for dataset_stem in ("frame_0001", "0001", "a1b2c3d4e5f6", "sample_0042", "20269999_999999"):
+        assert looks_machine_named(dataset_stem) is True
+
+    phone_photos = [f"/photos/20260815_{10 + (i // 3600):02d}{(i // 60) % 60:02d}{i % 60:02d}.jpg" for i in range(350)]
+    assert is_dataset_folder(phone_photos) is False
+
+
+def test_is_secret_allows_user_media_for_generic_words_only() -> None:
+    """Verify generic secret/credential words do not block user documents/media while blocking configs/keys."""
+    for user_file in (
+        "/home/user/Books/The Secret Garden.pdf",
+        "/home/user/Docs/Secret_Recipe.docx",
+        "/home/user/Docs/credentials_letter.odt",
+        "/home/user/Docs/secret_memo.rtf",
+        "/home/user/Photos/secret_santa.jpg",
+        "/home/user/Music/secret_track.mp3",
+        "/home/user/Videos/top_secret_movie.mp4",
+    ):
+        assert is_secret(user_file) is False
+
+    for secret_file in (
+        "/home/user/config/secrets.json",
+        "/home/user/config/secret.txt",
+        "/home/user/config/credentials.toml",
+        "/home/user/config/secret.cfg",
+        "/home/user/config/secret.conf",
+        "/home/user/src/credentials.py",
+        "/home/user/credentials",
+        "/home/user/.ssh/secret.pdf",
+        "/home/user/keys/backup_id_rsa.pdf",
+        "/home/user/.env.pdf",
+        "/home/user/certs/secret.pem",
+    ):
+        assert is_secret(secret_file) is True
+
+
+def test_code_manifest_filenames_allowed_in_code_mode() -> None:
+    """Verify project manifests are indexed in code mode while generic data/lock files remain skipped."""
+    assert {"pyproject.toml", "cargo.toml", "package.json", "tsconfig.json", "pom.xml", "composer.json"} == (
+        CODE_MANIFEST_FILENAMES
+    )
+    for manifest in ("pyproject.toml", "Cargo.toml", "package.json", "tsconfig.json", "pom.xml", "composer.json"):
+        skip, _ = should_skip(f"/repo/{manifest}", is_code_mode=True)
+        assert skip is False
+
+    for data_file in ("data.json", "settings.toml", "config.xml", "package-lock.json", "poetry.lock"):
+        skip, reason = should_skip(f"/repo/{data_file}", is_code_mode=True)
+        assert skip is True
+        assert "data format" in reason
+
+
+def test_multilingual_and_linux_tool_screenshot_prefixes() -> None:
+    """Verify expanded multilingual and Linux screenshot tool prefixes classify as FileKind.SCREENSHOT."""
+    for filename in (
+        "Capture d'écran 2026-08-15.png",
+        "Capture d\u2019écran 2026-08-15.png",
+        "Bildschirmfoto_20260815.png",
+        "Schermata_20260815.png",
+        "Zrzut ekranu 2026.png",
+        "Schermafbeelding_2026.png",
+        "Снимок экрана_2026.png",
+        "Знімок екрана_2026.png",
+        "Знімак экрана_2026.png",
+        "Ekran görüntüsü_2026.png",
+        "flameshot_20260815.png",
+        "Spectacle_20260815.png",
+        "grim-20260815.png",
+    ):
+        assert classify_file(f"/home/user/Pictures/{filename}") == FileKind.SCREENSHOT
+
+
+def test_is_inside_code_project(tmp_path: Path) -> None:
+    """Verify is_inside_code_project matches crawler top-down not-is-root project boundary semantics."""
+    # Ancestor above root has .git (e.g. $HOME dotfiles)
+    (tmp_path / ".git").mkdir()
+
+    docs_root = tmp_path / "Documents"
+    docs_root.mkdir()
+    # Even if root itself has a marker, files directly under root are NOT treated as inside a nested project
+    (docs_root / ".git").mkdir()
+    top_note = docs_root / "notes.md"
+    top_note.write_text("notes")
+
+    nested_proj = docs_root / "my_app"
+    nested_proj.mkdir()
+    (nested_proj / "pyproject.toml").write_text("[project]\nname='app'\n")
+    proj_readme = nested_proj / "README.md"
+    proj_readme.write_text("readme")
+    deep_doc = nested_proj / "docs" / "design.md"
+    deep_doc.parent.mkdir()
+    deep_doc.write_text("design")
+
+    outside_file = tmp_path / "other.md"
+    outside_file.write_text("outside")
+
+    assert is_inside_code_project(str(top_note), [str(docs_root)]) is False
+    assert is_inside_code_project(str(proj_readme), [str(docs_root)]) is True
+    assert is_inside_code_project(str(deep_doc), [str(docs_root)]) is True
+    assert is_inside_code_project(str(outside_file), [str(docs_root)]) is False
+    # Deepest matching root stops the walk
+    assert is_inside_code_project(str(proj_readme), [str(docs_root), str(nested_proj)]) is False

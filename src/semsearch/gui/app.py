@@ -13,10 +13,10 @@ from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
 
-from semsearch.cli import get_default_data_dir
-from semsearch.config import ConfigManager
+from semsearch.config import ConfigManager, resolve_data_dir
 from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
-from semsearch.core.ollama import OllamaClient
+from semsearch.core.ollama import OllamaClient, OllamaError
+from semsearch.core.types import EngineActivity
 from semsearch.gui.desktop_providers import DesktopSearchProviders
 from semsearch.gui.hotkey import HotkeyListener
 from semsearch.gui.onboarding import OnboardingWizard
@@ -83,20 +83,23 @@ class SemSearchApp(QApplication):
         self.setDesktopFileName("semsearch")
         self.setWindowIcon(QIcon(str(_APP_ICON_PATH)))
         self.setQuitOnLastWindowClosed(False)
-        apply_theme(self)
 
         self.config_manager = config_manager or ConfigManager()
         self.config = self.config_manager.config
+        apply_theme(self, self.config.theme)
         self._apply_language()
 
-        data_dir = get_default_data_dir()
-        data_dir.mkdir(parents=True, exist_ok=True)
-        self.db = db or Database(data_dir / MAIN_DB_FILE)
-        self.code_db = (code_db or Database(data_dir / CODE_DB_FILE)) if self.config.code_enabled else None
+        self._owns_db = db is None
+        self._owns_code_db = code_db is None
+        self._data_dir = resolve_data_dir(self.config)
+        self._init_databases(db, code_db)
 
         self.ollama = ollama_client or OllamaClient(
             base_url=self.config.ollama_url,
+            embed_timeout=float(self.config.ollama_timeout),
             num_ctx=self.config.num_ctx,
+            api_key=self.config.ollama_api_key,
+            keep_alive=self.config.ollama_keep_alive,
         )
         self.search_service = SearchService(
             self.db,
@@ -121,12 +124,22 @@ class SemSearchApp(QApplication):
 
         # UI components and desktop integrations
         self.tray = SystemTrayManager(self.index_service)
-        self.panel = SearchPanel(self.search_service, self.config)
+        self.panel = SearchPanel(
+            self.search_service,
+            self.config,
+            should_unload_on_hide=lambda: self.index_service.get_status().activity == EngineActivity.IDLE,
+        )
         self.settings_dialog = SettingsDialog(self.config_manager, self.ollama, self.db, code_db=self.code_db)
         self.desktop_providers = DesktopSearchProviders(self.search_service, self.config, parent=self)
         self.hotkey_listener = HotkeyListener(self.config.hotkey, parent=self)
 
         self._wire_signals()
+
+    def _init_databases(self, db: Database | None, code_db: Database | None) -> None:
+        if self._owns_db or (self.config.code_enabled and self._owns_code_db):
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+        self.db = db or Database(self._data_dir / MAIN_DB_FILE)
+        self.code_db = (code_db or Database(self._data_dir / CODE_DB_FILE)) if self.config.code_enabled else None
 
     def _apply_language(self) -> None:
         resolved = set_language(self.config.language)
@@ -224,13 +237,46 @@ class SemSearchApp(QApplication):
 
     def _sync_code_db(self) -> None:
         if self.config.code_enabled and self.code_db is None:
-            data_dir = get_default_data_dir()
-            data_dir.mkdir(parents=True, exist_ok=True)
-            self._set_code_db(Database(data_dir / CODE_DB_FILE))
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            self._set_code_db(Database(self._data_dir / CODE_DB_FILE))
         elif not self.config.code_enabled and self.code_db is not None:
             old_code_db = self.code_db
             self._set_code_db(None)
             old_code_db.close()
+
+    def _sync_data_dir(self) -> None:
+        if not self._owns_db:
+            return
+        new_dir = resolve_data_dir(self.config)
+        if new_dir == self._data_dir:
+            return
+        self.index_service.stop()
+        self.db.close()
+        if self.code_db is not None:
+            self.code_db.close()
+            self._set_code_db(None)
+        self._data_dir = new_dir
+        new_dir.mkdir(parents=True, exist_ok=True)
+        new_db = Database(new_dir / MAIN_DB_FILE)
+        self.db = new_db
+        self.search_service.db = new_db
+        self.index_service.db = new_db
+        self.settings_dialog.db = new_db
+        self.settings_dialog.storage_tab.db = new_db
+        new_code_db = Database(new_dir / CODE_DB_FILE) if self.config.code_enabled else None
+        self._set_code_db(new_code_db)
+        self.index_service.start()
+
+    def _preload_model_if_keep_loaded(self) -> None:
+        if self.config.ollama_keep_alive != "keep_loaded":
+            return
+        model = self.config.model
+
+        def _run_preload() -> None:
+            with contextlib.suppress(OllamaError):
+                self.ollama.preload(model)
+
+        threading.Thread(target=_run_preload, daemon=True).start()
 
     def _sync_hotkey_status(self, _backend: str = "") -> None:
         self.settings_dialog.set_hotkey_status(
@@ -249,20 +295,29 @@ class SemSearchApp(QApplication):
         """Apply updated settings to active services, watchers, hotkey listener, and index."""
         self.config = self.config_manager.config
         self._apply_language()
+        apply_theme(self, self.config.theme)
         self.ollama.base_url = self.config.ollama_url
+        self.ollama.embed_timeout = float(self.config.ollama_timeout)
         self.ollama.num_ctx = self.config.num_ctx
+        self.ollama.api_key = self.config.ollama_api_key
+        self.ollama.keep_alive = self.config.ollama_keep_alive
+        self.panel.config = self.config
         self.search_service.model = self.config.model
 
         self.watcher.stop()
+        self._sync_data_dir()
         self._sync_code_db()
 
         self.tray.retranslate_ui()
         self.panel.retranslate_ui()
+        self.panel.refresh_theme()
         self.settings_dialog.retranslate_ui()
+        self.settings_dialog.refresh_theme(self.config.theme)
 
         self.index_service.sync_model_state()
         self.scheduler.wake()
         self.watcher.start()
+        self._preload_model_if_keep_loaded()
 
         old_hotkey = self.hotkey_listener
         old_hotkey.stop()
@@ -344,6 +399,7 @@ class SemSearchApp(QApplication):
         self.index_service.start()
         self.watcher.start()
         self.scheduler.start()
+        self._preload_model_if_keep_loaded()
         self._trigger_reindex()
 
     def _trigger_force_reindex(self) -> None:

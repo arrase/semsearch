@@ -10,7 +10,7 @@ from semsearch.config import AppConfig
 from semsearch.core.types import SearchHit
 from semsearch.gui.preview.loader import PreviewLoader, load_scaled_image
 from semsearch.gui.preview.metadata import MetadataCard
-from semsearch.gui.theme import ThemeColors, get_ui_font
+from semsearch.gui.theme import get_palette, get_ui_font
 from semsearch.i18n import tr
 
 _MIN_DECODE_SIDE = 512
@@ -39,11 +39,9 @@ class ImagePreviewWidget(QWidget):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumSize(200, 160)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.image_label.setStyleSheet("border-radius: 8px; background-color: rgba(0, 0, 0, 0.2);")
 
         self.dimensions_label = QLabel()
         self.dimensions_label.setFont(get_ui_font(11))
-        self.dimensions_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
         self.dimensions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.meta_card = MetadataCard(config=config)
@@ -51,10 +49,18 @@ class ImagePreviewWidget(QWidget):
         layout.addWidget(self.image_label, stretch=1)
         layout.addWidget(self.dimensions_label)
         layout.addWidget(self.meta_card)
+        self.refresh_theme()
 
         self._pixmap = QPixmap()
         self._movie: QMovie | None = None
         self._movie_orig_size = QSize()
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette to image preview frame, dimensions label, and metadata card."""
+        p = get_palette()
+        self.image_label.setStyleSheet(f"border-radius: 8px; background-color: {p.bg_subtle};")
+        self.dimensions_label.setStyleSheet(f"color: {p.text_muted};")
+        self.meta_card.refresh_theme()
 
     def retranslate_ui(self) -> None:
         """Refresh translated labels."""

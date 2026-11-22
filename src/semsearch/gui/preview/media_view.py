@@ -16,7 +16,7 @@ from semsearch.gui.preview.loader import (
     extract_waveform_bars,
 )
 from semsearch.gui.preview.metadata import MetadataCard
-from semsearch.gui.theme import ThemeColors, get_ui_font
+from semsearch.gui.theme import get_palette, get_ui_font
 from semsearch.i18n import tr
 from semsearch.services.actions import open_media_at
 
@@ -75,11 +75,12 @@ class WaveformWidget(QWidget):
         bar_width = max(1.0, (width - (bar_count - 1) * gap) / bar_count)
         active_count = int(self._progress * bar_count)
 
+        palette = get_palette()
         for i, level in enumerate(self._bars):
             bar_h = level * height
             x = i * (bar_width + gap)
             y = (height - bar_h) / 2.0
-            color = QColor(ThemeColors.BRAND_START) if i <= active_count else QColor(ThemeColors.TEXT_MUTED)
+            color = QColor(palette.brand_start) if i <= active_count else QColor(palette.text_muted)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(color))
             painter.drawRoundedRect(QRectF(x, y, bar_width, bar_h), 1.5, 1.5)
@@ -107,7 +108,6 @@ class _MediaPreviewBase(QWidget):
 
         self.time_label = QLabel("0:00 / 0:00")
         self.time_label.setFont(get_ui_font(11))
-        self.time_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
 
         self.meta_card = MetadataCard(config=config)
 
@@ -119,6 +119,11 @@ class _MediaPreviewBase(QWidget):
         self._path: str = ""
         self._duration: float = 0.0
         self._current_pos: float = 0.0
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette to media time readout and metadata card."""
+        self.time_label.setStyleSheet(f"color: {get_palette().text_secondary};")
+        self.meta_card.refresh_theme()
 
     def _on_probed_duration_ready(self, payload: object) -> None:
         if isinstance(payload, (int, float)) and payload > 0.0:
@@ -204,6 +209,12 @@ class AudioPreviewWidget(_MediaPreviewBase):
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
 
         self._pending_seek_ms: int | None = None
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette to waveform and shared audio preview widgets."""
+        super().refresh_theme()
+        self.waveform.update()
 
     def retranslate_ui(self) -> None:
         """Refresh translated button label and metadata card."""
@@ -348,7 +359,6 @@ class VideoPreviewWidget(_MediaPreviewBase):
         self.poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.poster_label.setMinimumSize(200, 160)
         self.poster_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.poster_label.setStyleSheet("border-radius: 8px; background-color: rgba(0, 0, 0, 0.4);")
 
         controls = QHBoxLayout()
         self.scrub_slider.valueChanged.connect(self._on_scrub)
@@ -371,6 +381,12 @@ class VideoPreviewWidget(_MediaPreviewBase):
         self._scrub_timer.timeout.connect(self._request_scrub_frame)
 
         self._poster_pixmap = QPixmap()
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette to video poster frame and shared media controls."""
+        super().refresh_theme()
+        self.poster_label.setStyleSheet(f"border-radius: 8px; background-color: {get_palette().bg_subtle};")
 
     def retranslate_ui(self) -> None:
         """Refresh translated button label and metadata card."""
@@ -378,6 +394,7 @@ class VideoPreviewWidget(_MediaPreviewBase):
         self.meta_card.retranslate_ui()
 
     def _compose_poster_pixmap(self, image: QImage) -> QPixmap:
+        palette = get_palette()
         if not image.isNull():
             pixmap = QPixmap.fromImage(image).scaled(
                 _POSTER_RENDER_SIZE,
@@ -386,7 +403,7 @@ class VideoPreviewWidget(_MediaPreviewBase):
             )
         else:
             pixmap = QPixmap(_POSTER_FALLBACK_SIZE)
-            pixmap.fill(QColor("#1A1D24"))
+            pixmap.fill(QColor(palette.bg_gutter))
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -395,7 +412,7 @@ class VideoPreviewWidget(_MediaPreviewBase):
         center_y = pixmap.height() / 2.0
 
         painter.setPen(Qt.PenStyle.NoPen)
-        badge_color = QColor(ThemeColors.BRAND_START)
+        badge_color = QColor(palette.brand_start)
         badge_color.setAlpha(215)
         painter.setBrush(QBrush(badge_color))
         painter.drawEllipse(QRectF(center_x - 28, center_y - 28, 56, 56))

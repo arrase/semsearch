@@ -220,8 +220,9 @@ def test_vector_search_with_mock_ollama(mock_dbs: tuple[Database, Database]) -> 
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             return [vec_high.tolist()]
 
     searcher = SearchService(db=db, ollama=MockOllama())
@@ -536,8 +537,9 @@ def test_semantic_z_gate_prunes_weak_noise_and_retains_strong_match(mock_dbs: tu
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             return [base_vec.tolist()]
 
     searcher = SearchService(db=db, ollama=QueryMockOllama())
@@ -691,8 +693,9 @@ def test_pure_filter_query_skips_ollama(mock_dbs: tuple[Database, Database]) -> 
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del inputs, truncate, num_ctx
+            del inputs, truncate, num_ctx, keep_alive
             nonlocal embed_calls
             embed_calls += 1
             return []
@@ -841,8 +844,9 @@ def test_search_uses_stored_segment_focus_fallback_and_defers_snippets(
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             return [q_vec.tolist()]
 
     semantic_searcher = SearchService(db=db, code_db=code_db, ollama=SemanticMockOllama())
@@ -850,3 +854,43 @@ def test_search_uses_stored_segment_focus_fallback_and_defers_snippets(
     assert len(res_code.ranked) == 1
     assert res_code.ranked[0].path == str(tmp_path / "metrics.py")
     assert res_code.ranked[0].focus == 18.0
+
+
+def test_vector_search_uses_model_aware_query_prompts(mock_dbs: tuple[Database, Database]) -> None:
+    """Verify EmbeddingGemma receives task-formatted queries while non-Gemma models receive clean queries."""
+    db, code_db = mock_dbs
+    recorded_prompts: list[tuple[str, list[str | dict[str, str]]]] = []
+
+    class RecordingOllama(OllamaClient):
+        def uses_gemma_prompts(self, model: str) -> bool:
+            return "embeddinggemma" in model.lower()
+
+        def embed(
+            self,
+            model: str,
+            inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx, keep_alive
+            recorded_prompts.append((model, list(inputs)))
+            return []
+
+    ollama = RecordingOllama()
+
+    gemma_searcher = SearchService(db=db, code_db=code_db, ollama=ollama, model="embeddinggemma-2")
+    gemma_searcher.search("quarterly report")
+    gemma_searcher.search("code: binary search")
+
+    clip_searcher = SearchService(db=db, code_db=code_db, ollama=ollama, model="clip-vit:latest")
+    clip_searcher.search("quarterly report")
+    clip_searcher.search("code: binary search")
+
+    assert recorded_prompts == [
+        ("embeddinggemma-2", ["task: search result | query: quarterly report"]),
+        ("embeddinggemma-2", ["task: code retrieval | query: binary search"]),
+        ("clip-vit:latest", ["quarterly report"]),
+        ("clip-vit:latest", ["binary search"]),
+    ]

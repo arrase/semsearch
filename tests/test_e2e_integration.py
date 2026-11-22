@@ -33,6 +33,9 @@ class _ConfigurableMockOllama(OllamaClient):
     def unload(self, model: str) -> None:
         del model
 
+    def uses_gemma_prompts(self, model: str) -> bool:
+        return "embeddinggemma" in model.lower()
+
     def embed(
         self,
         model: str,
@@ -40,8 +43,9 @@ class _ConfigurableMockOllama(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del model, truncate, num_ctx
+        del model, truncate, num_ctx, keep_alive
         results: list[list[float]] = []
         for inp in inputs:
             seed = sum(ord(c) for c in str(inp)[:64]) % 100000
@@ -68,13 +72,14 @@ class _FlakyOllama(_ConfigurableMockOllama):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
         if not self.allow_connect.is_set():
             with self._attempt_lock:
                 self.failed_attempts += 1
             self.failure_seen.set()
             raise OllamaConnectionError("Simulated transient Ollama outage")
-        return super().embed(model, inputs, truncate=truncate, num_ctx=num_ctx)
+        return super().embed(model, inputs, truncate=truncate, num_ctx=num_ctx, keep_alive=keep_alive)
 
 
 def _drain_pending(indexer: IndexService) -> None:

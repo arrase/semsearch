@@ -109,12 +109,12 @@ def test_rules_should_skip(tmp_path: Path) -> None:
     assert skip is True
     assert "code file in general mode" in reason
 
-    # In code mode, data formats are skipped
+    # In code mode, data formats are skipped (while project manifests are kept)
     for data_file in (
         "data.json",
         "log.jsonl",
         "config.xml",
-        "Cargo.toml",
+        "settings.toml",
         "Info.plist",
         "sheet.csv",
         "sheet.tsv",
@@ -125,6 +125,10 @@ def test_rules_should_skip(tmp_path: Path) -> None:
         skip, reason = should_skip(f"/tmp/repo/{data_file}", is_code_mode=True)
         assert skip is True
         assert "data format" in reason
+
+    for manifest in ("pyproject.toml", "Cargo.toml", "package.json", "tsconfig.json", "pom.xml", "composer.json"):
+        skip, _ = should_skip(f"/tmp/repo/{manifest}", is_code_mode=True)
+        assert skip is False
 
 
 def test_rules_dataset_folder() -> None:
@@ -483,3 +487,104 @@ def test_purge_outside_roots(db: Database, tmp_path: Path) -> None:
     # Purging with empty active roots clears remaining records
     assert purge_outside_roots(db, []) == 1
     assert db.stats()["files"] == 0
+
+
+def test_crawl_folder_follow_symlinks_and_loop_guard(tmp_path: Path) -> None:
+    """Verify follow_symlinks traverses symlinked dirs/files and breaks directory symlink cycles."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "local.md").write_text("local")
+
+    external = tmp_path / "external"
+    external.mkdir()
+    ext_doc = external / "linked_doc.md"
+    ext_doc.write_text("from symlinked dir")
+
+    ext_file = tmp_path / "standalone.txt"
+    ext_file.write_text("from symlinked file")
+
+    (root / "ext_dir").symlink_to(external)
+    (root / "ext_file.txt").symlink_to(ext_file)
+    # Create cycle back to root
+    (external / "loop_back").symlink_to(root)
+
+    # Default follow_symlinks=False skips symlinked dir and file
+    no_follow = {Path(c.path).name for c in crawl_folder(str(root), follow_symlinks=False)}
+    assert no_follow == {"local.md"}
+
+    # follow_symlinks=True indexes both and terminates without infinite loop
+    with_follow = {Path(c.path).name for c in crawl_folder(str(root), follow_symlinks=True)}
+    assert with_follow == {"local.md", "linked_doc.md", "standalone.txt"}
+
+
+def test_crawl_folder_skip_code_projects_and_skip_datasets_toggles(tmp_path: Path) -> None:
+    """Verify skip_code_projects and skip_datasets flags control vault and dataset indexing."""
+    root = tmp_path / "docs"
+    root.mkdir()
+
+    vault = root / "obsidian_vault"
+    vault.mkdir()
+    (vault / ".git").mkdir()
+    (vault / "journal.md").write_text("daily notes")
+
+    dataset = root / "ml_frames"
+    dataset.mkdir()
+    for i in range(350):
+        (dataset / f"frame_{i:04d}.png").write_text("")
+
+    # Defaults skip vault docs and dataset images
+    default_names = {Path(c.path).name for c in crawl_folder(str(root), is_code=False)}
+    assert "journal.md" not in default_names
+    assert len(default_names) == 0
+
+    # skip_code_projects=False indexes docs inside Git vault
+    vault_names = {Path(c.path).name for c in crawl_folder(str(root), is_code=False, skip_code_projects=False)}
+    assert vault_names == {"journal.md"}
+
+    # skip_datasets=False indexes dataset images
+    dataset_candidates = crawl_folder(str(root), is_code=False, skip_datasets=False)
+    assert len(dataset_candidates) == 350
+
+
+def test_crawl_folder_context_skipped_folders_and_code_dot_dirs(tmp_path: Path) -> None:
+    """Verify vendor/target are allowed in general docs, skipped in code, and .github is traversed in code mode."""
+    docs_root = tmp_path / "Documents"
+    (docs_root / "vendor").mkdir(parents=True)
+    (docs_root / "vendor" / "invoice.pdf").write_bytes(b"%PDF")
+    (docs_root / "Sales" / "target").mkdir(parents=True)
+    (docs_root / "Sales" / "target" / "q4.pdf").write_bytes(b"%PDF")
+    (docs_root / "node_modules").mkdir()
+    (docs_root / "node_modules" / "skip.pdf").write_bytes(b"%PDF")
+    (docs_root / ".github").mkdir()
+    (docs_root / ".github" / "guide.md").write_text("hidden in general mode")
+
+    nested_app = docs_root / "rust_app"
+    (nested_app / "target").mkdir(parents=True)
+    (nested_app / "Cargo.toml").write_text("[package]\nname='x'\n")
+    (nested_app / "target" / "Screenshot_1.png").write_text("png")
+
+    general_names = {Path(c.path).name for c in crawl_folder(str(docs_root), is_code=False)}
+    assert general_names == {"invoice.pdf", "q4.pdf"}
+
+    repo = tmp_path / "repo"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "ci.yml").write_text("name: CI\n")
+    (repo / ".circleci").mkdir()
+    (repo / ".circleci" / "config.yml").write_text("version: 2.1\n")
+    (repo / ".git").mkdir()
+    (repo / ".git" / "hook.sh").write_text("echo hi\n")
+    (repo / "target").mkdir()
+    (repo / "target" / "gen.rs").write_text("fn main() {}\n")
+    (repo / "vendor").mkdir()
+    (repo / "vendor" / "dep.go").write_text("package dep\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='demo'\n")
+    (repo / "package.json").write_text('{"name":"demo"}')
+    (repo / "data.json").write_text('{"x": 1}')
+
+    code_rel = {Path(c.path).relative_to(repo.resolve()).as_posix() for c in crawl_folder(str(repo), is_code=True)}
+    assert code_rel == {
+        ".github/workflows/ci.yml",
+        ".circleci/config.yml",
+        "pyproject.toml",
+        "package.json",
+    }

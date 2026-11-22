@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from semsearch.core.ollama import OllamaClient
-from semsearch.gui.theme import ThemeColors, get_ui_font
+from semsearch.gui.theme import get_palette, get_ui_font
 from semsearch.i18n import tr
 
 DEFAULT_MODEL = "embeddinggemma-2"
@@ -140,13 +140,19 @@ class OllamaConnectionWorker(QThread):
     succeeded = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, base_url: str, parent: QObject | None = None) -> None:
+    def __init__(self, base_url: str, *, api_key: str = "", parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.base_url = base_url
+        self.api_key = api_key.strip()
 
     def run(self) -> None:
         try:
-            with OllamaClient(base_url=self.base_url) as client:
+            client = (
+                OllamaClient(base_url=self.base_url, api_key=self.api_key)
+                if self.api_key
+                else OllamaClient(base_url=self.base_url)
+            )
+            with client:
                 models = client.list_multimodal_models()
         except Exception as exc:  # noqa: BLE001 — GUI probe boundary formats error text without crashing UI
             self.failed.emit(str(exc))
@@ -163,6 +169,8 @@ class OllamaModelPicker(QWidget):
     def __init__(self, default_url: str = "http://localhost:11434", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._configured_model = DEFAULT_MODEL
+        self._api_key = ""
+        self._status_tone = "muted"
         self._worker: OllamaConnectionWorker | None = None
         self._active_workers: set[OllamaConnectionWorker] = set()
 
@@ -203,9 +211,36 @@ class OllamaModelPicker(QWidget):
         """Return trimmed Ollama host URL."""
         return self.url_edit.text().strip()
 
+    def set_api_key(self, api_key: str) -> None:
+        """Set optional Ollama API key used for connection probes."""
+        self._api_key = api_key.strip()
+
+    def api_key(self) -> str:
+        """Return trimmed Ollama API key."""
+        return self._api_key
+
     def selected_model(self) -> str:
         """Return currently selected model name."""
         return self.model_combo.currentText().strip()
+
+    @staticmethod
+    def _tone_color(tone: str) -> str:
+        palette = get_palette()
+        if tone == "success":
+            return palette.leaf
+        if tone == "warning":
+            return palette.amber
+        return palette.text_muted
+
+    def set_status(self, text: str, *, tone: str = "muted") -> None:
+        """Update status text and theme-aware status color."""
+        self._status_tone = tone
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {self._tone_color(tone)};")
+
+    def refresh_theme(self) -> None:
+        """Reapply status label color for the active palette."""
+        self.status_label.setStyleSheet(f"color: {self._tone_color(self._status_tone)};")
 
     def set_configured_model(self, model: str, *, hint_text: str = "") -> None:
         """Populate model dropdown with persisted model without claiming an active connection."""
@@ -213,8 +248,7 @@ class OllamaModelPicker(QWidget):
         self._configured_model = target
         self.model_combo.clear()
         self.model_combo.addItem(target)
-        self.status_label.setText(hint_text)
-        self.status_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
+        self.set_status(hint_text, tone="muted")
 
     def populate_multimodal_models(self, models: list[str]) -> None:
         """Populate verified multimodal models while preserving the user's selected/configured model."""
@@ -231,21 +265,23 @@ class OllamaModelPicker(QWidget):
                 if default_idx >= 0:
                     self.model_combo.setCurrentIndex(default_idx)
             self._configured_model = self.model_combo.currentText()
-            self.status_label.setText(tr("✓ Connected: {count} multimodal model(s) verified.", count=len(models)))
-            self.status_label.setStyleSheet(f"color: {ThemeColors.LEAF};")
+            self.set_status(
+                tr("✓ Connected: {count} multimodal model(s) verified.", count=len(models)),
+                tone="success",
+            )
         else:
             self.model_combo.addItem(preferred or DEFAULT_MODEL)
-            self.status_label.setText(
-                tr("⚠ No multimodal models detected on Ollama host. Run 'ollama pull embeddinggemma-2'.")
+            self.set_status(
+                tr("⚠ No multimodal models detected on Ollama host. Run 'ollama pull embeddinggemma-2'."),
+                tone="warning",
             )
-            self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
 
     def test_connection_async(self) -> None:
         """Probe the entered Ollama URL on a background QThread without mutating shared clients."""
         if self._worker is not None and self._worker.isRunning():
             return
         self.test_btn.setEnabled(False)
-        worker = OllamaConnectionWorker(self.url(), parent=self)
+        worker = OllamaConnectionWorker(self.url(), api_key=self._api_key, parent=self)
         self._worker = worker
         self._active_workers.add(worker)
         worker.succeeded.connect(self._apply_connection_success)
@@ -255,8 +291,11 @@ class OllamaModelPicker(QWidget):
 
     def test_connection(self) -> list[str] | None:
         """Synchronously probe the entered Ollama URL using a temporary closed OllamaClient."""
+        url = self.url()
+        key = self._api_key
         try:
-            with OllamaClient(base_url=self.url()) as client:
+            client = OllamaClient(base_url=url, api_key=key) if key else OllamaClient(base_url=url)
+            with client:
                 models = client.list_multimodal_models()
         except Exception as exc:  # noqa: BLE001 — GUI probe boundary formats error text without crashing UI
             self._apply_connection_error(str(exc))
@@ -269,8 +308,7 @@ class OllamaModelPicker(QWidget):
         self.connection_succeeded.emit(models)
 
     def _apply_connection_error(self, error: str) -> None:
-        self.status_label.setText(tr("⚠ Connection failed: {error}", error=error))
-        self.status_label.setStyleSheet(f"color: {ThemeColors.AMBER};")
+        self.set_status(tr("⚠ Connection failed: {error}", error=error), tone="warning")
         self.connection_failed.emit(error)
 
     def _cleanup_worker(self, worker: OllamaConnectionWorker) -> None:

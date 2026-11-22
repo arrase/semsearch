@@ -45,8 +45,9 @@ class _OfflineOllama(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del model, truncate, num_ctx
+        del model, truncate, num_ctx, keep_alive
         return [[1.0, 0.0, 0.0, 0.0] for _ in inputs]
 
 

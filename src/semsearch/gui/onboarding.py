@@ -19,9 +19,36 @@ from PySide6.QtWidgets import (
 from semsearch.config import ConfigManager
 from semsearch.core.ollama import OllamaClient
 from semsearch.gui.settings import EDITOR_OPTIONS
-from semsearch.gui.theme import ThemeColors, apply_theme, get_ui_font
+from semsearch.gui.theme import apply_theme, get_palette, get_ui_font
 from semsearch.gui.widgets import DEFAULT_MODEL, FolderListEditor, OllamaModelPicker
 from semsearch.i18n import tr
+
+_DEFAULT_HOTKEY_DISPLAY = "Ctrl + Shift + Space"
+_HOTKEY_DISPLAY_NAMES: dict[str, str] = {
+    "ctrl": "Ctrl",
+    "control": "Ctrl",
+    "shift": "Shift",
+    "alt": "Alt",
+    "super": "Super",
+    "meta": "Super",
+    "cmd": "Super",
+    "space": "Space",
+    "esc": "Esc",
+    "escape": "Esc",
+    "tab": "Tab",
+    "enter": "Enter",
+    "return": "Enter",
+}
+
+
+def format_hotkey_display(hotkey: str) -> str:
+    """Format a normalized shortcut string like 'ctrl+shift+space' for UI display."""
+    parts = [part.strip() for part in hotkey.split("+") if part.strip()]
+    if not parts:
+        return _DEFAULT_HOTKEY_DISPLAY
+    formatted = [_HOTKEY_DISPLAY_NAMES.get(p.lower(), p.upper() if len(p) == 1 else p.capitalize()) for p in parts]
+    return " + ".join(formatted)
+
 
 _STANDARD_LOCATIONS: tuple[tuple[str, QStandardPaths.StandardLocation, bool], ...] = (
     ("Documents", QStandardPaths.StandardLocation.DocumentsLocation, True),
@@ -73,6 +100,7 @@ class WelcomePage(QWizardPage):
         desc_label.setFont(get_ui_font(13))
         desc_label.setWordWrap(True)
 
+        palette = get_palette()
         privacy_label = QLabel(
             tr(
                 "🔒 100% Private: All indexing and vector generation happens completely on your machine. "
@@ -81,7 +109,7 @@ class WelcomePage(QWizardPage):
         )
         privacy_label.setFont(get_ui_font(12))
         privacy_label.setStyleSheet(
-            f"background-color: {ThemeColors.BG_CARD}; border: 1px solid {ThemeColors.BORDER};"
+            f"background-color: {palette.bg_card}; border: 1px solid {palette.border};"
             "border-radius: 8px; padding: 12px;"
         )
         privacy_label.setWordWrap(True)
@@ -125,7 +153,7 @@ class FoldersPage(QWizardPage):
 
         self.estimate_label = QLabel()
         self.estimate_label.setFont(get_ui_font(11))
-        self.estimate_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
+        self.estimate_label.setStyleSheet(f"color: {get_palette().text_muted};")
         layout.addWidget(self.estimate_label)
 
         self._update_estimate()
@@ -177,7 +205,7 @@ class ModelPage(QWizardPage):
             tr("Default model 'embeddinggemma-2' provides high accuracy for text, documents, and visual items.")
         )
         tip_label.setFont(get_ui_font(11))
-        tip_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY};")
+        tip_label.setStyleSheet(f"color: {get_palette().text_secondary};")
         tip_label.setWordWrap(True)
         layout.addWidget(tip_label)
         layout.addStretch()
@@ -242,7 +270,7 @@ class CodePage(QWizardPage):
 class CompletionPage(QWizardPage):
     """Step 5: Setup summary and hotkey instructions."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, hotkey: str = "ctrl+shift+space", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setTitle(tr("Setup Complete!"))
         self.setSubTitle(tr("You're ready to search your desktop with SemSearch."))
@@ -251,11 +279,12 @@ class CompletionPage(QWizardPage):
         layout.setContentsMargins(16, 20, 16, 20)
         layout.setSpacing(14)
 
+        palette = get_palette()
         hotkey_box = QFrame()
         hotkey_box.setObjectName("hotkeyCard")
         hotkey_box.setStyleSheet(
-            f"QFrame#hotkeyCard {{ background-color: {ThemeColors.BG_CARD}; "
-            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 8px; }}"
+            f"QFrame#hotkeyCard {{ background-color: {palette.bg_card}; "
+            f"border: 1px solid {palette.border}; border-radius: 8px; }}"
         )
         hotkey_layout = QVBoxLayout(hotkey_box)
         hotkey_layout.setContentsMargins(14, 14, 14, 14)
@@ -265,14 +294,18 @@ class CompletionPage(QWizardPage):
         title.setFont(get_ui_font(13))
         title.setStyleSheet("border: none; background: transparent;")
 
-        shortcut_label = QLabel(tr("Press  Ctrl + Shift + Space  anytime to open Quick Search"))
-        shortcut_label.setFont(get_ui_font(14))
-        shortcut_label.setStyleSheet(
-            f"color: {ThemeColors.BRAND_START}; font-weight: bold; border: none; background: transparent;"
+        formatted_hotkey = format_hotkey_display(hotkey)
+        shortcut_text = tr("Press  Ctrl + Shift + Space  anytime to open Quick Search")
+        if formatted_hotkey != _DEFAULT_HOTKEY_DISPLAY:
+            shortcut_text = shortcut_text.replace(_DEFAULT_HOTKEY_DISPLAY, formatted_hotkey)
+        self.shortcut_label = QLabel(shortcut_text)
+        self.shortcut_label.setFont(get_ui_font(14))
+        self.shortcut_label.setStyleSheet(
+            f"color: {palette.brand_start}; font-weight: bold; border: none; background: transparent;"
         )
 
         hotkey_layout.addWidget(title)
-        hotkey_layout.addWidget(shortcut_label)
+        hotkey_layout.addWidget(self.shortcut_label)
 
         tray_tip = QLabel(tr("SemSearch will now run in your system tray and start indexing your selected folders."))
         tray_tip.setFont(get_ui_font(12))
@@ -301,20 +334,19 @@ class OnboardingWizard(QWizard):
 
         self.setWindowTitle(tr("SemSearch Setup"))
         self.resize(580, 460)
+        apply_theme(self, cfg.theme)
 
         self.welcome_page = WelcomePage()
         self.folders_page = FoldersPage()
         self.model_page = ModelPage(self.ollama, initial_url=cfg.ollama_url, initial_model=cfg.model)
         self.code_page = CodePage()
-        self.completion_page = CompletionPage()
+        self.completion_page = CompletionPage(hotkey=cfg.hotkey)
 
         self.addPage(self.welcome_page)  # 0
         self.addPage(self.folders_page)  # 1
         self.addPage(self.model_page)  # 2
         self.addPage(self.code_page)  # 3
         self.addPage(self.completion_page)  # 4
-
-        apply_theme(self)
 
     def accept(self) -> None:
         """Persist configuration with onboarded=True and notify caller to start indexing."""

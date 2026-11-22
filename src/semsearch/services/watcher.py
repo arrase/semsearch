@@ -13,8 +13,13 @@ from watchdog.observers.api import BaseObserver
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
 from semsearch.core.rules import (
+    CODE_ALLOWED_DOT_DIRS,
+    PROJECT_BUNDLE_EXTENSIONS,
+    PROJECT_MARKERS,
     SKIPPED_FOLDER_NAMES,
+    UNIVERSAL_SKIPPED_FOLDERS,
     classify_file,
+    is_inside_code_project,
     is_path_excluded,
     should_skip,
 )
@@ -100,22 +105,33 @@ class SemSearchEventHandler(FileSystemEventHandler):
         self._on_dir_added = on_dir_added
         self._on_dir_removed = on_dir_removed
 
-    @staticmethod
-    def _has_ignored_part(p: Path) -> bool:
-        return any(
-            (part.startswith(".") and part not in {".", ".."})
-            or part in SKIPPED_FOLDER_NAMES
-            or part.endswith(".noindex")
-            for part in p.parts
-        )
+    def _is_ignored_part(self, part: str, *, is_code_context: bool) -> bool:
+        skipped = SKIPPED_FOLDER_NAMES if is_code_context else UNIVERSAL_SKIPPED_FOLDERS
+        if part in skipped or part.endswith(".noindex"):
+            return True
+        if part.startswith(".") and part not in {".", ".."}:
+            return not (self.is_code and part in CODE_ALLOWED_DOT_DIRS)
+        return False
+
+    def _has_ignored_part(self, p: Path, *, is_code_context: bool) -> bool:
+        return any(self._is_ignored_part(part, is_code_context=is_code_context) for part in p.parts)
+
+    def _is_in_code_project(self, path_str: str) -> bool:
+        return not self.is_code and self.config.skip_code_projects and is_inside_code_project(path_str, [self.root])
 
     def _relative_to_root(self, path_obj: Path) -> Path:
         root_path = Path(self.root)
-        return path_obj.relative_to(root_path) if path_obj.is_relative_to(root_path) else path_obj
+        if path_obj.is_relative_to(root_path):
+            return path_obj.relative_to(root_path)
+        resolved = path_obj.resolve()
+        return resolved.relative_to(root_path) if resolved.is_relative_to(root_path) else resolved
 
     def _is_ignored_dir(self, path_str: str) -> bool:
-        rel = self._relative_to_root(Path(path_str).resolve())
-        return self._has_ignored_part(rel) or is_path_excluded(path_str, self.config.excluded_folders)
+        rel = self._relative_to_root(Path(path_str))
+        is_code_context = self.is_code or self._is_in_code_project(path_str)
+        return self._has_ignored_part(rel, is_code_context=is_code_context) or is_path_excluded(
+            path_str, self.config.excluded_folders
+        )
 
     @staticmethod
     def _is_unchanged_file(path_str: str, rec: FileRecord) -> bool:
@@ -128,7 +144,11 @@ class SemSearchEventHandler(FileSystemEventHandler):
     def _should_filter(self, path_str: str) -> bool:
         p = Path(path_str)
         rel = self._relative_to_root(p)
-        if self._has_ignored_part(rel) or is_path_excluded(path_str, self.config.excluded_folders):
+        in_code_project = self._is_in_code_project(path_str)
+        is_code_context = self.is_code or in_code_project
+        if self._has_ignored_part(rel, is_code_context=is_code_context) or is_path_excluded(
+            path_str, self.config.excluded_folders
+        ):
             return True
 
         ext = p.suffix.lstrip(".").lower()
@@ -142,6 +162,7 @@ class SemSearchEventHandler(FileSystemEventHandler):
                 is_code_mode=self.is_code,
                 excluded_folders=self.config.excluded_folders,
                 excluded_types=None if self.is_code else self.config.excluded_types,
+                in_code_project=in_code_project,
             )
             return skip or classify_file(path_str, is_code_mode=self.is_code) is None
 
@@ -256,13 +277,12 @@ class FileSystemWatcher:
             if Path(p).exists():
                 self.index_service.enqueue_file(p)
 
-    def _is_eligible_subdir(self, child_path: Path) -> bool:
+    def _is_eligible_subdir(self, child_path: Path, *, is_code: bool, is_code_context: bool) -> bool:
         name = child_path.name
-        if (
-            (name.startswith(".") and name not in {".", ".."})
-            or name in SKIPPED_FOLDER_NAMES
-            or name.endswith(".noindex")
-        ):
+        skipped = SKIPPED_FOLDER_NAMES if is_code_context else UNIVERSAL_SKIPPED_FOLDERS
+        if name in skipped or name.endswith(".noindex"):
+            return False
+        if name.startswith(".") and name not in {".", ".."} and not (is_code and name in CODE_ALLOWED_DOT_DIRS):
             return False
         return not is_path_excluded(str(child_path), self.config.excluded_folders)
 
@@ -277,6 +297,49 @@ class FileSystemWatcher:
             self._watched_dirs.add(dir_str)
             return True
 
+    @staticmethod
+    def _scan_watch_dir(current: Path, *, follow_symlinks: bool) -> tuple[list[os.DirEntry[str]], bool]:
+        subdirs: list[os.DirEntry[str]] = []
+        has_project_marker = False
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if not has_project_marker and (
+                        entry.name in PROJECT_MARKERS or Path(entry.name).suffix in PROJECT_BUNDLE_EXTENSIONS
+                    ):
+                        has_project_marker = True
+                    if entry.is_dir(follow_symlinks=follow_symlinks):
+                        subdirs.append(entry)
+        except OSError:
+            return [], False
+        return subdirs, has_project_marker
+
+    def _collect_watch_children(
+        self,
+        subdirs: list[os.DirEntry[str]],
+        *,
+        is_code: bool,
+        is_code_context: bool,
+        follow_symlinks: bool,
+        visited_dirs: set[tuple[int, int]],
+    ) -> list[Path]:
+        children: list[Path] = []
+        for entry in subdirs:
+            child_path = Path(entry.path)
+            if not self._is_eligible_subdir(child_path, is_code=is_code, is_code_context=is_code_context):
+                continue
+            if follow_symlinks:
+                try:
+                    st = entry.stat(follow_symlinks=True)
+                except OSError:
+                    continue
+                dir_key = (st.st_dev, st.st_ino)
+                if dir_key in visited_dirs:
+                    continue
+                visited_dirs.add(dir_key)
+            children.append(child_path)
+        return children
+
     def _schedule_dir_tree(self, root_dir: str, handler: SemSearchEventHandler) -> None:
         observer = self._observer
         if observer is None:
@@ -285,20 +348,37 @@ class FileSystemWatcher:
         if not root_path.is_dir() or is_path_excluded(str(root_path), self.config.excluded_folders):
             return
 
-        stack: list[Path] = [root_path]
+        follow = self.config.follow_symlinks
+        try:
+            root_stat = root_path.stat()
+        except OSError:
+            return
+        visited_dirs: set[tuple[int, int]] = {(root_stat.st_dev, root_stat.st_ino)}
+        initial_in_project = (
+            not handler.is_code
+            and self.config.skip_code_projects
+            and is_inside_code_project(str(root_path), [handler.root])
+        )
+        stack: list[tuple[Path, bool]] = [(root_path, initial_in_project)]
+
         while stack:
-            current = stack.pop()
+            current, in_code_project = stack.pop()
             self._schedule_single_dir(observer, handler, str(current))
-            try:
-                with os.scandir(current) as entries:
-                    for entry in entries:
-                        if not entry.is_dir(follow_symlinks=False):
-                            continue
-                        child_path = Path(entry.path)
-                        if self._is_eligible_subdir(child_path):
-                            stack.append(child_path)
-            except OSError:
-                continue
+            subdirs, has_project_marker = self._scan_watch_dir(current, follow_symlinks=follow)
+            is_root = str(current) == handler.root
+            dir_in_project = (
+                not handler.is_code
+                and self.config.skip_code_projects
+                and (in_code_project or (not is_root and has_project_marker))
+            )
+            children = self._collect_watch_children(
+                subdirs,
+                is_code=handler.is_code,
+                is_code_context=handler.is_code or dir_in_project,
+                follow_symlinks=follow,
+                visited_dirs=visited_dirs,
+            )
+            stack.extend((child_path, dir_in_project) for child_path in children)
 
     def _untrack_dir(self, dir_path: str) -> None:
         target = Path(dir_path).resolve()
@@ -374,12 +454,14 @@ class FileSystemWatcher:
         )
 
         if self.config.code_enabled and self.index_service.code_db is not None:
+            code_quiet = float(max(1, self.config.code_watch_delay_sec))
+            code_ceiling = max(code_quiet * 10.0, 60.0)
             self._schedule_folders(
                 self.config.code_folders,
                 is_code=True,
                 target_db=self.index_service.code_db,
-                quiet_window=60.0,
-                max_ceiling=600.0,
+                quiet_window=code_quiet,
+                max_ceiling=code_ceiling,
             )
 
         self._stop_event.clear()

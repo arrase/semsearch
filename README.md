@@ -12,11 +12,11 @@
 - **True Cross-Modal Search (Strict Zero-OCR):** Type `"black hole"` and immediately find screenshots, photos, or `.svg` diagrams of a black hole—even when the file is named `Captura de pantalla_20260927_044528.png` with zero matching text in the filename. Visual content is embedded directly without slow OCR engines.
 - **Powered by Ollama & Multimodal Embeddings:** Uses **`embeddinggemma-2`** by default via [Ollama](https://ollama.com), and supports **any other verified multimodal embedding model** available on your Ollama server. Automatic model/dimension fingerprinting in SQLite `meta` handles model switches cleanly.
 - **Hybrid BM25 + Semantic Ranking & Inline Filters:** Combines instant SQLite FTS5 BM25 keyword ranking, RAM-cached vector cosine similarity (`< 3 ms` lookups), modality-aware Z-score normalization, `camelCase` ↔ `snake_case` & CJK tokenization, and keyboard inline filters (`code:`, `kind:`, `ext:`, `path:`, `after:`).
-- **Spotlight-Style Quick Search Panel (`748px`):** Summon a floating `748px` (`328px` list + `416px` preview) launcher from anywhere on your desktop with `Ctrl+Shift+Space` (automatic via Wayland XDG `GlobalShortcuts` portal or X11 `pynput`, or via `semsearch --toggle`) featuring asynchronous previews, in-panel audio playback, Drag & Drop, and a Quick Actions menu (`Tab` / `Ctrl+K`).
+- **Spotlight-Style Quick Search Panel (`748px`):** Summon a floating, resizable `748px` (`328px` list + `416px` preview) launcher from anywhere on your desktop with `Ctrl+Shift+Space` (automatic via Wayland XDG `GlobalShortcuts` portal or X11 `pynput`, or via `semsearch --toggle`) featuring Dark/Light/System themes, asynchronous previews, in-panel audio playback, Drag & Drop, and a Quick Actions menu (`Tab` / `Ctrl+K`) with preferred or custom terminal launch.
 - **Composable Headless CLI & Native Desktop Search Providers:** Script and pipe results with `semsearch query "..." --json`, `semsearch status --json`, `semsearch reindex --force`, and register **KDE KRunner** (`org.kde.krunner1`) and **GNOME Shell** (`org.gnome.Shell.SearchProvider2`) search providers with `semsearch install-desktop`.
-- **Developer-Ready Source Code Search:** Prefix any query with `code:` to search across your repositories with `.gitignore` awareness and symbol-definition anchoring, jumping straight to the matching line in **VS Code**, **Cursor**, **Zed**, **Sublime Text**, or **JetBrains** IDEs.
+- **Developer-Ready Source Code Search:** Prefix any query with `code:` to search across your repositories with `.gitignore` awareness and symbol-definition anchoring, jumping straight to the matching line in **VS Code**, **Cursor**, **Zed**, **Sublime Text**, **JetBrains**, **Kate**, **Geany**, **Neovide**, **Emacs**, or a custom editor command.
 - **100% Private & Offline:** Every extraction, float16 vector, and SQLite WAL index stays strictly on your machine (`$XDG_DATA_HOME/semsearch/`, default `~/.local/share/semsearch/`). Sensitive directories (`.ssh`, `.gnupg`, `.aws`, `.kube`), secrets (`.env`, `.pem`, `.key`, `.kdbx`, `*.tfstate`, `kubeconfig`, `hosts.yml`), minified bundles, and dependency folders (`node_modules`, `.venv`, `target`, `dist`) are automatically skipped.
-- **Smart Background Indexing & Resilience:** Selective non-recursive `inotify` watcher, atomic per-file SQLite WAL transactions, automatic backoff recovery if Ollama restarts, battery-saver policies (ignoring wireless peripheral batteries), scheduled indexing windows, and automatic VRAM unloading when idle.
+- **Smart Background Indexing & Resilience:** Selective non-recursive `inotify` watcher, atomic per-file SQLite WAL transactions, automatic backoff recovery if Ollama restarts, battery-saver policies (ignoring wireless peripheral batteries), scheduled indexing windows, and configurable VRAM `keep_alive` policies (`unload_idle`, `server`, `keep_loaded`).
 - **23 Languages Supported:** Built-in lazy-loaded JSON localization for 23 languages (including full Right-to-Left layout support for Arabic, Persian, and Hebrew).
 
 ---
@@ -110,6 +110,7 @@ GUI flags forward instantly over a user-private `AF_UNIX` socket (`$XDG_RUNTIME_
 | `semsearch --toggle` | Toggle the floating quick search panel (ideal universal Wayland/WM shortcut command) |
 | `semsearch --panel` | Open and focus the floating quick search panel |
 | `semsearch --settings` | Open the settings dialog directly |
+| `semsearch --config PATH [ARGS...]` | Override the `config.json` path for any GUI mode or CLI subcommand |
 | `semsearch query "<text>" [--code] [--kind K] [--limit 20] [--json]` | Run a headless search from the terminal or scripts (supports inline filters and JSON output) |
 | `semsearch status [--json]` | Print index file/segment/vector counts, model fingerprint, and disk usage |
 | `semsearch reindex [--force]` | Trigger a crawl/sync (or full reset + re-index with `--force`), via running daemon IPC or standalone |
@@ -181,8 +182,8 @@ By default, SemSearch uses **`embeddinggemma-2`** via Ollama, and supports any v
 
 ## ⚙️ Configuration & Data Storage
 
-- **Configuration File:** `~/.config/semsearch/config.json` (written atomically with `0o600` owner-only permissions)
-- **Index Databases:** `$XDG_DATA_HOME/semsearch/index.sqlite` and `$XDG_DATA_HOME/semsearch/code.sqlite` (default `~/.local/share/semsearch/`, SQLite WAL schema v6)
-- **Preview Thumbnail Cache:** `~/.cache/semsearch/thumbs/` (LRU-pruned, max 200 PNG frames)
+- **Configuration File:** `$XDG_CONFIG_HOME/semsearch/config.json` (default `~/.config/semsearch/config.json`, or override via `--config PATH`; written atomically with `0o600` owner-only permissions)
+- **Index Databases:** `$XDG_DATA_HOME/semsearch/index.sqlite` and `code.sqlite` (default `~/.local/share/semsearch/`, or custom `data_dir` in Settings; SQLite WAL schema v6)
+- **Preview Thumbnail Cache:** `$XDG_CACHE_HOME/semsearch/thumbs/` (default `~/.cache/semsearch/thumbs/`, LRU-pruned, max 200 PNG frames)
 - **Runtime IPC Socket & Lock:** `$XDG_RUNTIME_DIR/semsearch/ipc.sock` and `instance.lock` (`0o700` dir, `0o600` files)
-- **Desktop Autostart:** Toggle *"Start SemSearch automatically on desktop login"* in **Settings → General** to manage `~/.config/autostart/semsearch.desktop`.
+- **Desktop Autostart:** Toggle *"Start SemSearch automatically on desktop login"* in **Settings → General** to manage `$XDG_CONFIG_HOME/autostart/semsearch.desktop` (default `~/.config/autostart/semsearch.desktop`).

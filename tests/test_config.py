@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from semsearch.config import AppConfig, ConfigManager
+from semsearch.config import (
+    AppConfig,
+    ConfigManager,
+    get_autostart_path,
+    get_default_config_path,
+    get_thumbs_cache_dir,
+    resolve_data_dir,
+    resolve_xdg_cache_home,
+    resolve_xdg_config_home,
+    resolve_xdg_data_home,
+)
 from semsearch.core.types import (
     Candidate,
     EngineActivity,
@@ -41,6 +51,21 @@ def test_default_config_values() -> None:
     assert config.index_schedule_start == 1320
     assert config.index_schedule_end == 420
     assert config.onboarded is False
+    assert config.data_dir == ""
+    assert config.follow_symlinks is False
+    assert config.skip_code_projects is True
+    assert config.skip_datasets is True
+    assert config.max_media_duration_min == 60
+    assert config.code_watch_delay_sec == 60
+    assert config.ollama_keep_alive == "unload_idle"
+    assert config.ollama_timeout == 120
+    assert config.ollama_api_key == ""
+    assert config.custom_editor_cmd == ""
+    assert config.terminal == "auto"
+    assert config.custom_terminal_cmd == ""
+    assert config.theme == "dark"
+    assert config.close_on_focus_loss is True
+    assert config.remember_last_query is False
 
 
 def test_config_manager_load_and_save(tmp_path: Path) -> None:
@@ -305,3 +330,100 @@ def test_config_manager_filters_unknown_fields(tmp_path: Path) -> None:
     mgr = ConfigManager(config_path=cfg_file)
     assert mgr.config.model == "test-embed"
     assert not hasattr(mgr.config, "extra_key")
+
+
+def test_xdg_path_helpers_and_default_config_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify XDG helpers resolve environment overrides and fall back to standard home paths."""
+    cfg_home = tmp_path / "xdg_config"
+    data_home = tmp_path / "xdg_data"
+    cache_home = tmp_path / "xdg_cache"
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+
+    assert resolve_xdg_config_home() == cfg_home
+    assert resolve_xdg_data_home() == data_home
+    assert resolve_xdg_cache_home() == cache_home
+    assert get_default_config_path() == cfg_home / "semsearch" / "config.json"
+    assert get_autostart_path() == cfg_home / "autostart" / "semsearch.desktop"
+    assert get_thumbs_cache_dir() == cache_home / "semsearch" / "thumbs"
+    assert ConfigManager().config_path == cfg_home / "semsearch" / "config.json"
+
+    # Whitespace-only or unset env vars fall back to standard defaults
+    monkeypatch.setenv("XDG_CONFIG_HOME", "   ")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    assert resolve_xdg_config_home() == Path.home() / ".config"
+    assert resolve_xdg_data_home() == Path.home() / ".local" / "share"
+    assert resolve_xdg_cache_home() == Path.home() / ".cache"
+    assert get_default_config_path() == Path.home() / ".config" / "semsearch" / "config.json"
+    assert get_autostart_path() == Path.home() / ".config" / "autostart" / "semsearch.desktop"
+    assert get_thumbs_cache_dir() == Path.home() / ".cache" / "semsearch" / "thumbs"
+
+
+def test_resolve_data_dir_override_and_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify resolve_data_dir prefers config.data_dir and otherwise uses XDG_DATA_HOME."""
+    xdg_data = tmp_path / "xdg_data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
+
+    assert resolve_data_dir(AppConfig()) == xdg_data / "semsearch"
+    assert resolve_data_dir(AppConfig(data_dir="   ")) == xdg_data / "semsearch"
+
+    custom_dir = tmp_path / "custom" / ".." / "store"
+    assert resolve_data_dir(AppConfig(data_dir=str(custom_dir))) == (tmp_path / "store").resolve()
+
+
+def test_config_manager_validates_enum_and_numeric_bounds(tmp_path: Path) -> None:
+    """Verify invalid enum values and out-of-range integers fall back to AppConfig defaults."""
+    cfg_file = tmp_path / "config.json"
+
+    # Invalid values fall back to defaults
+    cfg_file.write_text(
+        (
+            '{"ollama_keep_alive": "forever", "theme": "neon", '
+            '"ollama_timeout": 4, "max_media_duration_min": -1, "code_watch_delay_sec": 0}'
+        ),
+        encoding="utf-8",
+    )
+    invalid_loaded = ConfigManager(config_path=cfg_file).config
+    assert invalid_loaded.ollama_keep_alive == "unload_idle"
+    assert invalid_loaded.theme == "dark"
+    assert invalid_loaded.ollama_timeout == 120
+    assert invalid_loaded.max_media_duration_min == 60
+    assert invalid_loaded.code_watch_delay_sec == 60
+
+    # Boundary valid values are accepted and persisted
+    cfg_file.write_text(
+        (
+            '{"ollama_keep_alive": "keep_loaded", "theme": "system", '
+            '"ollama_timeout": 5, "max_media_duration_min": 0, "code_watch_delay_sec": 1, '
+            '"follow_symlinks": true, "skip_code_projects": false, "skip_datasets": false, '
+            '"ollama_api_key": "secret-token", "custom_editor_cmd": "hx {file}:{line}", '
+            '"terminal": "kitty", "custom_terminal_cmd": "alacritty -e", '
+            '"close_on_focus_loss": false, "remember_last_query": true}'
+        ),
+        encoding="utf-8",
+    )
+    valid_loaded = ConfigManager(config_path=cfg_file).config
+    assert valid_loaded.ollama_keep_alive == "keep_loaded"
+    assert valid_loaded.theme == "system"
+    assert valid_loaded.ollama_timeout == 5
+    assert valid_loaded.max_media_duration_min == 0
+    assert valid_loaded.code_watch_delay_sec == 1
+    assert valid_loaded.follow_symlinks is True
+    assert valid_loaded.skip_code_projects is False
+    assert valid_loaded.skip_datasets is False
+    assert valid_loaded.ollama_api_key == "secret-token"
+    assert valid_loaded.custom_editor_cmd == "hx {file}:{line}"
+    assert valid_loaded.terminal == "kitty"
+    assert valid_loaded.custom_terminal_cmd == "alacritty -e"
+    assert valid_loaded.close_on_focus_loss is False
+    assert valid_loaded.remember_last_query is True

@@ -1,8 +1,10 @@
 """Visual design system, color tokens, and QSS stylesheets for SemSearch GUI."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QGuiApplication
 from PySide6.QtWidgets import QApplication, QWidget
 
 ICONS_DIR = Path(__file__).parent / "icons"
@@ -28,6 +30,138 @@ class ThemeColors:
     AMBER = "#F59E0B"
     HIGHLIGHT_YELLOW = "rgba(250, 204, 21, 0.35)"
     HIGHLIGHT_BORDER = "rgba(250, 204, 21, 0.8)"
+
+
+@dataclass(frozen=True)
+class ThemePalette:
+    """Complete semantic color palette for a GUI theme."""
+
+    bg_window: str
+    bg_panel: str
+    bg_panel_footer: str
+    bg_card: str
+    bg_card_hover: str
+    bg_card_active: str
+    bg_input_focus: str
+    bg_menu: str
+    bg_editor: str
+    bg_gutter: str
+    bg_list: str
+    bg_tab_pane: str
+    bg_group: str
+    bg_subtle: str
+    border: str
+    border_light: str
+    text_primary: str
+    text_secondary: str
+    text_muted: str
+    brand_start: str
+    brand_end: str
+    leaf: str
+    amber: str
+    highlight_yellow: str
+    highlight_border: str
+    scrollbar_handle: str
+    scrollbar_hover: str
+    slider_groove: str
+    selection_text: str
+
+
+DARK_PALETTE = ThemePalette(
+    bg_window="#16181D",
+    bg_panel=ThemeColors.BG_PANEL,
+    bg_panel_footer="rgba(15, 17, 21, 0.55)",
+    bg_card=ThemeColors.BG_CARD,
+    bg_card_hover=ThemeColors.BG_CARD_HOVER,
+    bg_card_active=ThemeColors.BG_CARD_ACTIVE,
+    bg_input_focus="rgba(36, 40, 50, 0.95)",
+    bg_menu="#1E2128",
+    bg_editor="#121418",
+    bg_gutter="#1A1D24",
+    bg_list="rgba(18, 20, 24, 0.55)",
+    bg_tab_pane="rgba(22, 24, 29, 0.7)",
+    bg_group="rgba(28, 31, 38, 0.65)",
+    bg_subtle="rgba(255, 255, 255, 0.06)",
+    border=ThemeColors.BORDER,
+    border_light=ThemeColors.BORDER_LIGHT,
+    text_primary=ThemeColors.TEXT_PRIMARY,
+    text_secondary=ThemeColors.TEXT_SECONDARY,
+    text_muted=ThemeColors.TEXT_MUTED,
+    brand_start=ThemeColors.BRAND_START,
+    brand_end=ThemeColors.BRAND_END,
+    leaf=ThemeColors.LEAF,
+    amber=ThemeColors.AMBER,
+    highlight_yellow=ThemeColors.HIGHLIGHT_YELLOW,
+    highlight_border=ThemeColors.HIGHLIGHT_BORDER,
+    scrollbar_handle="rgba(255, 255, 255, 0.18)",
+    scrollbar_hover="rgba(255, 255, 255, 0.35)",
+    slider_groove="rgba(255, 255, 255, 0.14)",
+    selection_text="#FFFFFF",
+)
+
+LIGHT_PALETTE = ThemePalette(
+    bg_window="#F3F4F6",
+    bg_panel="rgba(255, 255, 255, 0.98)",
+    bg_panel_footer="rgba(241, 245, 249, 0.95)",
+    bg_card="#FFFFFF",
+    bg_card_hover="#F1F5F9",
+    bg_card_active="#E0E7FF",
+    bg_input_focus="#FFFFFF",
+    bg_menu="#FFFFFF",
+    bg_editor="#F8FAFC",
+    bg_gutter="#EDF2F7",
+    bg_list="#FFFFFF",
+    bg_tab_pane="#FFFFFF",
+    bg_group="rgba(255, 255, 255, 0.85)",
+    bg_subtle="rgba(15, 23, 42, 0.06)",
+    border="rgba(15, 23, 42, 0.12)",
+    border_light="rgba(15, 23, 42, 0.22)",
+    text_primary="#0F172A",
+    text_secondary="#475569",
+    text_muted="#64748B",
+    brand_start="#4F46E5",
+    brand_end="#7C3AED",
+    leaf="#059669",
+    amber="#D97706",
+    highlight_yellow="rgba(250, 204, 21, 0.45)",
+    highlight_border="rgba(217, 119, 6, 0.85)",
+    scrollbar_handle="rgba(15, 23, 42, 0.22)",
+    scrollbar_hover="rgba(15, 23, 42, 0.40)",
+    slider_groove="rgba(15, 23, 42, 0.16)",
+    selection_text="#0F172A",
+)
+
+_active_theme = "dark"
+
+
+def resolve_theme(theme: str = "dark") -> str:
+    """Resolve theme preference ('dark', 'light', 'system') into 'dark' or 'light'."""
+    if theme == "light":
+        return "light"
+    if theme == "system":
+        if QGuiApplication.instance() is not None:
+            scheme = QGuiApplication.styleHints().colorScheme()
+            if scheme == Qt.ColorScheme.Light:
+                return "light"
+        return "dark"
+    return "dark"
+
+
+def get_active_theme() -> str:
+    """Return the currently active configured theme name."""
+    return _active_theme
+
+
+def set_active_theme(theme: str = "dark") -> None:
+    """Set the active configured theme name."""
+    global _active_theme
+    _active_theme = theme
+
+
+def get_palette(theme: str | None = None) -> ThemePalette:
+    """Return the ThemePalette corresponding to the given or active theme."""
+    resolved = resolve_theme(_active_theme if theme is None else theme)
+    return LIGHT_PALETTE if resolved == "light" else DARK_PALETTE
 
 
 class ThemeLayout:
@@ -65,18 +199,19 @@ def get_mono_font(size: int = 12, weight: QFont.Weight = QFont.Weight.Normal) ->
     return font
 
 
-def build_qss() -> str:
-    """Build standardized dark mode QSS stylesheet for the application."""
+def build_qss(theme: str | None = None) -> str:
+    """Build QSS stylesheet for the requested or active theme."""
+    p = get_palette(theme)
     return f"""
     QWidget {{
-        color: {ThemeColors.TEXT_PRIMARY};
-        selection-background-color: {ThemeColors.BRAND_START};
+        color: {p.text_primary};
+        selection-background-color: {p.brand_start};
         selection-color: #FFFFFF;
     }}
 
     QMainWindow, QDialog, QWizard, QWizardPage {{
-        background-color: #16181D;
-        color: {ThemeColors.TEXT_PRIMARY};
+        background-color: {p.bg_window};
+        color: {p.text_primary};
     }}
 
     QLabel, QCheckBox, QRadioButton {{
@@ -89,9 +224,9 @@ def build_qss() -> str:
     }}
 
     QMenu {{
-        background-color: #1E2128;
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        background-color: {p.bg_menu};
+        color: {p.text_primary};
+        border: 1px solid {p.border_light};
         border-radius: 8px;
         padding: 4px;
     }}
@@ -102,62 +237,62 @@ def build_qss() -> str:
     }}
 
     QMenu::item:selected {{
-        background-color: {ThemeColors.BRAND_START};
+        background-color: {p.brand_start};
         color: #FFFFFF;
     }}
 
     QMenu::item:disabled {{
-        color: {ThemeColors.TEXT_MUTED};
+        color: {p.text_muted};
         background-color: transparent;
     }}
 
     QMenu::separator {{
         height: 1px;
-        background: {ThemeColors.BORDER};
+        background: {p.border};
         margin: 4px 8px;
     }}
 
     QToolTip {{
-        background-color: #20232B;
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        background-color: {p.bg_menu};
+        color: {p.text_primary};
+        border: 1px solid {p.border_light};
         border-radius: 6px;
         padding: 4px 8px;
     }}
 
     QGroupBox {{
-        background-color: rgba(28, 31, 38, 0.65);
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_group};
+        border: 1px solid {p.border};
         border-radius: 10px;
         margin-top: 10px;
         padding-top: 10px;
         font-weight: 600;
-        color: {ThemeColors.TEXT_PRIMARY};
+        color: {p.text_primary};
     }}
 
     QGroupBox::title {{
         subcontrol-origin: margin;
         padding: 0 6px;
-        color: {ThemeColors.TEXT_SECONDARY};
+        color: {p.text_secondary};
     }}
 
     QLineEdit {{
-        background-color: {ThemeColors.BG_CARD};
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_card};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
         border-radius: 10px;
         padding: 6px 12px;
     }}
 
     QLineEdit:focus {{
-        border: 1px solid {ThemeColors.BRAND_START};
-        background-color: rgba(36, 40, 50, 0.95);
+        border: 1px solid {p.brand_start};
+        background-color: {p.bg_input_focus};
     }}
 
     QAbstractSpinBox, QTimeEdit, QSpinBox {{
-        background-color: {ThemeColors.BG_CARD};
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER_LIGHT};
+        background-color: {p.bg_card};
+        color: {p.text_primary};
+        border: 1px solid {p.border_light};
         border-radius: 6px;
         padding: 4px 8px;
         min-height: 24px;
@@ -176,16 +311,16 @@ def build_qss() -> str:
     }}
 
     QPlainTextEdit, QTextEdit {{
-        background-color: #121418;
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_editor};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
         border-radius: 8px;
         padding: 6px;
     }}
 
     QListView, QListWidget, QTableView, QTableWidget {{
-        background-color: rgba(18, 20, 24, 0.55);
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_list};
+        border: 1px solid {p.border};
         border-radius: 8px;
         outline: none;
     }}
@@ -199,7 +334,7 @@ def build_qss() -> str:
     QListView::item, QListWidget::item {{
         padding: 6px 10px;
         border-radius: 6px;
-        color: {ThemeColors.TEXT_PRIMARY};
+        color: {p.text_primary};
         border: none;
     }}
 
@@ -210,16 +345,16 @@ def build_qss() -> str:
     }}
 
     QListView::item:hover, QListWidget::item:hover {{
-        background-color: {ThemeColors.BG_CARD_HOVER};
+        background-color: {p.bg_card_hover};
     }}
 
     QListView::item:selected, QListWidget::item:selected {{
-        background-color: {ThemeColors.BG_CARD_ACTIVE};
-        color: #FFFFFF;
+        background-color: {p.bg_card_active};
+        color: {p.selection_text};
     }}
 
     QSplitter::handle {{
-        background-color: {ThemeColors.BORDER};
+        background-color: {p.border};
     }}
 
     QSplitter::handle:horizontal {{
@@ -232,18 +367,18 @@ def build_qss() -> str:
 
     QSlider::groove:horizontal {{
         height: 4px;
-        background: rgba(255, 255, 255, 0.14);
+        background: {p.slider_groove};
         border-radius: 2px;
     }}
 
     QSlider::sub-page:horizontal {{
-        background: {ThemeColors.BRAND_START};
+        background: {p.brand_start};
         border-radius: 2px;
     }}
 
     QSlider::handle:horizontal {{
         background: #FFFFFF;
-        border: 2px solid {ThemeColors.BRAND_START};
+        border: 2px solid {p.brand_start};
         width: 12px;
         height: 12px;
         margin: -5px 0;
@@ -258,13 +393,13 @@ def build_qss() -> str:
     }}
 
     QScrollBar::handle:vertical {{
-        background: rgba(255, 255, 255, 0.18);
+        background: {p.scrollbar_handle};
         min-height: 24px;
         border-radius: 3px;
     }}
 
     QScrollBar::handle:vertical:hover {{
-        background: rgba(255, 255, 255, 0.35);
+        background: {p.scrollbar_hover};
     }}
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
@@ -281,13 +416,13 @@ def build_qss() -> str:
     }}
 
     QScrollBar::handle:horizontal {{
-        background: rgba(255, 255, 255, 0.18);
+        background: {p.scrollbar_handle};
         min-width: 24px;
         border-radius: 3px;
     }}
 
     QScrollBar::handle:horizontal:hover {{
-        background: rgba(255, 255, 255, 0.35);
+        background: {p.scrollbar_hover};
     }}
 
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
@@ -297,57 +432,57 @@ def build_qss() -> str:
     }}
 
     QPushButton {{
-        background-color: {ThemeColors.BG_CARD};
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_card};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
         border-radius: 8px;
         padding: 6px 14px;
         font-weight: 500;
     }}
 
     QPushButton:hover {{
-        background-color: {ThemeColors.BG_CARD_HOVER};
-        border-color: {ThemeColors.BORDER_LIGHT};
+        background-color: {p.bg_card_hover};
+        border-color: {p.border_light};
     }}
 
     QPushButton:pressed {{
-        background-color: {ThemeColors.BG_CARD_ACTIVE};
+        background-color: {p.bg_card_active};
     }}
 
     QPushButton:checked {{
-        background-color: {ThemeColors.BRAND_START};
-        border-color: {ThemeColors.BRAND_END};
+        background-color: {p.brand_start};
+        border-color: {p.brand_end};
         color: #FFFFFF;
     }}
 
     QTabWidget::pane {{
-        border: 1px solid {ThemeColors.BORDER};
+        border: 1px solid {p.border};
         border-radius: 10px;
-        background-color: rgba(22, 24, 29, 0.7);
+        background-color: {p.bg_tab_pane};
         padding: 12px;
     }}
 
     QTabBar::tab {{
         background: transparent;
-        color: {ThemeColors.TEXT_SECONDARY};
+        color: {p.text_secondary};
         padding: 8px 16px;
         border-bottom: 2px solid transparent;
         font-weight: 500;
     }}
 
     QTabBar::tab:selected {{
-        color: {ThemeColors.TEXT_PRIMARY};
-        border-bottom: 2px solid {ThemeColors.BRAND_START};
+        color: {p.text_primary};
+        border-bottom: 2px solid {p.brand_start};
     }}
 
     QTabBar::tab:hover:!selected {{
-        color: {ThemeColors.TEXT_PRIMARY};
+        color: {p.text_primary};
     }}
 
     QComboBox {{
-        background-color: {ThemeColors.BG_CARD};
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER};
+        background-color: {p.bg_card};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
         border-radius: 8px;
         padding: 6px 12px;
     }}
@@ -364,14 +499,15 @@ def build_qss() -> str:
     }}
 
     QComboBox QAbstractItemView {{
-        background-color: #20232B;
-        color: {ThemeColors.TEXT_PRIMARY};
-        border: 1px solid {ThemeColors.BORDER_LIGHT};
-        selection-background-color: {ThemeColors.BRAND_START};
+        background-color: {p.bg_menu};
+        color: {p.text_primary};
+        border: 1px solid {p.border_light};
+        selection-background-color: {p.brand_start};
+        selection-color: #FFFFFF;
     }}
 
     QCheckBox {{
-        color: {ThemeColors.TEXT_PRIMARY};
+        color: {p.text_primary};
         spacing: 8px;
     }}
 
@@ -379,18 +515,21 @@ def build_qss() -> str:
         width: 18px;
         height: 18px;
         border-radius: 5px;
-        border: 1px solid {ThemeColors.BORDER_LIGHT};
-        background: {ThemeColors.BG_CARD};
+        border: 1px solid {p.border_light};
+        background: {p.bg_card};
     }}
 
     QCheckBox::indicator:checked {{
-        background: {ThemeColors.BRAND_START};
-        border-color: {ThemeColors.BRAND_START};
+        background: {p.brand_start};
+        border-color: {p.brand_start};
         image: url("{CHECK_ICON}");
     }}
     """
 
 
-def apply_theme(target: QWidget | QApplication) -> None:
-    """Apply standard QSS theme to a widget, window, or QApplication."""
-    target.setStyleSheet(build_qss())
+def apply_theme(target: QWidget | QApplication, theme: str | None = None) -> None:
+    """Apply QSS theme to a widget, window, or QApplication."""
+    global _active_theme
+    if theme is not None:
+        _active_theme = theme
+    target.setStyleSheet(build_qss(theme))

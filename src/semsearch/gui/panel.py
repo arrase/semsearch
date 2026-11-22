@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QSizeGrip,
     QVBoxLayout,
     QWidget,
 )
@@ -25,7 +26,7 @@ from semsearch.config import AppConfig
 from semsearch.core.ollama import OllamaError
 from semsearch.core.types import FileKind, SearchHit
 from semsearch.gui.preview import PreviewPane, format_tilde_path
-from semsearch.gui.theme import ThemeColors, ThemeLayout, apply_theme, get_ui_font
+from semsearch.gui.theme import ThemeLayout, apply_theme, get_palette, get_ui_font
 from semsearch.gui.widgets import ElidedLabel
 from semsearch.gui.worker import SearchWorker
 from semsearch.i18n import tr
@@ -53,6 +54,8 @@ _PDF_PREVIEW_INDEX = 2
 _PAGE_NAV_STEP = 5
 _SCREEN_VERTICAL_MARGIN = 40
 _WORKER_SHUTDOWN_WAIT_MS = 1500
+_MIN_EXPANDED_HEIGHT = 360
+_MAX_WIDGET_SIZE = 16777215
 
 
 def format_hit_place_badge(hit: SearchHit) -> str:
@@ -123,9 +126,10 @@ class ResultItemWidget(QWidget):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(6)
 
+        palette = get_palette()
         self.title_label = ElidedLabel(Path(hit.path).name)
         self.title_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
-        self.title_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; background: transparent; border: none;")
+        self.title_label.setStyleSheet(f"color: {palette.text_primary}; background: transparent; border: none;")
         top_row.addWidget(self.title_label, stretch=1)
 
         place_text = format_hit_place_badge(hit)
@@ -133,7 +137,7 @@ class ResultItemWidget(QWidget):
             self.place_badge = QLabel(place_text)
             self.place_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
             self.place_badge.setStyleSheet(
-                f"color: {ThemeColors.TEXT_SECONDARY}; background-color: rgba(255, 255, 255, 0.06); "
+                f"color: {palette.text_secondary}; background-color: {palette.bg_subtle}; "
                 "border-radius: 4px; padding: 1px 5px;"
             )
             top_row.addWidget(self.place_badge)
@@ -144,11 +148,11 @@ class ResultItemWidget(QWidget):
 
         self.path_label = ElidedLabel(format_tilde_path(str(Path(hit.path).parent)))
         self.path_label.setFont(get_ui_font(10))
-        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+        self.path_label.setStyleSheet(f"color: {palette.text_muted}; background: transparent; border: none;")
 
         self.reason_label = QLabel(tr(hit.reason))
         self.reason_label.setFont(get_ui_font(9))
-        self.reason_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; background: transparent; border: none;")
+        self.reason_label.setStyleSheet(f"color: {palette.text_muted}; background: transparent; border: none;")
 
         bottom_row.addWidget(self.path_label, stretch=1)
         bottom_row.addWidget(self.reason_label)
@@ -180,10 +184,13 @@ class SearchPanel(QWidget):
         search_service: SearchService,
         app_config: AppConfig | None = None,
         parent: QWidget | None = None,
+        *,
+        should_unload_on_hide: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self.search_service = search_service
         self.config = app_config or AppConfig()
+        self._should_unload_on_hide = should_unload_on_hide
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -196,6 +203,8 @@ class SearchPanel(QWidget):
         self._worker: SearchWorker | None = None
         self._active_workers: set[SearchWorker] = set()
         self._preload_thread: threading.Thread | None = None
+        self._unload_thread: threading.Thread | None = None
+        self._used_ollama_while_open = False
 
         self._semantic_timer = QTimer(self)
         self._semantic_timer.setSingleShot(True)
@@ -204,7 +213,7 @@ class SearchPanel(QWidget):
 
         self._build_ui()
         self._set_geometry_collapsed(force=True)
-        apply_theme(self)
+        self.refresh_theme()
 
     def _build_ui(self) -> None:
         outer_layout = QVBoxLayout(self)
@@ -213,13 +222,6 @@ class SearchPanel(QWidget):
 
         self.container = QFrame(self)
         self.container.setObjectName("panelContainer")
-        self.container.setStyleSheet(
-            f"QFrame#panelContainer {{"
-            f"  background-color: {ThemeColors.BG_PANEL};"
-            f"  border: 1.5px solid {ThemeColors.BRAND_START};"
-            f"  border-radius: {ThemeLayout.PANEL_RADIUS}px;"
-            f"}}"
-        )
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
@@ -240,22 +242,16 @@ class SearchPanel(QWidget):
 
         self.search_icon = QLabel("🔍")
         self.search_icon.setFont(get_ui_font(14))
-        self.search_icon.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; background: transparent; border: none;")
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(tr("Search files, documents, code, media... (prefix 'code:' for source)"))
         self.search_input.setFixedHeight(38)
         self.search_input.setFont(get_ui_font(14))
-        self.search_input.setStyleSheet(
-            f"QLineEdit {{ background: transparent; border: none; color: {ThemeColors.TEXT_PRIMARY}; "
-            f"placeholder-text-color: {ThemeColors.TEXT_SECONDARY}; padding: 0px 4px; }}"
-        )
         self.search_input.textChanged.connect(self._on_query_text_changed)
         self.search_input.installEventFilter(self)
 
         self.status_badge = QLabel("")
         self.status_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
-        self.status_badge.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; background: transparent; border: none;")
 
         header_layout.addWidget(self.search_icon)
         header_layout.addWidget(self.search_input, stretch=1)
@@ -268,10 +264,9 @@ class SearchPanel(QWidget):
         content_outer.setContentsMargins(0, 0, 0, 0)
         content_outer.setSpacing(0)
 
-        divider = QFrame()
-        divider.setFixedHeight(1)
-        divider.setStyleSheet(f"background-color: {ThemeColors.BORDER}; border: none;")
-        content_outer.addWidget(divider)
+        self.divider = QFrame()
+        self.divider.setFixedHeight(1)
+        content_outer.addWidget(self.divider)
 
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -281,36 +276,34 @@ class SearchPanel(QWidget):
         self.result_list.setObjectName("panelResultList")
         self.result_list.setFixedWidth(ThemeLayout.LIST_WIDTH)
         self.result_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._apply_list_border_style()
         self.result_list.currentItemChanged.connect(self._on_selection_changed)
         self.result_list.itemClicked.connect(self._on_item_clicked)
         self.result_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.result_list.installEventFilter(self)
 
         self.preview_pane = PreviewPane(config=self.config)
-        self.preview_pane.setFixedWidth(ThemeLayout.PREVIEW_WIDTH)
+        self.preview_pane.setMinimumWidth(ThemeLayout.PREVIEW_WIDTH)
         self.preview_pane.action_triggered.connect(self.hide_panel)
 
         content_layout.addWidget(self.result_list)
         content_layout.addWidget(self.preview_pane, stretch=1)
         content_outer.addLayout(content_layout, stretch=1)
 
-        footer = QFrame()
-        footer.setFixedHeight(26)
-        footer.setStyleSheet(
-            f"background-color: rgba(15, 17, 21, 0.55); border-top: 1px solid {ThemeColors.BORDER}; "
-            f"border-bottom-left-radius: {ThemeLayout.PANEL_RADIUS}px; "
-            f"border-bottom-right-radius: {ThemeLayout.PANEL_RADIUS}px;"
-        )
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(12, 0, 12, 0)
+        self.footer = QFrame()
+        self.footer.setFixedHeight(26)
+        footer_layout = QHBoxLayout(self.footer)
+        footer_layout.setContentsMargins(12, 0, 8, 0)
         self.footer_hint = QLabel(tr(_FOOTER_HINT_KEY))
         self.footer_hint.setFont(get_ui_font(10))
-        self.footer_hint.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
         footer_layout.addWidget(self.footer_hint)
         footer_layout.addStretch()
 
-        content_outer.addWidget(footer)
+        self.size_grip = QSizeGrip(self)
+        self.size_grip.setFixedSize(14, 14)
+        self.size_grip.setStyleSheet("background: transparent;")
+        footer_layout.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+
+        content_outer.addWidget(self.footer)
         return content_widget
 
     def _is_rtl_layout(self) -> bool:
@@ -319,8 +312,45 @@ class SearchPanel(QWidget):
     def _apply_list_border_style(self) -> None:
         edge = "border-left" if self._is_rtl_layout() else "border-right"
         self.result_list.setStyleSheet(
-            f"QListWidget#panelResultList {{ {edge}: 1px solid {ThemeColors.BORDER}; padding: 4px 6px; }}"
+            f"QListWidget#panelResultList {{ {edge}: 1px solid {get_palette().border}; padding: 4px 6px; }}"
         )
+
+    def _apply_panel_styles(self) -> None:
+        p = get_palette()
+        self.container.setStyleSheet(
+            f"QFrame#panelContainer {{"
+            f"  background-color: {p.bg_panel};"
+            f"  border: 1.5px solid {p.brand_start};"
+            f"  border-radius: {ThemeLayout.PANEL_RADIUS}px;"
+            f"}}"
+        )
+        self.search_icon.setStyleSheet(f"color: {p.text_secondary}; background: transparent; border: none;")
+        self.search_input.setStyleSheet(
+            f"QLineEdit {{ background: transparent; border: none; color: {p.text_primary}; "
+            f"placeholder-text-color: {p.text_secondary}; padding: 0px 4px; }}"
+        )
+        self.status_badge.setStyleSheet(f"color: {p.text_secondary}; background: transparent; border: none;")
+        self.divider.setStyleSheet(f"background-color: {p.border}; border: none;")
+        self._apply_list_border_style()
+        self.footer.setStyleSheet(
+            f"background-color: {p.bg_panel_footer}; border-top: 1px solid {p.border}; "
+            f"border-bottom-left-radius: {ThemeLayout.PANEL_RADIUS}px; "
+            f"border-bottom-right-radius: {ThemeLayout.PANEL_RADIUS}px;"
+        )
+        self.footer_hint.setStyleSheet(f"color: {p.text_muted}; border: none; background: transparent;")
+
+    def refresh_theme(self) -> None:
+        """Apply configured theme across panel chrome, result rows, and preview views."""
+        apply_theme(self, self.config.theme)
+        self._apply_panel_styles()
+        self.preview_pane.empty_view.refresh_theme()
+        self.preview_pane.image_view.refresh_theme()
+        self.preview_pane.pdf_view.refresh_theme()
+        self.preview_pane.audio_view.refresh_theme()
+        self.preview_pane.video_view.refresh_theme()
+        self.preview_pane.code_view.refresh_theme()
+        if self._current_result_set.ranked or self._current_result_set.weaker:
+            self._populate_list(self._current_result_set)
 
     def _update_status_badge(self) -> None:
         if not self._last_query:
@@ -368,7 +398,9 @@ class SearchPanel(QWidget):
             if screen is not None
             else ThemeLayout.PANEL_HEIGHT_EXPANDED
         )
-        self.setFixedSize(ThemeLayout.PANEL_WIDTH, target_height)
+        self.setMinimumSize(ThemeLayout.PANEL_WIDTH, min(_MIN_EXPANDED_HEIGHT, target_height))
+        self.setMaximumSize(_MAX_WIDGET_SIZE, _MAX_WIDGET_SIZE)
+        self.resize(max(self.width(), ThemeLayout.PANEL_WIDTH), max(self.height(), target_height))
         self._reposition_to_top_third(target_height)
 
     def _reposition_to_top_third(self, target_height: int | None = None) -> None:
@@ -376,8 +408,9 @@ class SearchPanel(QWidget):
         if screen is None:
             return
         geo = screen.availableGeometry()
+        width = self.width() if self.width() > 0 else ThemeLayout.PANEL_WIDTH
         height = self.height() if target_height is None else target_height
-        x = geo.x() + (geo.width() - ThemeLayout.PANEL_WIDTH) // 2
+        x = geo.x() + (geo.width() - width) // 2
         y = geo.y() + int(geo.height() * 0.16)
         y = max(geo.y(), min(y, geo.y() + geo.height() - height))
         self.move(x, y)
@@ -440,6 +473,8 @@ class SearchPanel(QWidget):
         if not self._last_query:
             return
         self._stop_workers()
+        if self.search_service.ollama is not None:
+            self._used_ollama_while_open = True
         worker = SearchWorker(self.search_service, self._last_query, limit=50)
         self._active_workers.add(worker)
         self._worker = worker
@@ -498,10 +533,11 @@ class SearchPanel(QWidget):
             grouped.setdefault(hit.kind, []).append(hit)
 
         restored_item: QListWidgetItem | None = None
+        muted_color = QColor(get_palette().text_muted)
         for kind, hits in grouped.items():
             header_item = QListWidgetItem(tr(KIND_GROUP_NAMES.get(kind, "Other")).upper())
             header_item.setFont(get_ui_font(10, QFont.Weight.Bold))
-            header_item.setForeground(QColor(ThemeColors.TEXT_MUTED))
+            header_item.setForeground(muted_color)
             header_item.setFlags(Qt.ItemFlag.NoItemFlags)
             header_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 24))
             self.result_list.addItem(header_item)
@@ -517,7 +553,7 @@ class SearchPanel(QWidget):
         toggle_text = tr("{arrow} {count} weaker matches", arrow=arrow, count=len(weaker))
         toggle_item = QListWidgetItem(toggle_text)
         toggle_item.setFont(get_ui_font(11, QFont.Weight.Medium))
-        toggle_item.setForeground(QColor(ThemeColors.BRAND_START))
+        toggle_item.setForeground(QColor(get_palette().brand_start))
         toggle_item.setData(Qt.ItemDataRole.UserRole + 1, "toggle")
         toggle_item.setSizeHint(QSize(ThemeLayout.LIST_WIDTH - 16, 30))
         self.result_list.addItem(toggle_item)
@@ -591,7 +627,7 @@ class SearchPanel(QWidget):
 
         menu.addSeparator()
 
-        copy_file_action = menu.addAction("Copy File")
+        copy_file_action = menu.addAction(tr("Copy File"))
         copy_file_action.triggered.connect(lambda: copy_file_to_clipboard(hit.path))
 
         copy_path_action = menu.addAction(tr("Copy Path"))
@@ -604,7 +640,15 @@ class SearchPanel(QWidget):
         menu.addSeparator()
 
         terminal_action = menu.addAction(tr("Open Terminal Here"))
-        terminal_action.triggered.connect(lambda: self._run_and_hide(lambda: open_terminal_at(hit.path)))
+        terminal_action.triggered.connect(
+            lambda: self._run_and_hide(
+                lambda: open_terminal_at(
+                    hit.path,
+                    terminal_preference=self.config.terminal,
+                    custom_terminal_cmd=self.config.custom_terminal_cmd,
+                )
+            )
+        )
         return menu
 
     def _run_and_hide(self, action: Callable[[], object]) -> None:
@@ -723,37 +767,69 @@ class SearchPanel(QWidget):
             with contextlib.suppress(OllamaError):
                 self.search_service.ollama.preload(self.search_service.model)
 
+    def _unload_model(self) -> None:
+        if self.search_service.ollama is not None:
+            with contextlib.suppress(OllamaError):
+                self.search_service.ollama.unload(self.search_service.model)
+
+    def _maybe_start_preload(self) -> None:
+        if self.search_service.ollama is not None and (
+            self._preload_thread is None or not self._preload_thread.is_alive()
+        ):
+            self._used_ollama_while_open = True
+            self._preload_thread = threading.Thread(target=self._preload_model, daemon=True)
+            self._preload_thread.start()
+
+    def _maybe_unload_model(self) -> None:
+        should_unload = (
+            self._used_ollama_while_open
+            and self.config.ollama_keep_alive == "unload_idle"
+            and self.search_service.ollama is not None
+            and (self._should_unload_on_hide is None or self._should_unload_on_hide())
+        )
+        self._used_ollama_while_open = False
+        if should_unload and (self._unload_thread is None or not self._unload_thread.is_alive()):
+            self._unload_thread = threading.Thread(target=self._unload_model, daemon=True)
+            self._unload_thread.start()
+
     def show_panel(self) -> None:
         """Present search panel with focus."""
         self._stop_workers()
-        self.search_input.clear()
-        self.result_list.clear()
-        self.preview_pane.clear()
-        self._set_geometry_collapsed(force=True)
+        preserve_query = self.config.remember_last_query and bool(self._last_query)
+        if preserve_query:
+            if self._current_result_set.ranked or self._current_result_set.weaker:
+                self._set_geometry_expanded()
+            else:
+                self._set_geometry_collapsed(force=True)
+        else:
+            self.search_input.clear()
+            self.result_list.clear()
+            self.preview_pane.clear()
+            self._set_geometry_collapsed(force=True)
         self.show()
         self.raise_()
         self.activateWindow()
         self.search_input.setFocus()
-        if self.search_service.ollama is not None and (
-            self._preload_thread is None or not self._preload_thread.is_alive()
-        ):
-            self._preload_thread = threading.Thread(target=self._preload_model, daemon=True)
-            self._preload_thread.start()
+        if preserve_query:
+            self.search_input.selectAll()
+        self._maybe_start_preload()
 
     def hide_panel(self) -> None:
         """Dismiss search panel and release UI/database buffers."""
         self._stop_workers()
-        with QSignalBlocker(self.search_input):
-            self.search_input.clear()
-        self._last_query = ""
-        self._current_result_set = ResultSet()
-        self.status_badge.setText("")
-        self.result_list.clear()
-        self.preview_pane.clear()
-        self._set_geometry_collapsed()
+        if not self.config.remember_last_query:
+            with QSignalBlocker(self.search_input):
+                self.search_input.clear()
+            self._last_query = ""
+            self._current_result_set = ResultSet()
+            self.status_badge.setText("")
+            self.result_list.clear()
+            self.preview_pane.clear()
+            self._set_geometry_collapsed()
         self.search_service.db.shrink_memory()
         if self.search_service.code_db is not None:
             self.search_service.code_db.shrink_memory()
+        self._maybe_unload_model()
         self.hide()
 
     def event(self, event: QEvent) -> bool:
@@ -761,6 +837,7 @@ class SearchPanel(QWidget):
             self._apply_list_border_style()
         elif (
             event.type() == QEvent.Type.WindowDeactivate
+            and self.config.close_on_focus_loss
             and self.isVisible()
             and not self._menu_open
             and QApplication.activePopupWidget() is None

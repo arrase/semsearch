@@ -10,7 +10,13 @@ from PySide6.QtWidgets import QApplication
 
 from semsearch.config import ConfigManager
 from semsearch.core.ollama import OllamaClient
-from semsearch.gui.onboarding import OnboardingWizard, discover_standard_folders
+from semsearch.gui.onboarding import (
+    CompletionPage,
+    OnboardingWizard,
+    discover_standard_folders,
+    format_hotkey_display,
+)
+from semsearch.i18n import set_language
 
 
 class _FakeOnboardingProbe:
@@ -196,3 +202,27 @@ def test_onboarding_wizard_connection_error_handling(
     assert len(probes) == 1
     assert probes[0].closed is True
     wizard.reject()
+
+
+def test_completion_page_displays_configured_hotkey(tmp_path: Path, mock_ollama: MagicMock, qapp: QApplication) -> None:
+    """Verify CompletionPage and OnboardingWizard format and display the user's configured hotkey."""
+    del qapp
+    assert format_hotkey_display("ctrl+shift+space") == "Ctrl + Shift + Space"
+    assert format_hotkey_display("super+alt+f") == "Super + Alt + F"
+    assert format_hotkey_display("") == "Ctrl + Shift + Space"
+
+    cfg_mgr = ConfigManager(config_path=tmp_path / "config.json")
+    cfg_mgr.config.hotkey = "super+space"
+    cfg_mgr.save()
+
+    wizard = OnboardingWizard(cfg_mgr, mock_ollama)
+    assert "Super + Space" in wizard.completion_page.shortcut_label.text()
+    assert "Ctrl + Shift + Space" not in wizard.completion_page.shortcut_label.text()
+    wizard.reject()
+
+    set_language("es")
+    try:
+        es_page = CompletionPage(hotkey="alt+k")
+        assert "Alt + K" in es_page.shortcut_label.text()
+    finally:
+        set_language("en")

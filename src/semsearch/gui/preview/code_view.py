@@ -26,7 +26,7 @@ from semsearch.core.search_text import extract_terms, find_term_matches
 from semsearch.core.types import SearchHit
 from semsearch.gui.preview.loader import PreviewLoader, read_preview_text
 from semsearch.gui.preview.metadata import MetadataCard
-from semsearch.gui.theme import ThemeColors, get_mono_font
+from semsearch.gui.theme import LIGHT_PALETTE, get_mono_font, get_palette
 
 MAX_HIGHLIGHT_SELECTIONS = 200
 
@@ -184,19 +184,28 @@ class CodeSyntaxHighlighter(QSyntaxHighlighter):
         self._enabled = True
 
         self._keyword_fmt = QTextCharFormat()
-        self._keyword_fmt.setForeground(QColor("#C084FC"))
         self._keyword_fmt.setFontWeight(QFont.Weight.DemiBold)
 
         self._def_fmt = QTextCharFormat()
-        self._def_fmt.setForeground(QColor("#60A5FA"))
         self._def_fmt.setFontWeight(QFont.Weight.DemiBold)
 
         self._string_fmt = QTextCharFormat()
-        self._string_fmt.setForeground(QColor("#34D399"))
 
         self._comment_fmt = QTextCharFormat()
-        self._comment_fmt.setForeground(QColor("#6B7280"))
         self._comment_fmt.setFontItalic(True)
+        self._apply_colors()
+
+    def _apply_colors(self) -> None:
+        is_light = get_palette() == LIGHT_PALETTE
+        self._keyword_fmt.setForeground(QColor("#7C3AED" if is_light else "#C084FC"))
+        self._def_fmt.setForeground(QColor("#2563EB" if is_light else "#60A5FA"))
+        self._string_fmt.setForeground(QColor("#059669" if is_light else "#34D399"))
+        self._comment_fmt.setForeground(QColor("#64748B" if is_light else "#6B7280"))
+
+    def refresh_theme(self) -> None:
+        """Update syntax token colors for the active theme and rehighlight."""
+        self._apply_colors()
+        self.rehighlight()
 
     def set_enabled(self, *, enabled: bool) -> None:
         """Enable or disable syntax highlighting and rehighlight when toggled."""
@@ -281,15 +290,16 @@ class CodeEditor(QPlainTextEdit):
 
     def paint_gutter(self, event: QPaintEvent) -> None:
         """Paint visible line numbers inside the editor gutter."""
+        palette = get_palette()
         painter = QPainter(self.gutter)
-        painter.fillRect(event.rect(), QColor("#1A1D24"))
+        painter.fillRect(event.rect(), QColor(palette.bg_gutter))
 
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
         top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
         bottom = top + int(self.blockBoundingRect(block).height())
 
-        painter.setPen(QColor(ThemeColors.TEXT_MUTED))
+        painter.setPen(QColor(palette.text_muted))
         painter.setFont(self.font())
 
         while block.isValid() and top <= event.rect().bottom():
@@ -333,6 +343,13 @@ class CodePreviewWidget(QWidget):
 
         layout.addWidget(self.editor, stretch=1)
         layout.addWidget(self.meta_card)
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Apply active theme palette to code editor gutter, syntax colors, and metadata card."""
+        self.editor.highlighter.refresh_theme()
+        self.editor.gutter.update()
+        self.meta_card.refresh_theme()
 
     def retranslate_ui(self) -> None:
         """Refresh translated metadata card labels."""

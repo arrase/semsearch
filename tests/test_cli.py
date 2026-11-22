@@ -3,11 +3,13 @@
 import ast
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 import semsearch.cli as cli_module
+import semsearch.main as main_module
 from semsearch.cli import (
     get_default_data_dir,
     hit_to_dict,
@@ -22,6 +24,7 @@ from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
 from semsearch.core.ollama import OllamaClient
 from semsearch.core.types import Candidate, FileKind, FileState, Modality, SearchHit, SegmentKind
 from semsearch.core.vectors import float16_to_bytes, l2_normalize
+from semsearch.main import build_parser, main
 
 
 class _StubOllamaClient(OllamaClient):
@@ -39,8 +42,9 @@ class _StubOllamaClient(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del model, truncate, num_ctx
+        del model, truncate, num_ctx, keep_alive
         if self._embedding is None:
             return []
         return [list(self._embedding) for _ in inputs]
@@ -451,3 +455,125 @@ def test_install_desktop_integration_writes_exact_user_space_files(
     for path in created:
         assert str(path) in stdout
     assert "/usr/share/gnome-shell/search-providers/" in stdout
+
+
+def test_cli_uses_config_data_dir_when_not_overridden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify run_status, run_query, and run_reindex resolve data_dir from AppConfig when omitted."""
+    cfg_manager, data_dir = _seed_databases(tmp_path)
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "note.md").write_text("Custom data dir test note.\n", encoding="utf-8")
+
+    cfg_manager.config.data_dir = str(data_dir)
+    cfg_manager.config.folders = [str(docs_dir)]
+    cfg_manager.save()
+
+    # Point XDG_DATA_HOME elsewhere to prove config.data_dir wins over XDG_DATA_HOME.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "unused_xdg_data"))
+
+    rc_status = run_status(as_json=True, config_manager=cfg_manager)
+    assert rc_status == 0
+    status_data = json.loads(capsys.readouterr().out)
+    assert status_data["data_dir"] == str(data_dir.resolve())
+    assert status_data["main"]["files"] == 3
+
+    ollama = _StubOllamaClient()
+    try:
+        rc_query = run_query("quarterly", as_json=True, config_manager=cfg_manager, ollama_client=ollama)
+        assert rc_query == 0
+        query_items = json.loads(capsys.readouterr().out)
+        assert any(item["path"] == "/docs/quarterly_budget.pdf" for item in query_items)
+
+        rc_reindex = run_reindex(
+            force=False,
+            forward_ipc=lambda _cmd: False,
+            config_manager=cfg_manager,
+            ollama_client=ollama,
+        )
+        assert rc_reindex == 0
+        assert "Synced index:" in capsys.readouterr().out
+    finally:
+        ollama.close()
+
+
+def test_main_config_flag_overrides_config_path_for_cli_and_gui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify --config parses cleanly and propagates ConfigManager to subcommands and SemSearchApp."""
+    custom_cfg_path = tmp_path / "alt" / "custom_config.json"
+    custom_data_dir = tmp_path / "alt_data"
+    custom_data_dir.mkdir()
+
+    cfg_mgr = ConfigManager(config_path=custom_cfg_path)
+    cfg_mgr.config.model = "custom-cli-model"
+    cfg_mgr.config.data_dir = str(custom_data_dir)
+    cfg_mgr.config.language = "en"
+    cfg_mgr.save()
+
+    parser = build_parser()
+    parsed = parser.parse_args(["--config", str(custom_cfg_path), "status", "--json"])
+    assert parsed.config == custom_cfg_path
+    assert parsed.command == "status"
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "ignored_xdg_data"))
+    assert main(["--config", str(custom_cfg_path), "status", "--json"]) == 0
+    status_payload = json.loads(capsys.readouterr().out)
+    assert status_payload["configured_model"] == "custom-cli-model"
+    assert status_payload["data_dir"] == str(custom_data_dir.resolve())
+
+    # Verify GUI cold-start forwards the --config ConfigManager to SemSearchApp
+    monkeypatch.setattr(main_module, "forward_ipc_command", lambda _action: False)
+    fake_app = MagicMock()
+    fake_app.is_shutdown = True
+    app_ctor = MagicMock(return_value=fake_app)
+    monkeypatch.setattr(main_module, "SemSearchApp", app_ctor)
+
+    assert main(["--config", str(custom_cfg_path), "--daemon"]) == 0
+    app_ctor.assert_called_once()
+    passed_cfg_mgr = app_ctor.call_args.kwargs["config_manager"]
+    assert isinstance(passed_cfg_mgr, ConfigManager)
+    assert passed_cfg_mgr.config_path == custom_cfg_path
+    assert passed_cfg_mgr.config.model == "custom-cli-model"
+
+
+def test_cli_constructs_ollama_client_with_full_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify run_query and run_reindex forward all OllamaClient config fields."""
+    cfg_manager, data_dir = _seed_databases(tmp_path)
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    cfg_manager.config.folders = [str(docs_dir)]
+    cfg_manager.config.ollama_url = "http://remote-ollama:11435"
+    cfg_manager.config.ollama_timeout = 45
+    cfg_manager.config.num_ctx = 4096
+    cfg_manager.config.ollama_api_key = "secret-token"
+    cfg_manager.config.ollama_keep_alive = "keep_loaded"
+    cfg_manager.save()
+
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_ollama_ctor(**kwargs: object) -> _StubOllamaClient:
+        captured_kwargs.append(dict(kwargs))
+        return _StubOllamaClient()
+
+    monkeypatch.setattr(cli_module, "OllamaClient", fake_ollama_ctor)
+
+    assert run_query("quarterly", config_manager=cfg_manager, data_dir=data_dir) == 0
+    assert run_reindex(force=False, forward_ipc=lambda _cmd: False, config_manager=cfg_manager, data_dir=data_dir) == 0
+
+    expected = {
+        "base_url": "http://remote-ollama:11435",
+        "embed_timeout": 45.0,
+        "num_ctx": 4096,
+        "api_key": "secret-token",
+        "keep_alive": "keep_loaded",
+    }
+    assert captured_kwargs == [expected, expected]

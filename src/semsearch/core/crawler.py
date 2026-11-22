@@ -8,10 +8,12 @@ from pathlib import Path
 
 from semsearch.core.database import Database
 from semsearch.core.rules import (
+    CODE_ALLOWED_DOT_DIRS,
     MAX_TEXT_FILE_BYTES,
     PROJECT_BUNDLE_EXTENSIONS,
     PROJECT_MARKERS,
     SKIPPED_FOLDER_NAMES,
+    UNIVERSAL_SKIPPED_FOLDERS,
     classify_file,
     is_dataset_folder,
     is_path_excluded,
@@ -98,13 +100,20 @@ def _is_gitignored(entry_path: Path, *, is_dir: bool, rules: tuple[_GitIgnoreRul
     return ignored
 
 
-def _should_recurse_dir(entry: os.DirEntry[str], excluded_folders: frozenset[str]) -> bool:
-    return (
-        entry.name not in SKIPPED_FOLDER_NAMES
-        and not entry.name.startswith(".")
-        and not entry.name.endswith(".noindex")
-        and not is_path_excluded(entry.path, excluded_folders)
-    )
+def _should_recurse_dir(
+    entry: os.DirEntry[str],
+    excluded_folders: frozenset[str],
+    *,
+    is_code: bool,
+    is_code_context: bool,
+) -> bool:
+    name = entry.name
+    skipped_folders = SKIPPED_FOLDER_NAMES if is_code_context else UNIVERSAL_SKIPPED_FOLDERS
+    if name in skipped_folders or name.endswith(".noindex"):
+        return False
+    if name.startswith(".") and not (is_code and name in CODE_ALLOWED_DOT_DIRS):
+        return False
+    return not is_path_excluded(entry.path, excluded_folders)
 
 
 def _is_project_marker_name(name: str) -> bool:
@@ -113,7 +122,8 @@ def _is_project_marker_name(name: str) -> bool:
 
 def _scan_dir_entries(
     current_dir: Path,
-    excluded_folders: frozenset[str],
+    *,
+    follow_symlinks: bool,
 ) -> tuple[list[os.DirEntry[str]], list[os.DirEntry[str]], bool, bool]:
     subdirs: list[os.DirEntry[str]] = []
     dir_files: list[os.DirEntry[str]] = []
@@ -124,10 +134,9 @@ def _scan_dir_entries(
             for entry in it:
                 if not has_project_marker and _is_project_marker_name(entry.name):
                     has_project_marker = True
-                if entry.is_dir(follow_symlinks=False):
-                    if _should_recurse_dir(entry, excluded_folders):
-                        subdirs.append(entry)
-                elif entry.is_file(follow_symlinks=False):
+                if entry.is_dir(follow_symlinks=follow_symlinks):
+                    subdirs.append(entry)
+                elif entry.is_file(follow_symlinks=follow_symlinks):
                     if entry.name == ".gitignore":
                         has_gitignore = True
                     dir_files.append(entry)
@@ -141,6 +150,7 @@ def _build_candidate(
     *,
     is_code: bool,
     in_code_project: bool,
+    follow_symlinks: bool,
     excluded_folders: frozenset[str],
     excluded_types: frozenset[str],
 ) -> Candidate | None:
@@ -157,7 +167,7 @@ def _build_candidate(
     if kind is None:
         return None
     try:
-        stat = entry.stat(follow_symlinks=False)
+        stat = entry.stat(follow_symlinks=follow_symlinks)
     except OSError:
         return None
     if kind in (FileKind.DOC, FileKind.CODE) and stat.st_size > MAX_TEXT_FILE_BYTES:
@@ -178,12 +188,14 @@ def _collect_dir_candidates(
     is_root: bool,
     is_code: bool,
     in_code_project: bool,
+    skip_datasets: bool,
+    follow_symlinks: bool,
     rules: tuple[_GitIgnoreRule, ...],
     excluded_folders: frozenset[str],
     excluded_types: frozenset[str],
 ) -> list[Candidate]:
     filtered = [entry for entry in dir_files if not _is_gitignored(Path(entry.path), is_dir=False, rules=rules)]
-    if not is_root and not is_code and is_dataset_folder([entry.path for entry in filtered]):
+    if skip_datasets and not is_root and not is_code and is_dataset_folder([entry.path for entry in filtered]):
         filtered = [
             entry for entry in filtered if classify_file(entry.path, is_code_mode=is_code) not in _DATASET_MEDIA_KINDS
         ]
@@ -194,6 +206,7 @@ def _collect_dir_candidates(
             entry,
             is_code=is_code,
             in_code_project=in_code_project,
+            follow_symlinks=follow_symlinks,
             excluded_folders=excluded_folders,
             excluded_types=excluded_types,
         )
@@ -202,12 +215,45 @@ def _collect_dir_candidates(
     return found
 
 
+def _filter_next_subdirs(
+    subdirs: list[os.DirEntry[str]],
+    *,
+    excluded_folders: frozenset[str],
+    is_code: bool,
+    is_code_context: bool,
+    follow_symlinks: bool,
+    rules: tuple[_GitIgnoreRule, ...],
+    visited_dirs: set[tuple[int, int]],
+) -> list[Path]:
+    next_dirs: list[Path] = []
+    for subdir in subdirs:
+        if not _should_recurse_dir(subdir, excluded_folders, is_code=is_code, is_code_context=is_code_context):
+            continue
+        subdir_path = Path(subdir.path)
+        if _is_gitignored(subdir_path, is_dir=True, rules=rules):
+            continue
+        if follow_symlinks:
+            try:
+                st = subdir.stat(follow_symlinks=True)
+            except OSError:
+                continue
+            dir_key = (st.st_dev, st.st_ino)
+            if dir_key in visited_dirs:
+                continue
+            visited_dirs.add(dir_key)
+        next_dirs.append(subdir_path)
+    return next_dirs
+
+
 def crawl_folder(
     root: str,
     *,
     is_code: bool = False,
     excluded_folders: Iterable[str] | None = None,
     excluded_types: Iterable[str] | None = None,
+    follow_symlinks: bool = False,
+    skip_code_projects: bool = True,
+    skip_datasets: bool = True,
 ) -> list[Candidate]:
     """Recursively scan files under root using os.scandir with top-down project and .gitignore filtering."""
     norm_folders = normalize_excluded_folders(excluded_folders)
@@ -216,31 +262,43 @@ def crawl_folder(
     if not root_path.exists() or not root_path.is_dir() or is_path_excluded(str(root_path), norm_folders):
         return []
 
+    root_stat = root_path.stat()
+    visited_dirs: set[tuple[int, int]] = {(root_stat.st_dev, root_stat.st_ino)}
     candidates: list[Candidate] = []
     dir_stack: list[tuple[Path, bool, tuple[_GitIgnoreRule, ...]]] = [(root_path, False, ())]
 
     while dir_stack:
         current_dir, in_code_project, gitignore_rules = dir_stack.pop()
-        subdirs, dir_files, has_project_marker, has_gitignore = _scan_dir_entries(current_dir, norm_folders)
+        subdirs, dir_files, has_project_marker, has_gitignore = _scan_dir_entries(
+            current_dir,
+            follow_symlinks=follow_symlinks,
+        )
 
         is_root = current_dir == root_path
-        dir_in_project = in_code_project or (not is_root and has_project_marker)
+        dir_in_project = skip_code_projects and (in_code_project or (not is_root and has_project_marker))
+        is_code_context = is_code or dir_in_project
         active_rules = gitignore_rules
-        if has_gitignore and (is_code or dir_in_project):
+        if has_gitignore and is_code_context:
             active_rules = gitignore_rules + _load_gitignore(current_dir)
 
-        subdir_paths = (Path(subdir.path) for subdir in subdirs)
-        dir_stack.extend(
-            (subdir_path, dir_in_project, active_rules)
-            for subdir_path in subdir_paths
-            if not _is_gitignored(subdir_path, is_dir=True, rules=active_rules)
+        next_dirs = _filter_next_subdirs(
+            subdirs,
+            excluded_folders=norm_folders,
+            is_code=is_code,
+            is_code_context=is_code_context,
+            follow_symlinks=follow_symlinks,
+            rules=active_rules,
+            visited_dirs=visited_dirs,
         )
+        dir_stack.extend((subdir_path, dir_in_project, active_rules) for subdir_path in next_dirs)
         candidates.extend(
             _collect_dir_candidates(
                 dir_files,
                 is_root=is_root,
                 is_code=is_code,
                 in_code_project=dir_in_project,
+                skip_datasets=skip_datasets,
+                follow_symlinks=follow_symlinks,
                 rules=active_rules,
                 excluded_folders=norm_folders,
                 excluded_types=norm_types,

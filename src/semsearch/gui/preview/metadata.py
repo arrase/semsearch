@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 
 from semsearch.config import AppConfig
 from semsearch.core.types import SearchHit
-from semsearch.gui.theme import ThemeColors, get_ui_font
+from semsearch.gui.theme import get_palette, get_ui_font
 from semsearch.gui.widgets import ElidedLabel
 from semsearch.i18n import tr
 from semsearch.services.actions import execute_hit_action, open_file, reveal_in_file_manager
@@ -48,10 +48,6 @@ class MetadataCard(QFrame):
         self._hit: SearchHit | None = None
         self._config: AppConfig | None = config
         self.setObjectName("metadataCard")
-        self.setStyleSheet(
-            f"QFrame#metadataCard {{ background-color: {ThemeColors.BG_CARD}; "
-            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 8px; }}"
-        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
@@ -62,21 +58,15 @@ class MetadataCard(QFrame):
 
         self.name_label = ElidedLabel()
         self.name_label.setFont(get_ui_font(12, QFont.Weight.DemiBold))
-        self.name_label.setStyleSheet(f"color: {ThemeColors.TEXT_PRIMARY}; border: none; background: transparent;")
 
         self.reason_badge = QLabel()
         self.reason_badge.setFont(get_ui_font(10, QFont.Weight.Medium))
-        self.reason_badge.setStyleSheet(
-            f"background-color: rgba(99, 102, 241, 0.2); color: {ThemeColors.BRAND_START};"
-            "border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 4px; padding: 2px 6px;"
-        )
 
         top_row.addWidget(self.name_label, stretch=1)
         top_row.addWidget(self.reason_badge)
 
         self.path_label = ElidedLabel()
         self.path_label.setFont(get_ui_font(11))
-        self.path_label.setStyleSheet(f"color: {ThemeColors.TEXT_SECONDARY}; border: none; background: transparent;")
 
         info_row = QHBoxLayout()
         info_row.setContentsMargins(0, 2, 0, 0)
@@ -84,22 +74,13 @@ class MetadataCard(QFrame):
 
         self.meta_label = QLabel()
         self.meta_label.setFont(get_ui_font(11))
-        self.meta_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED}; border: none; background: transparent;")
 
-        btn_style = (
-            f"QPushButton {{ background-color: rgba(255, 255, 255, 0.06); color: {ThemeColors.TEXT_SECONDARY}; "
-            f"border: 1px solid {ThemeColors.BORDER}; border-radius: 5px; padding: 2px 8px; font-size: 11px; }}"
-            f"QPushButton:hover {{ background-color: rgba(99, 102, 241, 0.2); color: {ThemeColors.TEXT_PRIMARY}; "
-            f"border-color: {ThemeColors.BRAND_START}; }}"
-        )
         self.open_btn = QPushButton(tr("Open"))
         self.open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_btn.setStyleSheet(btn_style)
         self.open_btn.clicked.connect(self._on_open_clicked)
 
         self.reveal_btn = QPushButton(tr("Show in Files"))
         self.reveal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.reveal_btn.setStyleSheet(btn_style)
         self.reveal_btn.clicked.connect(self._on_reveal_clicked)
 
         info_row.addWidget(self.meta_label)
@@ -110,6 +91,30 @@ class MetadataCard(QFrame):
         layout.addLayout(top_row)
         layout.addWidget(self.path_label)
         layout.addLayout(info_row)
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette colors to metadata card widgets."""
+        p = get_palette()
+        self.setStyleSheet(
+            f"QFrame#metadataCard {{ background-color: {p.bg_card}; "
+            f"border: 1px solid {p.border}; border-radius: 8px; }}"
+        )
+        self.name_label.setStyleSheet(f"color: {p.text_primary}; border: none; background: transparent;")
+        self.reason_badge.setStyleSheet(
+            f"background-color: rgba(99, 102, 241, 0.16); color: {p.brand_start};"
+            "border: 1px solid rgba(99, 102, 241, 0.38); border-radius: 4px; padding: 2px 6px;"
+        )
+        self.path_label.setStyleSheet(f"color: {p.text_secondary}; border: none; background: transparent;")
+        self.meta_label.setStyleSheet(f"color: {p.text_muted}; border: none; background: transparent;")
+        btn_style = (
+            f"QPushButton {{ background-color: {p.bg_subtle}; color: {p.text_secondary}; "
+            f"border: 1px solid {p.border}; border-radius: 5px; padding: 2px 8px; font-size: 11px; }}"
+            f"QPushButton:hover {{ background-color: {p.bg_card_active}; color: {p.text_primary}; "
+            f"border-color: {p.brand_start}; }}"
+        )
+        self.open_btn.setStyleSheet(btn_style)
+        self.reveal_btn.setStyleSheet(btn_style)
 
     def set_config(self, config: AppConfig | None) -> None:
         """Update application configuration used when executing hit actions."""
@@ -195,11 +200,15 @@ class EmptyPreviewWidget(QWidget):
 
         self.text_label = QLabel(tr("Select an item to preview"))
         self.text_label.setFont(get_ui_font(13))
-        self.text_label.setStyleSheet(f"color: {ThemeColors.TEXT_MUTED};")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout.addWidget(self.icon_label)
         layout.addWidget(self.text_label)
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Apply current theme palette colors to empty preview placeholder."""
+        self.text_label.setStyleSheet(f"color: {get_palette().text_muted};")
 
     def retranslate_ui(self) -> None:
         """Refresh translated placeholder label."""

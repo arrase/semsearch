@@ -191,3 +191,25 @@ def test_ffmpeg_calls_include_safety_flags(tmp_path: Path, monkeypatch: pytest.M
         t_index = cmd.index("-t")
         assert cmd[t_index + 1] == "3600"
         assert kwargs["timeout"] == 60
+
+
+def test_ffmpeg_custom_and_unlimited_max_duration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    extract_audio(str(tmp_path / "clip.mp3"), max_duration_sec=120)
+    extract_video(str(tmp_path / "clip.mp4"), max_duration_sec=180)
+    assert calls[0][calls[0].index("-t") + 1] == "120"
+    assert calls[1][calls[1].index("-t") + 1] == "180"
+    assert calls[2][calls[2].index("-t") + 1] == "180"
+
+    calls.clear()
+    extract_audio(str(tmp_path / "long.mp3"), max_duration_sec=0)
+    extract_video(str(tmp_path / "long.mp4"), max_duration_sec=0)
+    assert len(calls) == 3
+    assert all("-t" not in cmd for cmd in calls)

@@ -13,7 +13,6 @@ from PIL import Image
 
 from semsearch.core.types import ExtractedSegment, Modality, SegmentKind
 
-_MAX_MEDIA_DURATION_SEC = "3600"
 _FFMPEG_TIMEOUT_SEC = 60
 _FFPROBE_TIMEOUT_SEC = 10
 
@@ -62,8 +61,11 @@ def extract_audio(
     window_sec: float = 30.0,
     hop_sec: float = 25.0,
     min_rms: float = 0.003,
+    *,
+    max_duration_sec: int = 3600,
 ) -> list[ExtractedSegment]:
     """Decode audio to 16 kHz mono WAV, slice into windows, and filter silence."""
+    duration_args = ["-t", str(max_duration_sec)] if max_duration_sec > 0 else []
     cmd = [
         "ffmpeg",
         "-nostdin",
@@ -71,8 +73,7 @@ def extract_audio(
         "quiet",
         "-i",
         path,
-        "-t",
-        _MAX_MEDIA_DURATION_SEC,
+        *duration_args,
         "-vn",
         "-ac",
         "1",
@@ -136,9 +137,12 @@ def extract_video(
     path: str,
     sample_interval_sec: float = 3.0,
     hash_threshold: int = 4,
+    *,
+    max_duration_sec: int = 3600,
 ) -> list[ExtractedSegment]:
     """Sample video frames at intervals, deduplicate shots via aHash, and extract soundtrack."""
     segments: list[ExtractedSegment] = []
+    duration_args = ["-t", str(max_duration_sec)] if max_duration_sec > 0 else []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         cmd = [
@@ -148,8 +152,7 @@ def extract_video(
             "quiet",
             "-i",
             path,
-            "-t",
-            _MAX_MEDIA_DURATION_SEC,
+            *duration_args,
             "-vf",
             f"fps=1/{sample_interval_sec},scale='min(1024,iw)':-2",
             "-q:v",
@@ -179,5 +182,5 @@ def extract_video(
                     )
                 )
 
-    segments.extend(extract_audio(path))
+    segments.extend(extract_audio(path, max_duration_sec=max_duration_sec))
     return segments
