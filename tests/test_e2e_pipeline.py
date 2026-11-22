@@ -23,7 +23,7 @@ class DeterministicOllama(OllamaClient):
         self.dim = dim
 
     def unload(self, model: str) -> None:
-        del model
+        assert model
 
     def embed(
         self,

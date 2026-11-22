@@ -1,6 +1,7 @@
 """Unit tests for headless CLI commands and user-space desktop integration."""
 
 import ast
+import inspect
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -8,7 +9,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-import semsearch.cli as cli_module
 import semsearch.main as main_module
 from semsearch.cli import (
     get_default_data_dir,
@@ -125,7 +125,7 @@ def _seed_databases(tmp_path: Path, *, code_enabled: bool = True) -> tuple[Confi
 
 def test_cli_module_has_no_pyside6_imports() -> None:
     """cli.py itself must not import PySide6 to keep headless CLI invocations lightweight."""
-    source = Path(cli_module.__file__).read_text(encoding="utf-8")
+    source = Path(inspect.getfile(run_query)).read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported_modules: list[str] = []
     for node in ast.walk(tree):
@@ -183,8 +183,7 @@ def test_hit_to_dict_serializes_all_expected_fields() -> None:
 
 def test_run_query_json_and_text_outputs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg_manager, data_dir = _seed_databases(tmp_path)
-    ollama = _StubOllamaClient()
-    try:
+    with _StubOllamaClient() as ollama:
         rc = run_query(
             "quarterly",
             as_json=True,
@@ -221,14 +220,11 @@ def test_run_query_json_and_text_outputs(tmp_path: Path, capsys: pytest.CaptureF
         )
         assert rc_audio == 0
         assert "/media/standup_budget.mp3 (01:15)" in capsys.readouterr().out
-    finally:
-        ollama.close()
 
 
 def test_run_query_code_and_kind_filters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg_manager, data_dir = _seed_databases(tmp_path)
-    ollama = _StubOllamaClient()
-    try:
+    with _StubOllamaClient() as ollama:
         rc_code = run_query(
             "compute_invoice_total",
             is_code=True,
@@ -265,8 +261,6 @@ def test_run_query_code_and_kind_filters(tmp_path: Path, capsys: pytest.CaptureF
         assert rc_pdf_only == 0
         pdf_items = json.loads(capsys.readouterr().out)
         assert [item["path"] for item in pdf_items] == ["/docs/quarterly_budget.pdf"]
-    finally:
-        ollama.close()
 
 
 def test_run_query_invalid_kind_returns_exit_code_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -371,8 +365,7 @@ def test_run_reindex_standalone_with_force_resets_and_crawls(
         db.insert_segment(fid, SegmentKind.CHUNK, Modality.TEXT, excerpt="Old chunk", body="Old chunk")
         db.update_file_state(fid, FileState.DONE)
 
-    ollama = _StubOllamaClient()
-    try:
+    with _StubOllamaClient() as ollama:
         rc = run_reindex(
             force=True,
             forward_ipc=lambda _cmd: False,
@@ -395,8 +388,6 @@ def test_run_reindex_standalone_with_force_resets_and_crawls(
             code_rec = code_db.find_by_path(str(code_file.resolve()))
             assert code_rec is not None
             assert code_rec.state == FileState.PENDING
-    finally:
-        ollama.close()
 
 
 def test_install_desktop_integration_writes_exact_user_space_files(
@@ -424,7 +415,7 @@ def test_install_desktop_integration_writes_exact_user_space_files(
     assert "[Desktop Action Settings]" in desktop_text
     assert f'Exec="{exec_bin}" --settings' in desktop_text
 
-    source_svg = Path(cli_module.__file__).parent / "gui" / "icons" / "semsearch.svg"
+    source_svg = Path(inspect.getfile(install_desktop_integration)).parent / "gui" / "icons" / "semsearch.svg"
     assert icon_file.read_bytes() == source_svg.read_bytes()
 
     dbus_text = dbus_file.read_text(encoding="utf-8")
@@ -560,7 +551,7 @@ def test_cli_constructs_ollama_client_with_full_config(
         captured_kwargs.append(dict(kwargs))
         return _StubOllamaClient()
 
-    monkeypatch.setattr(cli_module, "OllamaClient", fake_ollama_ctor)
+    monkeypatch.setattr("semsearch.cli.OllamaClient", fake_ollama_ctor)
 
     assert run_query("quarterly", config_manager=cfg_manager, data_dir=data_dir) == 0
     assert run_reindex(force=False, forward_ipc=lambda _cmd: False, config_manager=cfg_manager, data_dir=data_dir) == 0

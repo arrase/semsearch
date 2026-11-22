@@ -8,7 +8,6 @@ from PySide6.QtCore import QXmlStreamReader
 from PySide6.QtDBus import QDBusConnection, QDBusMessage, QDBusVirtualObject
 from PySide6.QtWidgets import QApplication
 
-import semsearch.gui.desktop_providers as providers_module
 from semsearch.config import AppConfig
 from semsearch.core.database import Database
 from semsearch.core.types import Candidate, FileKind, FileState, Modality, SearchHit, SegmentKind
@@ -102,34 +101,31 @@ def _parse_dbus_interface_xml(xml_text: str) -> tuple[str, dict[str, list[tuple[
 @pytest.fixture
 def seeded_search_service() -> Generator[tuple[SearchService, AppConfig], None, None]:
     """Provide a real SearchService over an in-memory database with multimodal sample hits."""
-    db = Database(":memory:")
-    pdf_id = db.insert_file(Candidate("/docs/quarterly_report.pdf", FileKind.PDF, 4096, 1700000100.0, 1, 1))
-    db.insert_segment(
-        pdf_id,
-        SegmentKind.PAGE,
-        Modality.TEXT,
-        loc=2.0,
-        excerpt="Quarterly financial summary for stakeholders",
-        body="Quarterly financial summary for stakeholders",
-    )
-    db.update_file_state(pdf_id, FileState.DONE)
+    with Database(":memory:") as db:
+        pdf_id = db.insert_file(Candidate("/docs/quarterly_report.pdf", FileKind.PDF, 4096, 1700000100.0, 1, 1))
+        db.insert_segment(
+            pdf_id,
+            SegmentKind.PAGE,
+            Modality.TEXT,
+            loc=2.0,
+            excerpt="Quarterly financial summary for stakeholders",
+            body="Quarterly financial summary for stakeholders",
+        )
+        db.update_file_state(pdf_id, FileState.DONE)
 
-    img_id = db.insert_file(Candidate("/images/quarterly_chart.png", FileKind.IMAGE, 2048, 1700000050.0, 2, 1))
-    db.insert_segment(
-        img_id,
-        SegmentKind.IMAGE,
-        Modality.IMAGE,
-        excerpt="Quarterly revenue bar chart",
-        body="Quarterly revenue bar chart",
-    )
-    db.update_file_state(img_id, FileState.DONE)
+        img_id = db.insert_file(Candidate("/images/quarterly_chart.png", FileKind.IMAGE, 2048, 1700000050.0, 2, 1))
+        db.insert_segment(
+            img_id,
+            SegmentKind.IMAGE,
+            Modality.IMAGE,
+            excerpt="Quarterly revenue bar chart",
+            body="Quarterly revenue bar chart",
+        )
+        db.update_file_state(img_id, FileState.DONE)
 
-    config = AppConfig(code_editor="code")
-    service = SearchService(db, ollama=None)
-    try:
+        config = AppConfig(code_editor="code")
+        service = SearchService(db, ollama=None)
         yield service, config
-    finally:
-        db.close()
 
 
 def test_krunner_and_gnome_introspection_xml_are_valid(
@@ -200,8 +196,8 @@ def test_krunner_actions_match_and_run(
         revealed_paths.append(path)
         return True
 
-    monkeypatch.setattr(providers_module, "execute_hit_action", fake_execute)
-    monkeypatch.setattr(providers_module, "reveal_in_file_manager", fake_reveal)
+    monkeypatch.setattr("semsearch.gui.desktop_providers.execute_hit_action", fake_execute)
+    monkeypatch.setattr("semsearch.gui.desktop_providers.reveal_in_file_manager", fake_reveal)
 
     assert provider.run_match("/docs/quarterly_report.pdf", "") is True
     assert len(opened_hits) == 1
@@ -231,7 +227,7 @@ def test_krunner_handle_message_dispatches_all_methods(
         revealed.append(path)
         return True
 
-    monkeypatch.setattr(providers_module, "reveal_in_file_manager", fake_reveal)
+    monkeypatch.setattr("semsearch.gui.desktop_providers.reveal_in_file_manager", fake_reveal)
 
     introspect_msg = QDBusMessage.createMethodCall(
         DBUS_SERVICE_NAME,
@@ -289,7 +285,7 @@ def test_gnome_search_provider_methods_and_launch_signal(
         activated.append(hit.path)
         return True
 
-    monkeypatch.setattr(providers_module, "execute_hit_action", fake_execute)
+    monkeypatch.setattr("semsearch.gui.desktop_providers.execute_hit_action", fake_execute)
     assert provider.activate_result("/docs/quarterly_report.pdf") is True
     assert activated == ["/docs/quarterly_report.pdf"]
     assert provider.activate_result("/missing.pdf") is False
@@ -320,7 +316,7 @@ def test_gnome_handle_message_dispatches_all_five_methods(
         activated.append(hit.path)
         return True
 
-    monkeypatch.setattr(providers_module, "execute_hit_action", fake_execute)
+    monkeypatch.setattr("semsearch.gui.desktop_providers.execute_hit_action", fake_execute)
 
     init_msg = QDBusMessage.createMethodCall(
         DBUS_SERVICE_NAME, GNOME_OBJECT_PATH, GNOME_INTERFACE, "GetInitialResultSet"

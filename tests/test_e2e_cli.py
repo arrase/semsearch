@@ -36,7 +36,7 @@ class _OfflineOllama(OllamaClient):
         super().__init__(base_url="http://127.0.0.1:11434")
 
     def unload(self, model: str) -> None:
-        del model
+        assert model
 
     def embed(
         self,

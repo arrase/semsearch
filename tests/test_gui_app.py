@@ -23,7 +23,6 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, Slot
 from PySide6.QtNetwork import QLocalSocket
 from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
 
-import semsearch.gui.app as app_module
 import semsearch.main as main_module
 from semsearch.config import ConfigManager, resolve_data_dir
 from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
@@ -40,7 +39,6 @@ from semsearch.gui.panel import SearchPanel
 from semsearch.gui.settings import SettingsDialog
 from semsearch.gui.tray import SystemTrayManager
 from semsearch.i18n import get_language, set_language
-from semsearch.main import build_parser, main
 from semsearch.services.indexer import IndexService
 from semsearch.services.scheduler import PowerScheduler
 from semsearch.services.searcher import SearchService
@@ -258,7 +256,7 @@ def _install_fake_hotkey_factory(monkeypatch: pytest.MonkeyPatch) -> list[MagicM
         created_hotkeys.append(listener)
         return listener
 
-    monkeypatch.setattr(app_module, "HotkeyListener", fake_hotkey_cls)
+    monkeypatch.setattr("semsearch.gui.app.HotkeyListener", fake_hotkey_cls)
     return created_hotkeys
 
 
@@ -727,7 +725,7 @@ def test_start_onboarding_cancelled_triggers_shutdown(
     fake_wizard = MagicMock()
     fake_wizard.indexing_started = MagicMock()
     fake_wizard.exec.return_value = QDialog.DialogCode.Rejected
-    monkeypatch.setattr(app_module, "OnboardingWizard", MagicMock(return_value=fake_wizard))
+    monkeypatch.setattr("semsearch.gui.app.OnboardingWizard", MagicMock(return_value=fake_wizard))
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: False))
 
     bundle.app.start(daemon_mode=False)
@@ -827,12 +825,12 @@ def test_cli_parser_flags_subcommands_and_localized_help(
 ) -> None:
     """Verify build_parser flags, mutual exclusion, subcommands, and localized --help via ConfigManager."""
     set_language("es")
-    es_help = build_parser().format_help()
+    es_help = main_module.build_parser().format_help()
     assert "Motor de búsqueda semántica de escritorio para Linux" in es_help
     assert "Alternar el panel flotante de búsqueda rápida" in es_help
 
     set_language("en")
-    parser = build_parser()
+    parser = main_module.build_parser()
     assert parser.parse_args(["--toggle"]).toggle is True
     assert parser.parse_args(["--panel"]).panel is True
     assert parser.parse_args(["--settings"]).settings is True
@@ -856,7 +854,7 @@ def test_cli_parser_flags_subcommands_and_localized_help(
     monkeypatch.setattr(main_module, "ConfigManager", lambda: cfg_mgr)
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["--help"])
+        main_module.main(["--help"])
     assert exc_info.value.code == 0
     assert "Motor de búsqueda semántica de escritorio para Linux" in capsys.readouterr().out
 
@@ -877,7 +875,7 @@ def test_main_dispatches_headless_subcommands_without_starting_gui(
     monkeypatch.setattr(main_module, "SemSearchApp", app_ctor)
 
     # Real status --json execution
-    rc_status = main(["status", "--json"])
+    rc_status = main_module.main(["status", "--json"])
     assert rc_status == 0
     status_payload = json.loads(capsys.readouterr().out)
     assert "main" in status_payload
@@ -890,7 +888,7 @@ def test_main_dispatches_headless_subcommands_without_starting_gui(
     monkeypatch.setattr(main_module, "run_reindex", reindex_spy)
     monkeypatch.setattr(main_module, "run_install_desktop", install_spy)
 
-    assert main(["query", "quarterly", "budget", "--code", "--kind", "pdf", "--limit", "7", "--json"]) == 0
+    assert main_module.main(["query", "quarterly", "budget", "--code", "--kind", "pdf", "--limit", "7", "--json"]) == 0
     query_spy.assert_called_once_with(
         "quarterly budget",
         is_code=True,
@@ -900,11 +898,11 @@ def test_main_dispatches_headless_subcommands_without_starting_gui(
         config_manager=cfg_mgr,
     )
 
-    assert main(["reindex", "--force"]) == 0
+    assert main_module.main(["reindex", "--force"]) == 0
     reindex_spy.assert_called_once_with(force=True, forward_ipc=forward_ipc_command, config_manager=cfg_mgr)
 
     target_dir = tmp_path / "desktop_data"
-    assert main(["install-desktop", "--data-home", str(target_dir)]) == 0
+    assert main_module.main(["install-desktop", "--data-home", str(target_dir)]) == 0
     install_spy.assert_called_once_with(data_home=target_dir)
     app_ctor.assert_not_called()
 
@@ -924,7 +922,7 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     monkeypatch.setattr(main_module, "forward_ipc_command", ipc_spy)
     monkeypatch.setattr(main_module, "SemSearchApp", app_ctor)
 
-    assert main(["--toggle"]) == 0
+    assert main_module.main(["--toggle"]) == 0
     ipc_spy.assert_called_once_with("TOGGLE")
     app_ctor.assert_not_called()
 
@@ -935,7 +933,7 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     fake_app.exec.return_value = 0
     monkeypatch.setattr(main_module, "SemSearchApp", MagicMock(return_value=fake_app))
 
-    assert main(["--toggle"]) == 0
+    assert main_module.main(["--toggle"]) == 0
     fake_app.start.assert_called_once_with(daemon_mode=False)
     fake_app.handle_cli_action.assert_called_once_with("PANEL")
     fake_app.exec.assert_called_once()
@@ -946,7 +944,7 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     fake_panel.exec.return_value = 0
     monkeypatch.setattr(main_module, "SemSearchApp", MagicMock(return_value=fake_panel))
 
-    assert main(["--panel"]) == 0
+    assert main_module.main(["--panel"]) == 0
     fake_panel.start.assert_called_once_with(daemon_mode=False)
     fake_panel.handle_cli_action.assert_called_once_with("PANEL")
     fake_panel.exec.assert_called_once()
@@ -957,7 +955,7 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     fake_daemon.exec.return_value = 0
     monkeypatch.setattr(main_module, "SemSearchApp", MagicMock(return_value=fake_daemon))
 
-    assert main(["--daemon"]) == 0
+    assert main_module.main(["--daemon"]) == 0
     fake_daemon.start.assert_called_once_with(daemon_mode=True)
     fake_daemon.handle_cli_action.assert_not_called()
     fake_daemon.exec.assert_called_once()
@@ -967,7 +965,7 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     cancelled_app.is_shutdown = True
     monkeypatch.setattr(main_module, "SemSearchApp", MagicMock(return_value=cancelled_app))
 
-    assert main(["--settings"]) == 0
+    assert main_module.main(["--settings"]) == 0
     cancelled_app.start.assert_called_once_with(daemon_mode=False)
     cancelled_app.handle_cli_action.assert_not_called()
     cancelled_app.exec.assert_not_called()

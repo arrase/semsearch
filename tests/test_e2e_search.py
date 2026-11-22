@@ -46,7 +46,7 @@ class SemanticMockOllama(OllamaClient):
         self.default_vec = l2_normalize(rng.standard_normal(DIM).astype(np.float32))
 
     def unload(self, model: str) -> None:
-        del model
+        assert model
 
     def embed(
         self,
@@ -168,9 +168,9 @@ def test_search_evaluation_harness_live_ollama() -> None:
             res = client.embed(str(models[0]), ["test semantic evaluation query"])
     except Exception as exc:  # noqa: BLE001 - skip live evaluation if local Ollama daemon is unreachable
         pytest.skip(f"Live Ollama instance not available: {exc}")
-
-    assert len(res) == 1
-    assert len(res[0]) > 0
+    else:
+        assert len(res) == 1
+        assert len(res[0]) > 0
 
 
 # Section 4: Lexical BM25 & Lookup Serial Search Verification

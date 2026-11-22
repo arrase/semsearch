@@ -331,7 +331,7 @@ def test_video_frame_disk_cache_and_pruning(tmp_path: Path, monkeypatch: pytest.
     Image.new("RGB", (160, 90), color="purple").save(buf, format="PNG")
     png_bytes = buf.getvalue()
 
-    calls = 0
+    calls: list[list[str]] = []
 
     def fake_run(
         cmd: list[str],
@@ -340,9 +340,8 @@ def test_video_frame_disk_cache_and_pruning(tmp_path: Path, monkeypatch: pytest.
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[bytes]:
-        nonlocal calls
         del capture_output, timeout, check
-        calls += 1
+        calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout=png_bytes, stderr=b"")
 
     monkeypatch.setattr("semsearch.gui.preview.loader.shutil.which", lambda _name: "/usr/bin/ffmpeg")
@@ -352,13 +351,13 @@ def test_video_frame_disk_cache_and_pruning(tmp_path: Path, monkeypatch: pytest.
     img1 = extract_video_frame_cached(str(video_path), 12.34)
     assert not img1.isNull()
     assert img1.width() == 160
-    assert calls == 1
+    assert len(calls) == 1
     assert len(list(cache_dir.glob("*.png"))) == 1
 
     # Second call at same rounded timestamp hits disk cache without calling ffmpeg
     img2 = extract_video_frame_cached(str(video_path), 12.31)
     assert not img2.isNull()
-    assert calls == 1
+    assert len(calls) == 1
 
     # Generating 4 more unique timestamps triggers pruning down to MAX_CACHED_THUMBS (3)
     for ts in (1.0, 2.0, 3.0, 4.0):

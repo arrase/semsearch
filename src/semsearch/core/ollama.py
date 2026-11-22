@@ -3,7 +3,7 @@
 import os
 import threading
 from types import TracebackType
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -133,7 +133,7 @@ class OllamaClient:
         """Close the persistent HTTP connection pool."""
         self._client.close()
 
-    def __enter__(self) -> "OllamaClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(

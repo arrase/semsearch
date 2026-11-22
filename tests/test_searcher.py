@@ -683,9 +683,11 @@ def test_pure_filter_query_skips_ollama(mock_dbs: tuple[Database, Database]) -> 
     db.insert_file(Candidate("/docs/old.pdf", FileKind.PDF, 100, now - 30 * 86400, 2, 1))
     db.insert_file(Candidate("/docs/recent.md", FileKind.DOC, 100, now - 300, 3, 1))
 
-    embed_calls = 0
-
     class CountingOllama(OllamaClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed_calls = 0
+
         def embed(
             self,
             _model: str,
@@ -696,19 +698,19 @@ def test_pure_filter_query_skips_ollama(mock_dbs: tuple[Database, Database]) -> 
             keep_alive: int | str | None = None,
         ) -> list[list[float]]:
             del inputs, truncate, num_ctx, keep_alive
-            nonlocal embed_calls
-            embed_calls += 1
+            self.embed_calls += 1
             return []
 
-    searcher = SearchService(db=db, ollama=CountingOllama())
+    with CountingOllama() as ollama:
+        searcher = SearchService(db=db, ollama=ollama)
 
-    res_pdf = searcher.search("kind:pdf")
-    assert [h.path for h in res_pdf.ranked] == ["/docs/recent.pdf", "/docs/old.pdf"]
-    assert embed_calls == 0
+        res_pdf = searcher.search("kind:pdf")
+        assert [h.path for h in res_pdf.ranked] == ["/docs/recent.pdf", "/docs/old.pdf"]
+        assert ollama.embed_calls == 0
 
-    res_recent = searcher.search("after:7d")
-    assert [h.path for h in res_recent.ranked] == ["/docs/recent.md", "/docs/recent.pdf"]
-    assert embed_calls == 0
+        res_recent = searcher.search("after:7d")
+        assert [h.path for h in res_recent.ranked] == ["/docs/recent.md", "/docs/recent.pdf"]
+        assert ollama.embed_calls == 0
 
 
 def test_lexical_search_filters_and_disabled_code_db(mock_dbs: tuple[Database, Database]) -> None:

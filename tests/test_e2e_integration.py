@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-import semsearch.services.indexer as indexer_mod
 from semsearch.cli import run_query, run_status
 from semsearch.config import AppConfig, ConfigManager
 from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
@@ -31,7 +30,7 @@ class _ConfigurableMockOllama(OllamaClient):
         self.dim = dim
 
     def unload(self, model: str) -> None:
-        del model
+        assert model
 
     def uses_gemma_prompts(self, model: str) -> bool:
         return "embeddinggemma" in model.lower()
@@ -207,7 +206,7 @@ def test_transient_ollama_connection_error_recovery_e2e(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify transient Ollama outages pause waiting for Ollama and finish cleanly once reconnected."""
-    monkeypatch.setattr(indexer_mod, "_INITIAL_OLLAMA_BACKOFF_SEC", 0.05)
+    monkeypatch.setattr("semsearch.services.indexer._INITIAL_OLLAMA_BACKOFF_SEC", 0.05)
 
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()

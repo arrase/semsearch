@@ -10,8 +10,6 @@ from PySide6.QtGui import QIcon
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 
-import semsearch.gui.hotkey as hotkey_module
-import semsearch.gui.portal_shortcuts as portal_module
 from semsearch.gui.hotkey import HotkeyListener, normalize_hotkey
 from semsearch.gui.portal_shortcuts import (
     GLOBAL_SHORTCUTS_INTERFACE,
@@ -293,7 +291,7 @@ def test_portal_listener_interface_unavailable(monkeypatch: pytest.MonkeyPatch) 
         error=_FakeDBusError(valid=True, message="Interface 'org.freedesktop.portal.GlobalShortcuts' was not found"),
     )
     monkeypatch.setattr(QDBusConnection, "sessionBus", staticmethod(lambda: fake_bus))
-    monkeypatch.setattr(portal_module, "QDBusInterface", lambda *_args: fake_iface)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts.QDBusInterface", lambda *_args: fake_iface)
 
     listener = PortalShortcutListener("ctrl+shift+space")
     errors: list[str] = []
@@ -316,7 +314,7 @@ def test_portal_listener_create_session_error_reply(monkeypatch: pytest.MonkeyPa
         ),
     )
     monkeypatch.setattr(QDBusConnection, "sessionBus", staticmethod(lambda: fake_bus))
-    monkeypatch.setattr(portal_module, "QDBusInterface", lambda *_args: fake_iface)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts.QDBusInterface", lambda *_args: fake_iface)
 
     listener = PortalShortcutListener("ctrl+shift+space")
     errors: list[str] = []
@@ -344,8 +342,8 @@ def test_portal_listener_create_bind_activate_and_close(monkeypatch: pytest.Monk
         return True
 
     monkeypatch.setattr(QDBusConnection, "sessionBus", staticmethod(lambda: fake_bus))
-    monkeypatch.setattr(portal_module, "QDBusInterface", lambda *_args: fake_iface)
-    monkeypatch.setattr(portal_module, "_send_bind_shortcuts", _fake_send_bind)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts.QDBusInterface", lambda *_args: fake_iface)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts._send_bind_shortcuts", _fake_send_bind)
 
     listener = PortalShortcutListener("super+space")
     triggered: list[bool] = []
@@ -420,8 +418,8 @@ def test_portal_listener_nonzero_responses_emit_failure(monkeypatch: pytest.Monk
         return True
 
     monkeypatch.setattr(QDBusConnection, "sessionBus", staticmethod(lambda: fake_bus))
-    monkeypatch.setattr(portal_module, "QDBusInterface", lambda *_args: fake_iface)
-    monkeypatch.setattr(portal_module, "_send_bind_shortcuts", _fake_send_bind)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts.QDBusInterface", lambda *_args: fake_iface)
+    monkeypatch.setattr("semsearch.gui.portal_shortcuts._send_bind_shortcuts", _fake_send_bind)
 
     listener = PortalShortcutListener("ctrl+shift+space")
     errors: list[str] = []
@@ -447,8 +445,8 @@ def test_hotkey_listener_wayland_selects_portal(monkeypatch: pytest.MonkeyPatch)
         created_portals.append(portal)
         return portal
 
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: True)
-    monkeypatch.setattr(hotkey_module, "PortalShortcutListener", _portal_factory)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: True)
+    monkeypatch.setattr("semsearch.gui.hotkey.PortalShortcutListener", _portal_factory)
 
     listener = HotkeyListener("super+space")
     statuses: list[str] = []
@@ -474,15 +472,14 @@ def test_hotkey_listener_wayland_selects_portal(monkeypatch: pytest.MonkeyPatch)
 def test_hotkey_listener_wayland_falls_back_to_pynput(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify HotkeyListener falls back to pynput when Wayland portal fails and DISPLAY is set."""
     fake_kb = _FakeKeyboardModule()
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: True)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: True)
     monkeypatch.setattr(
-        hotkey_module,
-        "PortalShortcutListener",
+        "semsearch.gui.hotkey.PortalShortcutListener",
         lambda shortcut, parent=None: _FakePortalShortcutListener(
             shortcut, parent=parent, succeed=False, failure_reason="Portal absent"
         ),
     )
-    monkeypatch.setattr(hotkey_module, "keyboard", fake_kb)
+    monkeypatch.setattr("semsearch.gui.hotkey.keyboard", fake_kb)
     monkeypatch.setenv("DISPLAY", ":0")
 
     listener = HotkeyListener("Super+Space")
@@ -506,10 +503,9 @@ def test_hotkey_listener_wayland_falls_back_to_pynput(monkeypatch: pytest.Monkey
 
 def test_hotkey_listener_wayland_no_portal_no_display_sets_last_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify HotkeyListener reports portal error cleanly when neither portal nor DISPLAY works."""
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: True)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: True)
     monkeypatch.setattr(
-        hotkey_module,
-        "PortalShortcutListener",
+        "semsearch.gui.hotkey.PortalShortcutListener",
         lambda shortcut, parent=None: _FakePortalShortcutListener(
             shortcut, parent=parent, succeed=False, failure_reason="GlobalShortcuts unavailable"
         ),
@@ -531,9 +527,9 @@ def test_hotkey_listener_x11_selects_pynput_and_emits(monkeypatch: pytest.Monkey
         nonlocal portal_called
         portal_called = True
 
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: False)
-    monkeypatch.setattr(hotkey_module, "PortalShortcutListener", _unexpected_portal)
-    monkeypatch.setattr(hotkey_module, "keyboard", fake_kb)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: False)
+    monkeypatch.setattr("semsearch.gui.hotkey.PortalShortcutListener", _unexpected_portal)
+    monkeypatch.setattr("semsearch.gui.hotkey.keyboard", fake_kb)
     monkeypatch.setenv("DISPLAY", ":1")
 
     listener = HotkeyListener("Meta+Control+K")
@@ -558,18 +554,18 @@ def test_hotkey_listener_x11_selects_pynput_and_emits(monkeypatch: pytest.Monkey
 
 def test_hotkey_listener_pynput_failure_sets_last_error_without_crashing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify native pynput errors and malformed hotkeys set last_error and return False."""
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: False)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: False)
     monkeypatch.setenv("DISPLAY", ":0")
 
     failing_kb = _FakeKeyboardModule(error=OSError("X11 connection refused"))
-    monkeypatch.setattr(hotkey_module, "keyboard", failing_kb)
+    monkeypatch.setattr("semsearch.gui.hotkey.keyboard", failing_kb)
     listener = HotkeyListener("ctrl+shift+space")
     assert listener.start() is False
     assert listener.backend_name == "none"
     assert "X11 connection refused" in listener.last_error
 
     ok_kb = _FakeKeyboardModule()
-    monkeypatch.setattr(hotkey_module, "keyboard", ok_kb)
+    monkeypatch.setattr("semsearch.gui.hotkey.keyboard", ok_kb)
     bad_listener = HotkeyListener("invalid_only_key")
     assert bad_listener.start() is False
     assert bad_listener.backend_name == "none"
@@ -585,8 +581,8 @@ def test_hotkey_listener_portal_async_failure_updates_status(monkeypatch: pytest
         created_portals.append(portal)
         return portal
 
-    monkeypatch.setattr(hotkey_module, "is_wayland_session", lambda: True)
-    monkeypatch.setattr(hotkey_module, "PortalShortcutListener", _portal_factory)
+    monkeypatch.setattr("semsearch.gui.hotkey.is_wayland_session", lambda: True)
+    monkeypatch.setattr("semsearch.gui.hotkey.PortalShortcutListener", _portal_factory)
 
     listener = HotkeyListener("ctrl+shift+space")
     statuses: list[str] = []

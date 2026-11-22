@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 import pytest
 from PySide6.QtWidgets import QApplication
 
-import semsearch.i18n as i18n_mod
 from semsearch.config import AppConfig, ConfigManager
 from semsearch.core.types import EngineActivity, EngineStatus, FileKind, MatchReason, SearchHit
 from semsearch.gui.onboarding import OnboardingWizard
@@ -21,6 +20,7 @@ from semsearch.gui.tray import SystemTrayManager
 from semsearch.i18n import (
     DEFAULT_LANGUAGE,
     SUPPORTED_LANGUAGES,
+    _loaded_catalogs,
     detect_system_language,
     get_language,
     is_rtl,
@@ -90,14 +90,14 @@ def test_lazy_catalog_loading() -> None:
         check=True,
     )
 
-    i18n_mod._loaded_catalogs.clear()
+    _loaded_catalogs.clear()
     set_language("en")
     assert tr("Quick Search") == "Quick Search"
-    assert i18n_mod._loaded_catalogs == {}
+    assert _loaded_catalogs == {}
 
     set_language("es")
     assert tr("Quick Search") != "Quick Search"
-    assert set(i18n_mod._loaded_catalogs.keys()) == {"es"}
+    assert set(_loaded_catalogs.keys()) == {"es"}
 
 
 def test_supported_languages_json_files_and_no_legacy_py() -> None:
