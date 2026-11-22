@@ -3,6 +3,7 @@
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Callable
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -116,8 +117,13 @@ def _strip_rtf(rtf_text: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _validate_zip_archive_size(zf: zipfile.ZipFile) -> None:
-    if sum(info.file_size for info in zf.infolist()) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+def _validate_zip_archive_size(
+    zf: zipfile.ZipFile,
+    *,
+    member_predicate: Callable[[str], bool],
+) -> None:
+    total = sum(info.file_size for info in zf.infolist() if member_predicate(info.filename))
+    if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
         raise ValueError("Archive exceeds maximum safe uncompressed size")
 
 
@@ -129,7 +135,7 @@ def _check_text_file_size(path: Path) -> None:
 def _read_odt(path: str) -> str:
     """Extract paragraph and heading text from OpenDocument Text (.odt) zip archive."""
     with zipfile.ZipFile(path) as zf:
-        _validate_zip_archive_size(zf)
+        _validate_zip_archive_size(zf, member_predicate=lambda name: name == "content.xml")
         content_xml = zf.read("content.xml")
     tree = ET.fromstring(content_xml)
     paragraphs: list[str] = []
@@ -161,7 +167,7 @@ def _extract_docx_table_rows(table: Table) -> list[str]:
 def _read_docx(path: str) -> str:
     """Extract paragraph and table cell text from Word (.docx) document."""
     with zipfile.ZipFile(path) as zf:
-        _validate_zip_archive_size(zf)
+        _validate_zip_archive_size(zf, member_predicate=lambda name: name.lower().endswith(".xml"))
     doc = Document(path)
     parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
     for table in doc.tables:

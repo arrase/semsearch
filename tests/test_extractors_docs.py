@@ -196,6 +196,34 @@ def test_zip_bomb_blocked_for_odt_and_docx(tmp_path: Path) -> None:
         read_doc_text(str(bomb_docx))
 
 
+def test_large_embedded_media_in_docx_and_odt_is_allowed(tmp_path: Path) -> None:
+    """Verify embedded images exceeding MAX_ARCHIVE_UNCOMPRESSED_BYTES do not block docx/odt text extraction."""
+    large_media = b"\x00" * (33 * 1024 * 1024)
+
+    # ODT with >32 MB embedded picture and small content.xml
+    odt_file = tmp_path / "photo_heavy.odt"
+    content_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                             xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+      <office:body><office:text><text:p>Photo heavy ODT text.</text:p></office:text></office:body>
+    </office:document-content>"""
+    with zipfile.ZipFile(odt_file, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("content.xml", content_xml)
+        zf.writestr("Pictures/huge_image.png", large_media)
+
+    assert read_doc_text(str(odt_file)) == "Photo heavy ODT text."
+
+    # DOCX with >32 MB embedded media file and small XML parts
+    docx_file = tmp_path / "photo_heavy.docx"
+    doc = Document()
+    doc.add_paragraph("Photo heavy DOCX text.")
+    doc.save(str(docx_file))
+    with zipfile.ZipFile(docx_file, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/media/huge_image.png", large_media)
+
+    assert read_doc_text(str(docx_file)) == "Photo heavy DOCX text."
+
+
 def test_text_file_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert MAX_TEXT_FILE_BYTES == 10 * 1024 * 1024
     monkeypatch.setattr(docs_mod, "MAX_TEXT_FILE_BYTES", 64)

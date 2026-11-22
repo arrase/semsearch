@@ -30,6 +30,9 @@ from semsearch.services.indexer import IndexQueueTier, IndexService, _code_place
 
 
 class MockOllama(OllamaClient):
+    def uses_gemma_prompts(self, model: str) -> bool:
+        return "embeddinggemma" in model.lower()
+
     def embed(
         self,
         _model: str,
@@ -37,8 +40,9 @@ class MockOllama(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del truncate, num_ctx
+        del truncate, num_ctx, keep_alive
         return [[0.1] * DIM for _ in inputs]
 
 
@@ -412,8 +416,11 @@ def test_crawl_and_sync_stops_loop_on_stop_event(tmp_path: Path, monkeypatch: py
         is_code: bool = False,
         excluded_folders: object = None,
         excluded_types: object = None,
+        follow_symlinks: bool = False,
+        skip_code_projects: bool = True,
+        skip_datasets: bool = True,
     ) -> list[Candidate]:
-        del is_code, excluded_folders, excluded_types
+        del is_code, excluded_folders, excluded_types, follow_symlinks, skip_code_projects, skip_datasets
         crawled_roots.append(root)
         service._stop_event.set()
         return []
@@ -835,8 +842,9 @@ def test_ollama_transient_errors_preserve_pending_and_retry(tmp_path: Path, monk
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             nonlocal attempts
             attempts += 1
             if attempts == 1:
@@ -893,8 +901,9 @@ def test_ollama_model_error_marks_failed(tmp_path: Path) -> None:
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             raise OllamaModelError("model not found")
 
     service = IndexService(db=db, ollama=BadModelOllama())
@@ -1007,6 +1016,9 @@ def test_embed_segments_skips_empty_inputs_and_records_dim(tmp_path: Path, monke
     seen_inputs: list[list[str | dict[str, str]]] = []
 
     class SpyOllama(OllamaClient):
+        def uses_gemma_prompts(self, model: str) -> bool:
+            return "embeddinggemma" in model.lower()
+
         def embed(
             self,
             _model: str,
@@ -1014,8 +1026,9 @@ def test_embed_segments_skips_empty_inputs_and_records_dim(tmp_path: Path, monke
             *,
             truncate: bool = True,
             num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
         ) -> list[list[float]]:
-            del truncate, num_ctx
+            del truncate, num_ctx, keep_alive
             seen_inputs.append(list(inputs))
             return [[0.5] * 512 for _ in inputs]
 
@@ -1045,7 +1058,7 @@ def test_extract_segments_stores_media_duration(tmp_path: Path, monkeypatch: pyt
     fid = db.insert_file(Candidate(str(audio_path), FileKind.AUDIO, st.st_size, st.st_mtime, st.st_ino, st.st_dev))
 
     monkeypatch.setattr("semsearch.services.indexer.probe_media_duration", lambda _p: 185.25)
-    monkeypatch.setattr("semsearch.services.indexer.extract_audio", lambda _p: [])
+    monkeypatch.setattr("semsearch.services.indexer.extract_audio", lambda _p, **_kw: [])
 
     service = IndexService(db=db)
     rec = db.find_by_id(fid)
@@ -1136,3 +1149,302 @@ def test_sync_model_state_resets_index_on_model_change(tmp_path: Path) -> None:
     doc_after_model = db.find_by_id(fid_doc)
     assert doc_after_model is not None
     assert doc_after_model.state == FileState.PENDING
+
+
+@pytest.mark.parametrize(
+    ("keep_alive", "expected_unloads"),
+    [
+        ("unload_idle", ["embeddinggemma-2"]),
+        ("server", []),
+        ("keep_loaded", []),
+    ],
+)
+def test_idle_unload_respects_ollama_keep_alive_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    keep_alive: str,
+    expected_unloads: list[str],
+) -> None:
+    """Verify _handle_idle_transition only calls unload() when ollama_keep_alive == 'unload_idle'."""
+    db = Database(tmp_path / "index.sqlite")
+    doc_path = tmp_path / "note.md"
+    doc_path.write_text("Idle VRAM keep-alive policy check.", encoding="utf-8")
+    st = doc_path.stat()
+    fid = db.insert_file(Candidate(str(doc_path), FileKind.DOC, st.st_size, st.st_mtime, st.st_ino, st.st_dev))
+
+    unloaded: list[str] = []
+
+    class TrackingOllama(MockOllama):
+        def unload(self, model: str) -> None:
+            unloaded.append(model)
+
+    config = AppConfig(model="embeddinggemma-2", ollama_keep_alive=keep_alive)
+    service = IndexService(db=db, ollama=TrackingOllama(), config=config)
+
+    rec = db.find_by_id(fid)
+    assert rec is not None
+    assert service.process_file(rec, db) is True
+    assert bool(service._did_embed_since_idle) is True
+
+    monkeypatch.setattr(service._work_event, "wait", lambda: True)
+    service._handle_idle_transition()
+
+    assert service._did_embed_since_idle is False
+    assert unloaded == expected_unloads
+
+
+@pytest.mark.parametrize(("duration_min", "expected_sec"), [(0, 0), (90, 5400)])
+def test_extract_segments_forwards_max_media_duration_min(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    duration_min: int,
+    expected_sec: int,
+) -> None:
+    """Verify max_media_duration_min is converted to max_duration_sec for audio and video extractors."""
+    db = Database(tmp_path / "index.sqlite")
+    audio_path = tmp_path / "track.mp3"
+    video_path = tmp_path / "clip.mp4"
+    audio_path.write_bytes(b"ID3")
+    video_path.write_bytes(b"ftyp")
+
+    st_a = audio_path.stat()
+    st_v = video_path.stat()
+    fid_a = db.insert_file(
+        Candidate(str(audio_path), FileKind.AUDIO, st_a.st_size, st_a.st_mtime, st_a.st_ino, st_a.st_dev)
+    )
+    fid_v = db.insert_file(
+        Candidate(str(video_path), FileKind.VIDEO, st_v.st_size, st_v.st_mtime, st_v.st_ino, st_v.st_dev)
+    )
+
+    seen_calls: list[tuple[str, int]] = []
+
+    def fake_audio(_path: str, *, max_duration_sec: int = 3600) -> list[ExtractedSegment]:
+        seen_calls.append(("audio", max_duration_sec))
+        return []
+
+    def fake_video(_path: str, *, max_duration_sec: int = 3600) -> list[ExtractedSegment]:
+        seen_calls.append(("video", max_duration_sec))
+        return []
+
+    monkeypatch.setattr("semsearch.services.indexer.probe_media_duration", lambda _p: 0.0)
+    monkeypatch.setattr("semsearch.services.indexer.extract_audio", fake_audio)
+    monkeypatch.setattr("semsearch.services.indexer.extract_video", fake_video)
+
+    service = IndexService(db=db, config=AppConfig(max_media_duration_min=duration_min))
+    rec_a = db.find_by_id(fid_a)
+    rec_v = db.find_by_id(fid_v)
+    assert rec_a is not None
+    assert rec_v is not None
+
+    assert service.process_file(rec_a, db) is True
+    assert service.process_file(rec_v, db) is True
+    assert seen_calls == [("audio", expected_sec), ("video", expected_sec)]
+
+
+def test_crawl_and_enqueue_honor_crawler_and_project_rules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify crawl_folder receives rule flags and enqueue_file respects skip_code_projects."""
+    root = tmp_path / "docs"
+    project_dir = root / "my_app"
+    project_dir.mkdir(parents=True)
+    (project_dir / "pyproject.toml").write_text("[project]\nname = 'my_app'\n", encoding="utf-8")
+    nested_doc = project_dir / "README.md"
+    nested_doc.write_text("# Project docs\n", encoding="utf-8")
+    nested_shot = project_dir / "screenshot_demo.png"
+    nested_shot.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    db = Database(tmp_path / "index.sqlite")
+    captured_kwargs: list[dict[str, object]] = []
+
+    def spy_crawl(root_arg: str, **kwargs: object) -> list[Candidate]:
+        del root_arg
+        captured_kwargs.append(dict(kwargs))
+        return []
+
+    monkeypatch.setattr("semsearch.services.indexer.crawl_folder", spy_crawl)
+
+    cfg_custom = AppConfig(
+        folders=[str(root)],
+        follow_symlinks=True,
+        skip_code_projects=False,
+        skip_datasets=False,
+    )
+    service_custom = IndexService(db=db, config=cfg_custom)
+    service_custom.crawl_and_sync(is_code=False)
+
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["follow_symlinks"] is True
+    assert captured_kwargs[0]["skip_code_projects"] is False
+    assert captured_kwargs[0]["skip_datasets"] is False
+
+    # With skip_code_projects=True, enqueue_file skips docs inside nested projects but allows screenshots.
+    db_skip = Database(tmp_path / "skip.sqlite")
+    service_skip = IndexService(db=db_skip, config=AppConfig(folders=[str(root)], skip_code_projects=True))
+    service_skip.enqueue_file(str(nested_doc))
+    service_skip.enqueue_file(str(nested_shot))
+    assert db_skip.find_by_path(str(nested_doc.resolve())) is None
+    assert db_skip.find_by_path(str(nested_shot.resolve())) is not None
+
+    # With skip_code_projects=False, enqueue_file indexes docs inside nested projects.
+    service_custom.enqueue_file(str(nested_doc))
+    assert db.find_by_path(str(nested_doc.resolve())) is not None
+
+
+def test_build_embed_inputs_uses_model_aware_doc_prompts(tmp_path: Path) -> None:
+    """Verify EmbeddingGemma uses title/text prompt format while non-Gemma models use plain title + body."""
+    doc_path = tmp_path / "report.txt"
+    doc_path.write_text("Quarterly financial summary", encoding="utf-8")
+    st = doc_path.stat()
+
+    seen: list[tuple[str, list[str | dict[str, str]]]] = []
+
+    class RecordingOllama(OllamaClient):
+        def uses_gemma_prompts(self, model: str) -> bool:
+            return "embeddinggemma" in model.lower()
+
+        def embed(
+            self,
+            model: str,
+            inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx, keep_alive
+            seen.append((model, list(inputs)))
+            return [[0.2] * DIM for _ in inputs]
+
+    ollama = RecordingOllama()
+
+    for model_name in ("embeddinggemma-2", "clip-vit:latest"):
+        db = Database(tmp_path / f"{model_name.replace(':', '_')}.sqlite")
+        fid = db.insert_file(Candidate(str(doc_path), FileKind.DOC, st.st_size, st.st_mtime, st.st_ino, st.st_dev))
+        service = IndexService(db=db, ollama=ollama, config=AppConfig(model=model_name))
+        rec = db.find_by_id(fid)
+        assert rec is not None
+        assert service.process_file(rec, db) is True
+
+    assert seen == [
+        ("embeddinggemma-2", ["title: report | text: Quarterly financial summary"]),
+        ("clip-vit:latest", ["report\n\nQuarterly financial summary"]),
+    ]
+
+
+def test_consecutive_timeout_cap_marks_failed_and_advances_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify 3 consecutive OllamaTimeoutErrors mark the file FAILED so the worker advances to the next file."""
+    stuck_path = tmp_path / "stuck.txt"
+    stuck_path.write_text("stuck payload that always times out", encoding="utf-8")
+    good_path = tmp_path / "good.txt"
+    good_path.write_text("good payload that succeeds", encoding="utf-8")
+
+    db = Database(tmp_path / "index.sqlite")
+    st_stuck = stuck_path.stat()
+    st_good = good_path.stat()
+    fid_stuck = db.insert_file(
+        Candidate(str(stuck_path), FileKind.DOC, st_stuck.st_size, st_stuck.st_mtime, st_stuck.st_ino, st_stuck.st_dev)
+    )
+    fid_good = db.insert_file(
+        Candidate(str(good_path), FileKind.DOC, st_good.st_size, st_good.st_mtime, st_good.st_ino, st_good.st_dev)
+    )
+
+    stuck_attempts = 0
+
+    class TimeoutOnStuckOllama(MockOllama):
+        def embed(
+            self,
+            _model: str,
+            inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx, keep_alive
+            nonlocal stuck_attempts
+            if any("stuck" in str(item) for item in inputs):
+                stuck_attempts += 1
+                raise OllamaTimeoutError("embed request timed out")
+            return [[0.1] * DIM for _ in inputs]
+
+        def unload(self, _model: str) -> None:
+            return None
+
+    service = IndexService(db=db, ollama=TimeoutOnStuckOllama())
+    waits: list[float | None] = []
+
+    def record_wait(timeout: float | None = None) -> bool:
+        waits.append(timeout)
+        return False
+
+    monkeypatch.setattr(service._stop_event, "wait", record_wait)
+    monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
+
+    service._worker_loop()
+
+    assert stuck_attempts == 3
+    assert waits == [2.0, 4.0]
+    stuck_rec = db.find_by_id(fid_stuck)
+    good_rec = db.find_by_id(fid_good)
+    assert stuck_rec is not None
+    assert good_rec is not None
+    assert stuck_rec.state == FileState.FAILED
+    assert "embed request timed out" in stuck_rec.detail
+    assert good_rec.state == FileState.DONE
+    assert service.status.waiting_for == ""
+    assert service._timeout_counts == {}
+
+
+def test_connection_errors_keep_retrying_beyond_timeout_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify OllamaConnectionError never counts toward the timeout failure cap and clears counts on reindex."""
+    doc_path = tmp_path / "offline.txt"
+    doc_path.write_text("waiting for daemon restart", encoding="utf-8")
+    st = doc_path.stat()
+
+    db = Database(tmp_path / "index.sqlite")
+    fid = db.insert_file(Candidate(str(doc_path), FileKind.DOC, st.st_size, st.st_mtime, st.st_ino, st.st_dev))
+
+    attempts = 0
+
+    class OfflineThenReadyOllama(MockOllama):
+        def embed(
+            self,
+            _model: str,
+            inputs: list[str | dict[str, str]],
+            *,
+            truncate: bool = True,
+            num_ctx: int | None = None,
+            keep_alive: int | str | None = None,
+        ) -> list[list[float]]:
+            del truncate, num_ctx, keep_alive
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 4:
+                raise OllamaConnectionError("connection refused")
+            return [[0.1] * DIM for _ in inputs]
+
+        def unload(self, _model: str) -> None:
+            return None
+
+    service = IndexService(db=db, ollama=OfflineThenReadyOllama())
+    monkeypatch.setattr(service._stop_event, "wait", lambda _timeout=None: False)
+    monkeypatch.setattr(service._work_event, "wait", service._stop_event.set)
+
+    service._worker_loop()
+
+    assert attempts == 5
+    rec = db.find_by_id(fid)
+    assert rec is not None
+    assert rec.state == FileState.DONE
+
+    service._timeout_counts[(fid, False)] = 2
+    service.reset_all_for_reindex()
+    assert service._timeout_counts == {}

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, create_autospec
 
 import pytest
 from PySide6.QtCore import QEventLoop
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit
 
 from semsearch.config import ConfigManager
 from semsearch.core.database import Database
@@ -435,3 +435,184 @@ def test_settings_dialog_num_ctx_validation_uses_temporary_client(
     dialog.save_settings()
     assert cfg_mgr.config.num_ctx == 4096
     assert probes[-1].closed is True
+
+
+def test_autostart_respects_xdg_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify autostart resolves under $XDG_CONFIG_HOME when module constants are not monkeypatched."""
+    xdg_config = tmp_path / "xdg_cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/semsearch")
+
+    expected = xdg_config / "autostart" / "semsearch.desktop"
+    assert not is_autostart_enabled()
+    set_autostart_enabled(enabled=True)
+    assert expected.is_file()
+    assert is_autostart_enabled()
+    set_autostart_enabled(enabled=False)
+    assert not expected.exists()
+    assert not is_autostart_enabled()
+
+
+def test_settings_dialog_folders_and_code_new_controls(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
+    """Verify FoldersTab indexing behavior controls, CodeTab custom editor, and manual editor preservation."""
+    del qapp
+    cfg_mgr = ConfigManager(config_path=tmp_path / "config.json")
+    cfg_mgr.config.follow_symlinks = True
+    cfg_mgr.config.skip_code_projects = False
+    cfg_mgr.config.skip_datasets = False
+    cfg_mgr.config.max_media_duration_min = 0
+    cfg_mgr.config.code_editor = "my-custom-editor"
+    cfg_mgr.config.code_watch_delay_sec = 15
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
+
+    assert dialog.folders_tab.skipped_ext_label.text() == "Skipped Extensions / Kinds:"
+    assert "video" in dialog.folders_tab.skipped_ext_edit.placeholderText()
+    assert dialog.folders_tab.follow_symlinks_check.isChecked() is True
+    assert dialog.folders_tab.skip_code_projects_check.isChecked() is False
+    assert dialog.folders_tab.skip_datasets_check.isChecked() is False
+    assert dialog.folders_tab.max_media_duration_spin.value() == 0
+
+    # Unknown manual code_editor is preserved under Custom Command instead of resetting to auto
+    assert dialog.code_tab.editor_combo.currentData() == "custom"
+    assert dialog.code_tab.custom_editor_edit.text() == "my-custom-editor"
+    assert not dialog.code_tab.custom_editor_edit.isHidden()
+    assert dialog.code_tab.code_watch_delay_spin.value() == 15
+
+    # Switching away from custom hides custom command field
+    kate_idx = dialog.code_tab.editor_combo.findData("kate")
+    assert kate_idx >= 0
+    dialog.code_tab.editor_combo.setCurrentIndex(kate_idx)
+    assert dialog.code_tab.custom_editor_edit.isHidden()
+
+    # Switching back to custom and saving persists all fields
+    custom_idx = dialog.code_tab.editor_combo.findData("custom")
+    dialog.code_tab.editor_combo.setCurrentIndex(custom_idx)
+    assert not dialog.code_tab.custom_editor_edit.isHidden()
+    dialog.code_tab.custom_editor_edit.setText("nvim-qt +{line} {file}")
+    dialog.code_tab.code_watch_delay_spin.setValue(30)
+    dialog.folders_tab.follow_symlinks_check.setChecked(False)
+    dialog.folders_tab.skip_code_projects_check.setChecked(True)
+    dialog.folders_tab.skip_datasets_check.setChecked(True)
+    dialog.folders_tab.max_media_duration_spin.setValue(90)
+
+    dialog.save_settings()
+    saved = cfg_mgr.config
+    assert saved.follow_symlinks is False
+    assert saved.skip_code_projects is True
+    assert saved.skip_datasets is True
+    assert saved.max_media_duration_min == 90
+    assert saved.code_editor == "custom"
+    assert saved.custom_editor_cmd == "nvim-qt +{line} {file}"
+    assert saved.code_watch_delay_sec == 30
+
+
+def test_settings_dialog_storage_tab_new_controls_and_api_key_probe(
+    tmp_path: Path,
+    mock_ollama: MagicMock,
+    mock_db: MagicMock,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify keep_alive, timeout, API key propagation to probes, and data_dir browse/save."""
+    del qapp
+    seen_calls: list[dict[str, str]] = []
+
+    def make_probe(*, base_url: str, api_key: str = "") -> _FakeProbeClient:
+        seen_calls.append({"base_url": base_url, "api_key": api_key})
+        return _FakeProbeClient(base_url, models=["embeddinggemma-2"], max_ctx=8192)
+
+    monkeypatch.setattr("semsearch.gui.widgets.OllamaClient", make_probe)
+    monkeypatch.setattr("semsearch.gui.settings.OllamaClient", make_probe)
+
+    custom_dir = tmp_path / "custom_index"
+    monkeypatch.setattr(
+        "semsearch.gui.settings.QFileDialog.getExistingDirectory",
+        staticmethod(lambda *_args: str(custom_dir)),
+    )
+
+    cfg_mgr = ConfigManager(config_path=tmp_path / "config.json")
+    cfg_mgr.config.ollama_keep_alive = "keep_loaded"
+    cfg_mgr.config.ollama_timeout = 240
+    cfg_mgr.config.ollama_api_key = "initial-secret"
+    cfg_mgr.config.data_dir = str(tmp_path / "old_index")
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
+
+    assert dialog.storage_tab.keep_alive_combo.currentData() == "keep_loaded"
+    assert dialog.storage_tab.timeout_spin.value() == 240
+    assert dialog.storage_tab.api_key_edit.echoMode() == QLineEdit.EchoMode.Password
+    assert dialog.storage_tab.api_key_edit.text() == "initial-secret"
+    assert dialog.storage_tab.ollama_picker.api_key() == "initial-secret"
+    assert dialog.storage_tab.data_dir_edit.text() == str(tmp_path / "old_index")
+
+    # Editing api_key updates picker and passes api_key on probe + num_ctx validation
+    dialog.storage_tab.api_key_edit.setText("live-key-123")
+    dialog.storage_tab.test_connection()
+    assert seen_calls[-1]["api_key"] == "live-key-123"
+
+    dialog.storage_tab.num_ctx_edit.setText("2048")
+    assert dialog.storage_tab.validate_num_ctx() == 2048
+    assert seen_calls[-1]["api_key"] == "live-key-123"
+
+    # Browsing updates data_dir_edit and saving persists all StorageModelTab fields
+    dialog.storage_tab.data_dir_browse_btn.click()
+    assert dialog.storage_tab.data_dir_edit.text() == str(custom_dir)
+    server_idx = dialog.storage_tab.keep_alive_combo.findData("server")
+    dialog.storage_tab.keep_alive_combo.setCurrentIndex(server_idx)
+    dialog.storage_tab.timeout_spin.setValue(300)
+
+    dialog.save_settings()
+    saved = cfg_mgr.config
+    assert saved.ollama_keep_alive == "server"
+    assert saved.ollama_timeout == 300
+    assert saved.ollama_api_key == "live-key-123"
+    assert saved.data_dir == str(custom_dir)
+
+
+def test_settings_dialog_general_tab_new_controls_and_theme_refresh(
+    tmp_path: Path, mock_ollama: MagicMock, mock_db: MagicMock, qapp: QApplication
+) -> None:
+    """Verify theme, terminal/custom_terminal, panel toggles, and live refresh_theme()."""
+    del qapp
+    cfg_mgr = ConfigManager(config_path=tmp_path / "config.json")
+    cfg_mgr.config.theme = "light"
+    cfg_mgr.config.terminal = "custom"
+    cfg_mgr.config.custom_terminal_cmd = "my-term --dir {dir}"
+    cfg_mgr.config.close_on_focus_loss = False
+    cfg_mgr.config.remember_last_query = True
+
+    dialog = SettingsDialog(cfg_mgr, mock_ollama, mock_db)
+
+    assert dialog.general_tab.theme_combo.currentData() == "light"
+    assert dialog.general_tab.terminal_combo.currentData() == "custom"
+    assert not dialog.general_tab.custom_terminal_edit.isHidden()
+    assert dialog.general_tab.custom_terminal_edit.text() == "my-term --dir {dir}"
+    assert dialog.general_tab.close_on_focus_loss_check.isChecked() is False
+    assert dialog.general_tab.remember_last_query_check.isChecked() is True
+
+    # Switching terminal to built-in hides custom input
+    kitty_idx = dialog.general_tab.terminal_combo.findData("kitty")
+    dialog.general_tab.terminal_combo.setCurrentIndex(kitty_idx)
+    assert dialog.general_tab.custom_terminal_edit.isHidden()
+
+    # Switching theme and refreshing updates QSS palette
+    dialog.refresh_theme("dark")
+    assert "#16181D" in dialog.styleSheet()
+    dialog.refresh_theme("light")
+    assert "#F3F4F6" in dialog.styleSheet()
+
+    # Save updated GeneralTab controls
+    sys_idx = dialog.general_tab.theme_combo.findData("system")
+    dialog.general_tab.theme_combo.setCurrentIndex(sys_idx)
+    dialog.general_tab.close_on_focus_loss_check.setChecked(True)
+    dialog.general_tab.remember_last_query_check.setChecked(False)
+    dialog.save_settings()
+
+    saved = cfg_mgr.config
+    assert saved.theme == "system"
+    assert saved.terminal == "kitty"
+    assert saved.close_on_focus_loss is True
+    assert saved.remember_last_query is False

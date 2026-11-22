@@ -1,14 +1,33 @@
-"""Unit tests for GUI visual design tokens, WCAG contrast, fonts, RTL QSS, and shared helpers."""
+"""Unit tests for GUI visual design tokens, dark/light/system themes, WCAG contrast, fonts, RTL QSS, and helpers."""
 
+from unittest.mock import MagicMock
+
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QWidget
 
+from semsearch.gui.preview import (
+    AudioPreviewWidget,
+    CodePreviewWidget,
+    EmptyPreviewWidget,
+    ImagePreviewWidget,
+    MetadataCard,
+    PdfPreviewWidget,
+    VideoPreviewWidget,
+)
 from semsearch.gui.theme import (
+    DARK_PALETTE,
+    LIGHT_PALETTE,
     ThemeColors,
     ThemeLayout,
     apply_theme,
     build_qss,
+    get_active_theme,
     get_mono_font,
+    get_palette,
     get_ui_font,
+    resolve_theme,
 )
 from semsearch.gui.widgets import FolderListEditor, qt_escape_amp
 
@@ -111,3 +130,77 @@ def test_qt_escape_amp_and_folder_list_editor(qapp: QApplication) -> None:
     editor.retranslate_ui("Añadir", "Eliminar", "Seleccionar")
     assert editor.add_btn.text() == "Añadir"
     assert editor.remove_btn.text() == "Eliminar"
+
+
+def test_theme_resolution_dark_light_and_system(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify resolve_theme, get_palette, build_qss, and apply_theme across dark, light, and system modes."""
+    del qapp
+    assert resolve_theme("dark") == "dark"
+    assert resolve_theme("light") == "light"
+    assert get_palette("dark") == DARK_PALETTE
+    assert get_palette("light") == LIGHT_PALETTE
+
+    light_hints = MagicMock()
+    light_hints.colorScheme.return_value = Qt.ColorScheme.Light
+    monkeypatch.setattr(QGuiApplication, "styleHints", staticmethod(lambda: light_hints))
+    assert resolve_theme("system") == "light"
+    assert get_palette("system") == LIGHT_PALETTE
+
+    dark_hints = MagicMock()
+    dark_hints.colorScheme.return_value = Qt.ColorScheme.Dark
+    monkeypatch.setattr(QGuiApplication, "styleHints", staticmethod(lambda: dark_hints))
+    assert resolve_theme("system") == "dark"
+    assert get_palette("system") == DARK_PALETTE
+
+    dark_qss = build_qss("dark")
+    light_qss = build_qss("light")
+    assert dark_qss != light_qss
+    assert DARK_PALETTE.bg_window in dark_qss
+    assert LIGHT_PALETTE.bg_window in light_qss
+    assert f"color: {LIGHT_PALETTE.selection_text};" in light_qss
+
+    widget = QWidget()
+    try:
+        apply_theme(widget, "light")
+        assert get_active_theme() == "light"
+        assert get_palette() == LIGHT_PALETTE
+        assert widget.styleSheet() == light_qss
+    finally:
+        apply_theme(widget, "dark")
+    assert get_active_theme() == "dark"
+
+
+def test_preview_widgets_refresh_theme_updates_palette(qapp: QApplication) -> None:
+    """Verify all preview widgets refresh inline styles when switching between dark and light themes."""
+    del qapp
+    host = QWidget()
+    card = MetadataCard()
+    empty = EmptyPreviewWidget()
+    img = ImagePreviewWidget()
+    pdf = PdfPreviewWidget()
+    audio = AudioPreviewWidget()
+    video = VideoPreviewWidget()
+    code = CodePreviewWidget()
+
+    try:
+        apply_theme(host, "light")
+        for view in (card, empty, img, pdf, audio, video, code):
+            view.refresh_theme()
+
+        assert LIGHT_PALETTE.bg_card in card.styleSheet()
+        assert LIGHT_PALETTE.text_primary in card.name_label.styleSheet()
+        assert LIGHT_PALETTE.text_muted in empty.text_label.styleSheet()
+        assert LIGHT_PALETTE.bg_subtle in img.image_label.styleSheet()
+        assert LIGHT_PALETTE.text_muted in img.dimensions_label.styleSheet()
+        assert LIGHT_PALETTE.bg_subtle in pdf.page_label.styleSheet()
+        assert LIGHT_PALETTE.text_secondary in pdf.page_info.styleSheet()
+        assert LIGHT_PALETTE.text_secondary in audio.time_label.styleSheet()
+        assert LIGHT_PALETTE.bg_subtle in video.poster_label.styleSheet()
+        assert LIGHT_PALETTE.bg_card in code.meta_card.styleSheet()
+    finally:
+        apply_theme(host, "dark")
+        img.shutdown()
+        audio.shutdown()
+        video.shutdown()
+        code.shutdown()
+        pdf.clear()

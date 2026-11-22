@@ -14,12 +14,7 @@ from semsearch.core.code_lookup import (
     identifier_phrase,
 )
 from semsearch.core.database import Database, FtsMatchRow, SegmentMeta
-from semsearch.core.ollama import (
-    OllamaClient,
-    OllamaError,
-    format_code_query_prompt,
-    format_query_prompt,
-)
+from semsearch.core.ollama import OllamaClient, OllamaError
 from semsearch.core.search_text import (
     _fold_latin_diacritics,
     extract_kind_hints,
@@ -294,7 +289,7 @@ class SearchService:
         best: dict[int, tuple[float, float, int]] = {}
         if self.ollama is None or not clean_query:
             return best
-        prompt = format_code_query_prompt(clean_query) if is_code else format_query_prompt(clean_query)
+        prompt = self.ollama.format_query_for_model(self.model, clean_query, is_code=is_code)
         try:
             embeddings = self.ollama.embed(self.model, [prompt])
         except OllamaError:

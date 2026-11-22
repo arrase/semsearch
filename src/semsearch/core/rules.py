@@ -8,22 +8,37 @@ from semsearch.core.types import FileKind
 
 MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024
 
-SKIPPED_FOLDER_NAMES: frozenset[str] = frozenset(
+UNIVERSAL_SKIPPED_FOLDERS: frozenset[str] = frozenset(
     {
         "node_modules",
         "bower_components",
-        "venv",
         "site-packages",
         "__pycache__",
         "DerivedData",
+        ".git",
+        ".noindex",
+    }
+)
+
+CODE_ONLY_SKIPPED_FOLDERS: frozenset[str] = frozenset(
+    {
+        "venv",
         "Pods",
         "Carthage",
         "build",
         "dist",
         "target",
         "vendor",
-        ".git",
-        ".noindex",
+    }
+)
+
+SKIPPED_FOLDER_NAMES: frozenset[str] = UNIVERSAL_SKIPPED_FOLDERS | CODE_ONLY_SKIPPED_FOLDERS
+
+CODE_ALLOWED_DOT_DIRS: frozenset[str] = frozenset(
+    {
+        ".github",
+        ".devcontainer",
+        ".circleci",
     }
 )
 
@@ -63,8 +78,6 @@ SECRET_PREFIXES: tuple[str, ...] = (
     "id_ecdsa",
     "id_ed25519",
     ".env",
-    "secret",
-    "credential",
     ".netrc",
     ".npmrc",
     ".pypirc",
@@ -73,14 +86,17 @@ SECRET_PREFIXES: tuple[str, ...] = (
 )
 
 SECRET_SUBSTRINGS: tuple[str, ...] = (
-    "secret",
-    "credential",
     "tfstate",
     "kubeconfig",
     "id_rsa",
     "id_ed25519",
     "_ed25519",
     "_rsa",
+)
+
+_GENERIC_SECRET_SUBSTRINGS: tuple[str, ...] = (
+    "secret",
+    "credential",
 )
 
 SECRET_EXACT_NAMES: frozenset[str] = frozenset({"hosts.yml"})
@@ -120,6 +136,19 @@ SCREENSHOT_PREFIXES: tuple[str, ...] = (
     "scr-",
     "captura de pantalla",
     "captura",
+    "capture d'écran",
+    "capture d\u2019écran",
+    "bildschirmfoto",
+    "schermata",
+    "zrzut ekranu",
+    "schermafbeelding",
+    "снимок экрана",
+    "знімок екрана",
+    "знімак экрана",
+    "ekran görüntüsü",
+    "flameshot",
+    "spectacle",
+    "grim",
 )
 
 CAMERA_PREFIXES: tuple[str, ...] = (
@@ -259,6 +288,17 @@ CODE_FILENAMES: frozenset[str] = frozenset(
     }
 )
 
+CODE_MANIFEST_FILENAMES: frozenset[str] = frozenset(
+    {
+        "pyproject.toml",
+        "cargo.toml",
+        "package.json",
+        "tsconfig.json",
+        "pom.xml",
+        "composer.json",
+    }
+)
+
 DATA_EXTENSIONS: frozenset[str] = frozenset(
     {
         "json",
@@ -270,6 +310,17 @@ DATA_EXTENSIONS: frozenset[str] = frozenset(
         "tsv",
         "lock",
     }
+)
+
+_NON_SECRET_USER_MEDIA_EXTS: frozenset[str] = (
+    PDF_EXTENSIONS | IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | VIDEO_EXTENSIONS | frozenset({"docx", "odt", "rtf"})
+)
+
+_CAMERA_TIMESTAMP_RE = re.compile(
+    r"^(?:19|20)\d{2}"
+    r"(?:(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-_ ](?:[01]\d|2[0-3])[0-5]\d[0-5]\d"
+    r"|[-_.](?:0[1-9]|1[0-2])[-_.](?:0[1-9]|[12]\d|3[01])[-_ t](?:[01]\d|2[0-3])[-_.][0-5]\d[-_.][0-5]\d)"
+    r"(?:[-_.]\d{1,3})?$"
 )
 
 _DATASET_MIN_COUNT = 300
@@ -308,11 +359,11 @@ def is_secret(path: str) -> bool:
     if ext in SECRET_EXTENSIONS:
         return True
     name = p.name.lower()
-    if name in SECRET_EXACT_NAMES:
+    if name in SECRET_EXACT_NAMES or name.startswith(SECRET_PREFIXES):
         return True
-    if any(name.startswith(prefix) for prefix in SECRET_PREFIXES):
+    if any(token in name for token in SECRET_SUBSTRINGS):
         return True
-    return any(token in name for token in SECRET_SUBSTRINGS)
+    return ext not in _NON_SECRET_USER_MEDIA_EXTS and any(token in name for token in _GENERIC_SECRET_SUBSTRINGS)
 
 
 def is_minified_file(path: str) -> bool:
@@ -334,10 +385,27 @@ def is_code_project_root(path: str) -> bool:
     return False
 
 
+def is_inside_code_project(path: str, roots: Iterable[str]) -> bool:
+    """Return True if path resides inside a code project nested strictly under any root."""
+    target = Path(path).expanduser().resolve()
+    matching_roots = [
+        resolved for root in roots if target.is_relative_to(resolved := Path(root).expanduser().resolve())
+    ]
+    if not matching_roots:
+        return False
+    stop_root = max(matching_roots, key=lambda r: len(r.parts))
+    curr = target.parent
+    while curr != stop_root and curr.is_relative_to(stop_root):
+        if is_code_project_root(str(curr)):
+            return True
+        curr = curr.parent
+    return False
+
+
 def looks_machine_named(stem: str) -> bool:
     """Return True if stem looks like a machine-generated filename rather than a camera photo."""
     name = stem.lower()
-    if any(name.startswith(prefix) for prefix in CAMERA_PREFIXES):
+    if name.startswith(CAMERA_PREFIXES) or _CAMERA_TIMESTAMP_RE.match(name):
         return False
     if re.match(r"^[0-9a-f]{8,}([-_][0-9a-f]{4,})*$", name):
         return True
@@ -418,9 +486,16 @@ def _check_mode_compatibility(kind: FileKind, *, is_code_mode: bool, in_code_pro
     return ""
 
 
-def _check_path_exclusions(path: str, p: Path, excluded_folders: frozenset[str]) -> str:
+def _check_path_exclusions(
+    path: str,
+    p: Path,
+    excluded_folders: frozenset[str],
+    *,
+    is_code_context: bool,
+) -> str:
+    skipped_folders = SKIPPED_FOLDER_NAMES if is_code_context else UNIVERSAL_SKIPPED_FOLDERS
     for part in p.parts[:-1]:
-        if part in SKIPPED_FOLDER_NAMES or part.endswith(".noindex"):
+        if part in skipped_folders or part.endswith(".noindex"):
             return f"inside skipped folder {part}"
     if is_path_excluded(path, excluded_folders):
         return "inside excluded folder"
@@ -444,7 +519,7 @@ def should_skip(
     norm_types = excluded_types if isinstance(excluded_types, frozenset) else normalize_excluded_types(excluded_types)
 
     p = Path(path)
-    path_reason = _check_path_exclusions(path, p, norm_folders)
+    path_reason = _check_path_exclusions(path, p, norm_folders, is_code_context=is_code_mode or in_code_project)
     if path_reason:
         return True, path_reason
 
@@ -453,7 +528,11 @@ def should_skip(
 
     ext = p.suffix.lstrip(".").lower()
     name = p.name.lower()
-    if is_code_mode and (ext in DATA_EXTENSIONS or name.endswith(".lock") or "-lock." in name):
+    if (
+        is_code_mode
+        and name not in CODE_MANIFEST_FILENAMES
+        and (ext in DATA_EXTENSIONS or name.endswith(".lock") or "-lock." in name)
+    ):
         return True, "data format in code mode"
 
     kind = classify_file(path, is_code_mode=is_code_mode)

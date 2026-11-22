@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from semsearch.gui.theme import set_active_theme
 from semsearch.i18n import set_language
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -26,10 +27,12 @@ except ImportError:
 
 @pytest.fixture(autouse=True)
 def _reset_default_language() -> Generator[None, None, None]:
-    """Reset active language to English before and after each test."""
+    """Reset active language and theme to defaults before and after each test."""
     set_language("en")
+    set_active_theme("dark")
     yield
     set_language("en")
+    set_active_theme("dark")
 
 
 @pytest.fixture(scope="session")

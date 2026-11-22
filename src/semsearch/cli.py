@@ -1,13 +1,12 @@
 """Lightweight headless CLI operations and user-space desktop integration for SemSearch."""
 
 import json
-import os
 import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from semsearch.config import ConfigManager
+from semsearch.config import ConfigManager, resolve_data_dir, resolve_xdg_data_home
 from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
 from semsearch.core.ollama import OllamaClient
 from semsearch.core.types import FileKind, SearchHit
@@ -20,14 +19,9 @@ _SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
 _ICON_SOURCE_PATH = Path(__file__).parent / "gui" / "icons" / "semsearch.svg"
 
 
-def _resolve_xdg_data_home() -> Path:
-    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
-    return Path(xdg_data) if xdg_data else Path.home() / ".local" / "share"
-
-
 def get_default_data_dir() -> Path:
     """Return default XDG data directory for SemSearch databases."""
-    return _resolve_xdg_data_home() / "semsearch"
+    return resolve_xdg_data_home() / "semsearch"
 
 
 def hit_to_dict(hit: SearchHit) -> dict[str, object]:
@@ -136,11 +130,21 @@ def run_query(
         return 2
 
     cfg = (config_manager or ConfigManager()).config
-    base_dir = data_dir or get_default_data_dir()
+    base_dir = data_dir or resolve_data_dir(cfg)
     db = Database(base_dir / MAIN_DB_FILE)
     code_db = Database(base_dir / CODE_DB_FILE) if cfg.code_enabled else None
     owns_ollama = ollama_client is None
-    ollama = ollama_client if ollama_client is not None else OllamaClient(base_url=cfg.ollama_url, num_ctx=cfg.num_ctx)
+    ollama = (
+        ollama_client
+        if ollama_client is not None
+        else OllamaClient(
+            base_url=cfg.ollama_url,
+            embed_timeout=float(cfg.ollama_timeout),
+            num_ctx=cfg.num_ctx,
+            api_key=cfg.ollama_api_key,
+            keep_alive=cfg.ollama_keep_alive,
+        )
+    )
 
     try:
         service = SearchService(db, code_db=code_db, ollama=ollama, model=cfg.model)
@@ -169,7 +173,7 @@ def run_status(
 ) -> int:
     """Inspect index statistics, model metadata, and disk usage and print to stdout."""
     cfg = (config_manager or ConfigManager()).config
-    base_dir = data_dir or get_default_data_dir()
+    base_dir = data_dir or resolve_data_dir(cfg)
     main_path = base_dir / MAIN_DB_FILE
     code_path = base_dir / CODE_DB_FILE
 
@@ -217,11 +221,21 @@ def run_reindex(
         return 0
 
     cfg = (config_manager or ConfigManager()).config
-    base_dir = data_dir or get_default_data_dir()
+    base_dir = data_dir or resolve_data_dir(cfg)
     db = Database(base_dir / MAIN_DB_FILE)
     code_db = Database(base_dir / CODE_DB_FILE) if cfg.code_enabled else None
     owns_ollama = ollama_client is None
-    ollama = ollama_client if ollama_client is not None else OllamaClient(base_url=cfg.ollama_url, num_ctx=cfg.num_ctx)
+    ollama = (
+        ollama_client
+        if ollama_client is not None
+        else OllamaClient(
+            base_url=cfg.ollama_url,
+            embed_timeout=float(cfg.ollama_timeout),
+            num_ctx=cfg.num_ctx,
+            api_key=cfg.ollama_api_key,
+            keep_alive=cfg.ollama_keep_alive,
+        )
+    )
 
     try:
         index_service = IndexService(db, code_db=code_db, ollama=ollama, config=cfg)
@@ -248,7 +262,7 @@ def install_desktop_integration(
     exec_path: str | None = None,
 ) -> list[Path]:
     """Install user-space desktop launcher, SVG icon, D-Bus service, KRunner, and GNOME search provider."""
-    base = data_home if data_home is not None else _resolve_xdg_data_home()
+    base = data_home if data_home is not None else resolve_xdg_data_home()
     binary = exec_path or shutil.which("semsearch") or sys.argv[0]
 
     desktop_file = base / "applications" / "semsearch.desktop"

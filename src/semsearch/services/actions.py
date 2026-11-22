@@ -1,5 +1,7 @@
 """Linux desktop deep link actions, media playback, terminal launch, and editor integration."""
 
+import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +11,7 @@ from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage
 from PySide6.QtGui import QGuiApplication
 
 from semsearch.config import AppConfig
+from semsearch.core.rules import AUDIO_EXTENSIONS
 from semsearch.core.types import FileKind, SearchHit
 
 JETBRAINS_IDES = [
@@ -21,25 +24,54 @@ JETBRAINS_IDES = [
     "rider",
 ]
 
+_AUTO_EDITORS: tuple[str, ...] = (
+    "code",
+    "cursor",
+    "zed",
+    "subl",
+    *JETBRAINS_IDES,
+    "kate",
+    "geany",
+    "neovide",
+    "emacsclient",
+)
+
 STANDARD_TERMINALS: tuple[str, ...] = (
     "xdg-terminal-exec",
+    "ptyxis",
     "kitty",
     "alacritty",
     "ghostty",
+    "foot",
     "konsole",
     "gnome-terminal",
+    "cosmic-term",
     "wezterm",
+    "tilix",
     "xfce4-terminal",
     "xterm",
 )
+
+_DEFAULT_MEDIA_PLAYERS: tuple[str, ...] = ("mpv", "celluloid", "vlc")
 
 _PDF_VIEWER_ARGS: dict[str, str] = {
     "papers": "-i",
     "okular": "-p",
     "evince": "-i",
+    "atril": "-i",
+    "xreader": "-i",
     "zathura": "-P",
+    "sioyek": "--page",
 }
-_DEFAULT_PDF_VIEWERS: tuple[str, ...] = ("papers", "okular", "evince", "zathura")
+_DEFAULT_PDF_VIEWERS: tuple[str, ...] = (
+    "papers",
+    "okular",
+    "evince",
+    "atril",
+    "xreader",
+    "zathura",
+    "sioyek",
+)
 
 
 def _launch(args: list[str], *, cwd: str | None = None) -> bool:
@@ -52,53 +84,83 @@ def _launch(args: list[str], *, cwd: str | None = None) -> bool:
         return True
 
 
-def open_file(path: str) -> bool:
-    """Open file using system default handler (xdg-open)."""
-    return _launch(["xdg-open", path])
-
-
-def open_media_at(path: str, seconds: float) -> bool:
-    """Open media file at specific timestamp using mpv, vlc, or xdg-open."""
-    sec = max(int(seconds), 0)
-    if shutil.which("mpv"):
-        return _launch(["mpv", f"--start={sec}", "--", path])
-    if shutil.which("vlc"):
-        return _launch(["vlc", f"--start-time={sec}", "--", path])
-    return open_file(path)
-
-
-def _default_pdf_viewer() -> str | None:
-    if not shutil.which("xdg-mime"):
+def _build_custom_command(
+    template: str,
+    replacements: dict[str, str],
+    fallback_arg: str = "",
+) -> list[str] | None:
+    try:
+        tokens = shlex.split(template)
+    except ValueError:
         return None
+    if not tokens:
+        return None
+
+    pattern = re.compile("|".join(re.escape(key) for key in replacements))
+    args = [pattern.sub(lambda m: replacements[m.group(0)], token) for token in tokens]
+    if not shutil.which(args[0]):
+        return None
+
+    if fallback_arg and not any("{file}" in token or "{dir}" in token for token in tokens):
+        args.append(fallback_arg)
+    return args
+
+
+def _query_xdg_default_desktop(mime_type: str) -> str:
+    if not shutil.which("xdg-mime"):
+        return ""
     try:
         res = subprocess.run(
-            ["xdg-mime", "query", "default", "application/pdf"],
+            ["xdg-mime", "query", "default", mime_type],
             capture_output=True,
             text=True,
             check=False,
             timeout=2.0,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return ""
     if res.returncode != 0:
-        return None
-    desktop = res.stdout.strip().lower()
-    for viewer in _DEFAULT_PDF_VIEWERS:
-        if viewer in desktop:
-            return viewer
-    return None
+        return ""
+    return res.stdout.strip().lower()
+
+
+def _prioritize_xdg_candidates(mime_type: str, candidates: tuple[str, ...]) -> tuple[str, ...]:
+    desktop = _query_xdg_default_desktop(mime_type)
+    if desktop:
+        for candidate in candidates:
+            if candidate in desktop:
+                return (candidate, *(c for c in candidates if c != candidate))
+    return candidates
+
+
+def open_file(path: str) -> bool:
+    """Open file using system default handler (xdg-open)."""
+    return _launch(["xdg-open", path])
+
+
+def _media_player_command(player: str, path: str, sec: int) -> list[str]:
+    if player == "mpv":
+        return ["mpv", f"--start={sec}", "--", path]
+    if player == "celluloid":
+        return ["celluloid", f"--mpv-start={sec}", "--", path]
+    return ["vlc", f"--start-time={sec}", "--", path]
+
+
+def open_media_at(path: str, seconds: float) -> bool:
+    """Open media file at specific timestamp preferring the system default XDG player."""
+    sec = max(int(seconds), 0)
+    ext = Path(path).suffix.lstrip(".").lower()
+    mime_type = "audio/mpeg" if ext in AUDIO_EXTENSIONS else "video/mp4"
+    for player in _prioritize_xdg_candidates(mime_type, _DEFAULT_MEDIA_PLAYERS):
+        if shutil.which(player):
+            return _launch(_media_player_command(player, path, sec))
+    return open_file(path)
 
 
 def open_pdf_at(path: str, page: int) -> bool:
     """Open PDF document at specific page preferring the system default XDG PDF viewer."""
     target_page = max(page, 1)
-    preferred = _default_pdf_viewer()
-    candidates = (
-        (preferred, *(v for v in _DEFAULT_PDF_VIEWERS if v != preferred))
-        if preferred is not None
-        else _DEFAULT_PDF_VIEWERS
-    )
-    for viewer in candidates:
+    for viewer in _prioritize_xdg_candidates("application/pdf", _DEFAULT_PDF_VIEWERS):
         if shutil.which(viewer):
             flag = _PDF_VIEWER_ARGS[viewer]
             return _launch([viewer, flag, str(target_page), "--", path])
@@ -106,28 +168,48 @@ def open_pdf_at(path: str, page: int) -> bool:
 
 
 def _editor_command(editor: str, path: str, line: int) -> list[str]:
-    if editor in ("code", "cursor"):
-        return [editor, "-g", f"{path}:{line}"]
-    if editor in ("zed", "subl"):
-        return [editor, f"{path}:{line}"]
     if editor in JETBRAINS_IDES:
         return [editor, "--line", str(line), path]
-    return [editor, path]
+    commands: dict[str, list[str]] = {
+        "code": ["code", "-g", f"{path}:{line}"],
+        "cursor": ["cursor", "-g", f"{path}:{line}"],
+        "zed": ["zed", f"{path}:{line}"],
+        "subl": ["subl", f"{path}:{line}"],
+        "kate": ["kate", "-l", str(line), path],
+        "geany": ["geany", f"+{line}", path],
+        "neovide": ["neovide", f"+{line}", path],
+        "emacsclient": ["emacsclient", "-n", f"+{line}", path],
+    }
+    return commands.get(editor, [editor, path])
 
 
-def open_code_at(path: str, line: int = 1, editor_preference: str = "auto") -> bool:
-    """Open code file at specific line number using preferred or auto-detected code editor."""
+def open_code_at(
+    path: str,
+    line: int = 1,
+    editor_preference: str = "auto",
+    *,
+    custom_editor_cmd: str = "",
+) -> bool:
+    """Open code file at specific line number using preferred, custom, or auto-detected editor."""
     target_line = max(line, 1)
     pref = editor_preference.strip().lower()
 
-    if pref == "jetbrains":
+    if pref == "custom" and custom_editor_cmd.strip():
+        custom_args = _build_custom_command(
+            custom_editor_cmd,
+            {"{file}": path, "{line}": str(target_line)},
+            fallback_arg=path,
+        )
+        if custom_args is not None:
+            return _launch(custom_args)
+    elif pref == "jetbrains":
         for ide in JETBRAINS_IDES:
             if shutil.which(ide):
                 return _launch(_editor_command(ide, path, target_line))
-    elif pref != "auto" and shutil.which(pref):
+    elif pref not in ("auto", "custom") and shutil.which(pref):
         return _launch(_editor_command(pref, path, target_line))
 
-    for candidate in ("code", "cursor", "zed", "subl", *JETBRAINS_IDES):
+    for candidate in _AUTO_EDITORS:
         if shutil.which(candidate):
             return _launch(_editor_command(candidate, path, target_line))
 
@@ -152,9 +234,13 @@ def reveal_in_file_manager(path: str) -> bool:
         if reply.type() == QDBusMessage.MessageType.ReplyMessage:
             return True
 
-    for fm in ("dolphin", "nautilus", "nemo"):
+    for fm in ("dolphin", "nautilus", "nemo", "caja"):
         if shutil.which(fm):
             return _launch([fm, "--select", abs_path])
+
+    for fm in ("thunar", "pcmanfm"):
+        if shutil.which(fm):
+            return _launch([fm, str(resolved.parent)])
 
     return open_file(str(resolved.parent))
 
@@ -197,22 +283,41 @@ def copy_file_to_clipboard(path: str) -> bool:
 def _terminal_command(terminal: str, target_dir: str) -> list[str]:
     commands: dict[str, list[str]] = {
         "xdg-terminal-exec": ["xdg-terminal-exec", f"--dir={target_dir}"],
+        "ptyxis": ["ptyxis", "--working-directory", target_dir],
         "kitty": ["kitty", "--directory", target_dir],
         "alacritty": ["alacritty", "--working-directory", target_dir],
         "ghostty": ["ghostty", f"--working-directory={target_dir}"],
+        "foot": ["foot", "--working-directory", target_dir],
         "konsole": ["konsole", "--workdir", target_dir],
         "gnome-terminal": ["gnome-terminal", f"--working-directory={target_dir}"],
+        "cosmic-term": ["cosmic-term"],
         "wezterm": ["wezterm", "start", "--cwd", target_dir],
+        "tilix": ["tilix", "--working-directory", target_dir],
         "xfce4-terminal": ["xfce4-terminal", "--working-directory", target_dir],
         "xterm": ["xterm"],
     }
     return commands[terminal]
 
 
-def open_terminal_at(path: str) -> bool:
-    """Open a standard Linux terminal emulator at the directory containing path."""
+def open_terminal_at(
+    path: str,
+    terminal_preference: str = "auto",
+    *,
+    custom_terminal_cmd: str = "",
+) -> bool:
+    """Open a preferred, custom, or auto-detected Linux terminal emulator at path's directory."""
     resolved = Path(path).resolve()
     target_dir = str(resolved if resolved.is_dir() else resolved.parent)
+    pref = terminal_preference.strip().lower()
+
+    if pref == "custom" and custom_terminal_cmd.strip():
+        custom_args = _build_custom_command(custom_terminal_cmd, {"{dir}": target_dir})
+        if custom_args is not None:
+            return _launch(custom_args, cwd=target_dir)
+    elif pref not in ("auto", "custom") and shutil.which(pref):
+        cmd = _terminal_command(pref, target_dir) if pref in STANDARD_TERMINALS else [pref]
+        return _launch(cmd, cwd=target_dir)
+
     for terminal in STANDARD_TERMINALS:
         if shutil.which(terminal):
             return _launch(_terminal_command(terminal, target_dir), cwd=target_dir)
@@ -222,10 +327,16 @@ def open_terminal_at(path: str) -> bool:
 def execute_hit_action(hit: SearchHit, config: AppConfig | None = None) -> bool:
     """Dispatch the appropriate deep link desktop action for a given search hit."""
     pref = config.code_editor if config else "auto"
+    custom_editor = config.custom_editor_cmd if config else ""
 
     if hit.kind == FileKind.CODE and (hit.focus > 0 or hit.loc > 0):
         target_line = int(hit.focus) if hit.focus > 0 else int(hit.loc)
-        return open_code_at(hit.path, line=target_line, editor_preference=pref)
+        return open_code_at(
+            hit.path,
+            line=target_line,
+            editor_preference=pref,
+            custom_editor_cmd=custom_editor,
+        )
 
     if hit.kind == FileKind.PDF and hit.loc > 0:
         return open_pdf_at(hit.path, page=int(hit.loc))

@@ -23,7 +23,7 @@ from semsearch.core.types import (
     SegmentKind,
 )
 from semsearch.gui.panel import DraggableResultList, ResultItemWidget, SearchPanel
-from semsearch.gui.theme import ThemeColors, ThemeLayout
+from semsearch.gui.theme import LIGHT_PALETTE, ThemeColors, ThemeLayout, apply_theme
 from semsearch.i18n import load_catalog, set_language
 from semsearch.services.searcher import ResultSet, SearchService
 
@@ -79,31 +79,42 @@ def test_panel_geometry_and_flags(mock_search_service: MagicMock, qapp: QApplica
 def test_panel_expansion_and_no_redundant_resize_while_expanded(
     mock_search_service: MagicMock, qapp: QApplication
 ) -> None:
-    """Verify panel expands once on query matches and avoids redundant setFixedSize on subsequent keystrokes."""
+    """Verify panel expands once to 748x480, stays resizable, and avoids redundant resizes on subsequent keystrokes."""
     del qapp
     panel = SearchPanel(mock_search_service, AppConfig())
     panel.show()
 
-    with patch.object(panel, "setFixedSize", wraps=panel.setFixedSize) as mock_resize:
+    with (
+        patch.object(panel, "resize", wraps=panel.resize) as mock_resize,
+        patch.object(panel, "setFixedSize", wraps=panel.setFixedSize) as mock_fixed,
+    ):
         panel.search_input.setText("sam")
         assert bool(panel.is_expanded)
+        assert panel.width() == ThemeLayout.PANEL_WIDTH
         assert panel.height() == ThemeLayout.PANEL_HEIGHT_EXPANDED
         assert panel.content_widget.isVisible()
         assert panel.result_list.count() > 0
         assert mock_resize.call_count == 1
+        assert mock_fixed.call_count == 0
         mock_search_service.lexical_search.assert_called_with("sam", limit=50)
 
-        # Typing another character while already expanded must not call setFixedSize again
+        # Typing another character while already expanded must not resize again
         panel.search_input.setText("sample")
         assert bool(panel.is_expanded)
         assert mock_resize.call_count == 1
 
-        # Clearing text collapses once
+        # Expanded panel can be dragged/resized larger than default 748x480
+        panel.resize(1080, 680)
+        assert panel.width() == 1080
+        assert panel.height() == 680
+
+        # Clearing text collapses once back to compact fixed geometry
         panel.search_input.setText("")
         assert not bool(panel.is_expanded)
+        assert panel.width() == ThemeLayout.PANEL_WIDTH
         assert panel.height() == ThemeLayout.PANEL_HEIGHT_COLLAPSED
         assert not panel.content_widget.isVisible()
-        assert mock_resize.call_count == 2
+        assert mock_fixed.call_count == 1
     panel.shutdown()
 
 
@@ -370,7 +381,11 @@ def test_quick_actions_menu_and_deactivate_guard(
         assert mock_copy_text.call_args_list[0].args == ("/tmp/notes.md",)
         assert mock_copy_text.call_args_list[1].args == ("Matched passage",)
         actions["Open Terminal Here"].trigger()
-        mock_term.assert_called_once_with("/tmp/notes.md")
+        mock_term.assert_called_once_with(
+            "/tmp/notes.md",
+            terminal_preference=panel.config.terminal,
+            custom_terminal_cmd=panel.config.custom_terminal_cmd,
+        )
         assert mock_hide.call_count == 3
 
     # Tab and Ctrl+K invoke menu.exec while _menu_open guards WindowDeactivate
@@ -813,16 +828,136 @@ def test_panel_show_preload_ignores_ollama_error(mock_search_service: MagicMock,
     panel.shutdown()
 
 
-def test_panel_hide_does_not_unload_model(mock_search_service: MagicMock, qapp: QApplication) -> None:
-    """Verify hide_panel() does not send an unload request to Ollama."""
+def test_panel_hide_unload_respects_keep_alive_and_guard(mock_search_service: MagicMock, qapp: QApplication) -> None:
+    """Verify hide_panel() unloads VRAM only in unload_idle mode when allowed by guard callback."""
     del qapp
-    panel = SearchPanel(mock_search_service, AppConfig())
+    # 1. unload_idle unloads model in daemon thread after show_panel preloaded it
+    panel = SearchPanel(mock_search_service, AppConfig(ollama_keep_alive="unload_idle"))
     panel.show_panel()
     assert panel._preload_thread is not None
     panel._preload_thread.join(timeout=1.0)
 
     mock_search_service.ollama.reset_mock()
     panel.hide_panel()
-
-    assert mock_search_service.ollama.method_calls == []
+    assert panel._unload_thread is not None
+    assert panel._unload_thread.daemon is True
+    panel._unload_thread.join(timeout=1.0)
+    mock_search_service.ollama.unload.assert_called_once_with("embeddinggemma-2")
     panel.shutdown()
+
+    # 2. should_unload_on_hide returning False suppresses unload (e.g., indexer busy)
+    mock_search_service.ollama.reset_mock()
+    guarded_panel = SearchPanel(
+        mock_search_service,
+        AppConfig(ollama_keep_alive="unload_idle"),
+        should_unload_on_hide=lambda: False,
+    )
+    guarded_panel.show_panel()
+    assert guarded_panel._preload_thread is not None
+    guarded_panel._preload_thread.join(timeout=1.0)
+    mock_search_service.ollama.reset_mock()
+    guarded_panel.hide_panel()
+    assert guarded_panel._unload_thread is None
+    assert mock_search_service.ollama.method_calls == []
+    guarded_panel.shutdown()
+
+    # 3. server and keep_loaded modes never send unload on hide
+    for mode in ("server", "keep_loaded"):
+        mock_search_service.ollama.reset_mock()
+        keep_panel = SearchPanel(mock_search_service, AppConfig(ollama_keep_alive=mode))
+        keep_panel.show_panel()
+        assert keep_panel._preload_thread is not None
+        keep_panel._preload_thread.join(timeout=1.0)
+        mock_search_service.ollama.reset_mock()
+        keep_panel.hide_panel()
+        assert keep_panel._unload_thread is None
+        assert mock_search_service.ollama.method_calls == []
+        keep_panel.shutdown()
+
+
+def test_panel_close_on_focus_loss_false_keeps_panel_visible(
+    mock_search_service: MagicMock, qapp: QApplication
+) -> None:
+    """Verify WindowDeactivate does not hide panel when close_on_focus_loss is False."""
+    del qapp
+    panel = SearchPanel(mock_search_service, AppConfig(close_on_focus_loss=False))
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert panel.isVisible()
+
+    QApplication.sendEvent(panel, QEvent(QEvent.Type.WindowDeactivate))
+
+    assert panel.isVisible()
+    assert panel.search_input.text() == "sample"
+    panel.shutdown()
+
+
+def test_panel_remember_last_query_preserves_state_and_selects_on_reopen(
+    mock_search_service: MagicMock, qapp: QApplication
+) -> None:
+    """Verify remember_last_query preserves query/results across hide/show, selects text on reopen, and Esc clears."""
+    del qapp
+    panel = SearchPanel(mock_search_service, AppConfig(remember_last_query=True))
+    panel.show_panel()
+    panel.search_input.setText("sample")
+    assert bool(panel.is_expanded)
+    assert panel.result_list.count() > 0
+
+    panel.hide_panel()
+    assert not panel.isVisible()
+    assert panel.search_input.text() == "sample"
+    assert panel._last_query == "sample"
+    assert panel.result_list.count() > 0
+
+    panel.show_panel()
+    assert panel.isVisible()
+    assert bool(panel.is_expanded)
+    assert panel.search_input.text() == "sample"
+    assert panel.search_input.selectedText() == "sample"
+    assert panel.result_list.count() > 0
+
+    # Escape still clears query and collapses even when remember_last_query is True
+    event_esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    panel.eventFilter(panel.search_input, event_esc)
+    assert panel.search_input.text() == ""
+    assert not bool(panel.is_expanded)
+    panel.shutdown()
+
+
+def test_panel_quick_actions_forwards_custom_terminal_config(
+    mock_search_service: MagicMock, qapp: QApplication
+) -> None:
+    """Verify Open Terminal Here passes configured terminal and custom_terminal_cmd to open_terminal_at."""
+    del qapp
+    cfg = AppConfig(terminal="custom", custom_terminal_cmd="alacritty --working-directory {dir}")
+    panel = SearchPanel(mock_search_service, cfg)
+    hit = SearchHit(path="/tmp/notes.md", kind=FileKind.DOC, score=2.0)
+    menu = panel._build_quick_actions_menu(hit)
+    actions = {act.text(): act for act in menu.actions() if not act.isSeparator()}
+
+    with patch("semsearch.gui.panel.open_terminal_at") as mock_term, patch.object(panel, "hide_panel"):
+        actions["Open Terminal Here"].trigger()
+        mock_term.assert_called_once_with(
+            "/tmp/notes.md",
+            terminal_preference="custom",
+            custom_terminal_cmd="alacritty --working-directory {dir}",
+        )
+    panel.shutdown()
+
+
+def test_panel_refresh_theme_updates_chrome_and_previews(mock_search_service: MagicMock, qapp: QApplication) -> None:
+    """Verify SearchPanel.refresh_theme switches container, footer, and preview cards to light palette."""
+    del qapp
+    cfg = AppConfig(theme="light")
+    panel = SearchPanel(mock_search_service, cfg)
+    try:
+        panel.search_input.setText("sample")
+        panel.refresh_theme()
+        assert LIGHT_PALETTE.bg_panel in panel.container.styleSheet()
+        assert LIGHT_PALETTE.bg_panel_footer in panel.footer.styleSheet()
+        assert LIGHT_PALETTE.bg_card in panel.preview_pane.code_view.meta_card.styleSheet()
+    finally:
+        cfg.theme = "dark"
+        panel.refresh_theme()
+        apply_theme(panel, "dark")
+        panel.shutdown()

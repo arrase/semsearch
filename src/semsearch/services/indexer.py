@@ -22,6 +22,7 @@ from semsearch.core.rules import (
     MAX_TEXT_FILE_BYTES,
     classify_file,
     is_code_project_root,
+    is_inside_code_project,
     should_skip,
 )
 from semsearch.core.search_text import has_words
@@ -57,6 +58,7 @@ _MAX_NEW_FILES_QUEUE = 50
 _DOC_CHUNK_BATCH_SIZE = 40
 _INITIAL_OLLAMA_BACKOFF_SEC = 2.0
 _MAX_OLLAMA_BACKOFF_SEC = 30.0
+_MAX_CONSECUTIVE_TIMEOUTS = 3
 
 
 def _code_place(path: str, code_folders: list[str] | None = None) -> tuple[str | None, str]:
@@ -123,6 +125,7 @@ class IndexService:
         self._user_pause_reason = ""
         self._policy_pause_reason = ""
         self._did_embed_since_idle = False
+        self._timeout_counts: dict[tuple[int, bool], int] = {}
         self._work_listeners: list[Callable[[], None]] = []
 
     def add_work_listener(self, callback: Callable[[], None]) -> None:
@@ -157,6 +160,7 @@ class IndexService:
             reset_count += self.code_db.reset_all_for_reindex()
         with self._lock:
             self._new_files_queue.clear()
+            self._timeout_counts.clear()
         self._update_status_counts()
         self._wake_worker()
         return reset_count
@@ -245,6 +249,38 @@ class IndexService:
             target_db.requeue_file(rec.id, cand)
         return rec.id
 
+    def _build_enqueue_candidate(self, resolved_path: Path, resolved: str, *, is_code: bool) -> Candidate | None:
+        in_code_project = (
+            not is_code and self.config.skip_code_projects and is_inside_code_project(resolved, self.config.folders)
+        )
+        skip, _ = should_skip(
+            resolved,
+            is_code_mode=is_code,
+            excluded_folders=self.config.excluded_folders,
+            excluded_types=None if is_code else self.config.excluded_types,
+            in_code_project=in_code_project,
+        )
+        if skip:
+            return None
+
+        try:
+            st = resolved_path.stat()
+        except OSError:
+            return None
+
+        kind = classify_file(resolved, is_code_mode=is_code)
+        if kind is None or (kind in (FileKind.DOC, FileKind.CODE) and st.st_size > MAX_TEXT_FILE_BYTES):
+            return None
+
+        return Candidate(
+            path=resolved,
+            kind=kind,
+            size=st.st_size,
+            mtime=st.st_mtime,
+            inode=st.st_ino,
+            device=st.st_dev,
+        )
+
     def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
         """Enqueue newly modified or created file for immediate or backfill indexing."""
         resolved_path = Path(path).resolve()
@@ -253,36 +289,12 @@ class IndexService:
             return
 
         is_code = self._is_code_file_path(resolved_path)
-        skip, _ = should_skip(
-            resolved,
-            is_code_mode=is_code,
-            excluded_folders=self.config.excluded_folders,
-            excluded_types=None if is_code else self.config.excluded_types,
-        )
-        if skip:
-            return
-
-        try:
-            st = resolved_path.stat()
-        except OSError:
-            return
-
-        kind = classify_file(resolved, is_code_mode=is_code)
-        if kind is None:
-            return
-        if kind in (FileKind.DOC, FileKind.CODE) and st.st_size > MAX_TEXT_FILE_BYTES:
+        cand = self._build_enqueue_candidate(resolved_path, resolved, is_code=is_code)
+        if cand is None:
             return
 
         target_db = self.code_db if is_code and self.code_db is not None else self.db
         rec = target_db.find_by_path(resolved)
-        cand = Candidate(
-            path=resolved,
-            kind=kind,
-            size=st.st_size,
-            mtime=st.st_mtime,
-            inode=st.st_ino,
-            device=st.st_dev,
-        )
         fid = self._upsert_candidate(target_db, rec, cand)
         needs_work = rec is None or rec.state == FileState.PENDING or cand.mtime != rec.mtime or cand.size != rec.size
         if not needs_work:
@@ -303,6 +315,9 @@ class IndexService:
             is_code=is_code,
             excluded_folders=self.config.excluded_folders,
             excluded_types=excl_types,
+            follow_symlinks=self.config.follow_symlinks,
+            skip_code_projects=self.config.skip_code_projects,
+            skip_datasets=self.config.skip_datasets,
         )
 
     def _resolve_sync_target(
@@ -431,7 +446,12 @@ class IndexService:
             duration = probe_media_duration(path)
             if duration > 0.0:
                 info["duration"] = duration
-            segments = extract_audio(path) if kind == FileKind.AUDIO else extract_video(path)
+            max_dur = max(0, self.config.max_media_duration_min) * 60
+            segments = (
+                extract_audio(path, max_duration_sec=max_dur)
+                if kind == FileKind.AUDIO
+                else extract_video(path, max_duration_sec=max_dur)
+            )
             return segments, True, info
         segments = extract_notebook(path) if path.endswith(".ipynb") else extract_code(path)
         return segments, True, info
@@ -464,7 +484,13 @@ class IndexService:
         embed_inputs: list[str | dict[str, str] | None] = []
         for s in segments:
             if s.modality == Modality.TEXT and isinstance(s.payload, str) and s.payload and has_words(s.payload):
-                embed_inputs.append(format_doc_prompt(title, s.payload[:4000]))
+                snippet = s.payload[:4000]
+                formatted = (
+                    self.ollama.format_doc_for_model(self.config.model, title, snippet)
+                    if self.ollama is not None
+                    else format_doc_prompt(title, snippet)
+                )
+                embed_inputs.append(formatted)
             elif s.modality not in (Modality.NONE, Modality.TEXT) and s.payload:
                 embed_inputs.append(s.payload)
             else:
@@ -567,10 +593,11 @@ class IndexService:
 
     def _handle_idle_transition(self) -> None:
         self._update_status_counts()
-        if self._did_embed_since_idle and self.ollama is not None:
+        if self._did_embed_since_idle:
             self._did_embed_since_idle = False
-            with contextlib.suppress(OllamaError):
-                self.ollama.unload(self.config.model)
+            if self.ollama is not None and self.config.ollama_keep_alive == "unload_idle":
+                with contextlib.suppress(OllamaError):
+                    self.ollama.unload(self.config.model)
         self.db.shrink_memory()
         if self.code_db is not None:
             self.code_db.shrink_memory()
@@ -586,6 +613,22 @@ class IndexService:
         with self._lock:
             if item not in self._new_files_queue and len(self._new_files_queue) < _MAX_NEW_FILES_QUEUE:
                 self._new_files_queue.insert(0, item)
+
+    def _backoff_for_ollama(
+        self,
+        file_rec: FileRecord,
+        target_db: Database,
+        tier: IndexQueueTier | None,
+        backoff: float,
+    ) -> float:
+        if tier == IndexQueueTier.NEW_FILES:
+            self._requeue_front_new_file(file_rec, target_db)
+        with self._lock:
+            if not self.status.paused:
+                self.status.waiting_for = "Ollama"
+                self.status.activity = EngineActivity.PAUSED
+        self._stop_event.wait(backoff)
+        return min(backoff * 2.0, _MAX_OLLAMA_BACKOFF_SEC)
 
     def _run_worker_step(
         self,
@@ -603,21 +646,28 @@ class IndexService:
         if was_idle:
             self._notify_work_listeners()
 
+        key = (file_rec.id, target_db is self.code_db)
         try:
             self.process_file(file_rec, target_db)
-        except (OllamaConnectionError, OllamaTimeoutError):
-            if tier == IndexQueueTier.NEW_FILES:
-                self._requeue_front_new_file(file_rec, target_db)
-            with self._lock:
-                if not self.status.paused:
-                    self.status.waiting_for = "Ollama"
-                    self.status.activity = EngineActivity.PAUSED
-            self._stop_event.wait(backoff)
-            return min(backoff * 2.0, _MAX_OLLAMA_BACKOFF_SEC)
+        except OllamaTimeoutError as exc:
+            count = self._timeout_counts.get(key, 0) + 1
+            if count >= _MAX_CONSECUTIVE_TIMEOUTS:
+                self._timeout_counts.pop(key, None)
+                target_db.update_file_state(file_rec.id, FileState.FAILED, detail=str(exc))
+                with self._lock:
+                    if self.status.waiting_for == "Ollama":
+                        self.status.waiting_for = ""
+                return _INITIAL_OLLAMA_BACKOFF_SEC
+            self._timeout_counts[key] = count
+            return self._backoff_for_ollama(file_rec, target_db, tier, backoff)
+        except OllamaConnectionError:
+            return self._backoff_for_ollama(file_rec, target_db, tier, backoff)
         except Exception as exc:  # noqa: BLE001 — worker loop safety net so unexpected errors do not kill background thread
+            self._timeout_counts.pop(key, None)
             target_db.update_file_state(file_rec.id, FileState.FAILED, detail=str(exc))
             return backoff
         else:
+            self._timeout_counts.pop(key, None)
             return _INITIAL_OLLAMA_BACKOFF_SEC
 
     def _worker_loop(self) -> None:

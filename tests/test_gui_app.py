@@ -25,9 +25,9 @@ from PySide6.QtWidgets import QApplication, QDialog, QSystemTrayIcon
 
 import semsearch.gui.app as app_module
 import semsearch.main as main_module
-from semsearch.config import ConfigManager
-from semsearch.core.database import CODE_DB_FILE, Database
-from semsearch.core.ollama import OllamaClient
+from semsearch.config import ConfigManager, resolve_data_dir
+from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
+from semsearch.core.ollama import OllamaClient, OllamaError
 from semsearch.gui.app import (
     SemSearchApp,
     forward_ipc_command,
@@ -55,6 +55,8 @@ _BOUND_APP_METHODS = (
     "_handle_ipc_message",
     "_set_code_db",
     "_sync_code_db",
+    "_sync_data_dir",
+    "_preload_model_if_keep_loaded",
     "_sync_hotkey_status",
     "_start_hotkey_listener",
     "_on_settings_saved",
@@ -80,10 +82,14 @@ class _AppHarness(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.layout_direction = Qt.LayoutDirection.LeftToRight
+        self.style_sheet = ""
         self.quit = MagicMock()
 
     def setLayoutDirection(self, direction: Qt.LayoutDirection) -> None:  # noqa: N802
         self.layout_direction = direction
+
+    def setStyleSheet(self, qss: str) -> None:  # noqa: N802
+        self.style_sheet = qss
 
     @Slot()
     def _on_ipc_ready_read(self) -> None:
@@ -129,7 +135,10 @@ def _make_mock_ollama() -> MagicMock:
     return client
 
 
-def _init_harness_runtime_fields(app: SemSearchApp) -> None:
+def _init_harness_runtime_fields(app: SemSearchApp, *, owns_db: bool) -> None:
+    app._owns_db = owns_db
+    app._owns_code_db = owns_db
+    app._data_dir = resolve_data_dir(app.config)
     app.ipc_server = None
     app._instance_lock_fd = None
     app._ipc_server_name = ""
@@ -146,6 +155,7 @@ def _make_harness(
     code_enabled: bool = True,
     onboarded: bool = True,
     init_ipc: bool = False,
+    owns_db: bool = False,
 ) -> _HarnessBundle:
     cfg_mgr = ConfigManager(config_path=tmp_path / "config.json")
     cfg_mgr.config.code_enabled = code_enabled
@@ -172,8 +182,10 @@ def _make_harness(
     panel.isVisible.return_value = False
 
     settings_dialog = cast(MagicMock, create_autospec(SettingsDialog, instance=True))
+    settings_dialog.db = db
     settings_dialog.code_db = code_db
     settings_dialog.storage_tab = MagicMock()
+    settings_dialog.storage_tab.db = db
     settings_dialog.storage_tab.code_db = code_db
 
     desktop_providers = cast(MagicMock, create_autospec(DesktopSearchProviders, instance=True))
@@ -198,7 +210,7 @@ def _make_harness(
     app.settings_dialog = settings_dialog
     app.desktop_providers = desktop_providers
     app.hotkey_listener = hotkey_listener
-    _init_harness_runtime_fields(app)
+    _init_harness_runtime_fields(app, owns_db=owns_db)
 
     if init_ipc:
         app._init_ipc_server()
@@ -885,10 +897,11 @@ def test_main_dispatches_headless_subcommands_without_starting_gui(
         kinds=["pdf"],
         limit=7,
         as_json=True,
+        config_manager=cfg_mgr,
     )
 
     assert main(["reindex", "--force"]) == 0
-    reindex_spy.assert_called_once_with(force=True, forward_ipc=forward_ipc_command)
+    reindex_spy.assert_called_once_with(force=True, forward_ipc=forward_ipc_command, config_manager=cfg_mgr)
 
     target_dir = tmp_path / "desktop_data"
     assert main(["install-desktop", "--data-home", str(target_dir)]) == 0
@@ -958,3 +971,152 @@ def test_main_gui_flags_ipc_forwarding_and_cold_start(
     cancelled_app.start.assert_called_once_with(daemon_mode=False)
     cancelled_app.handle_cli_action.assert_not_called()
     cancelled_app.exec.assert_not_called()
+
+
+def test_real_semsearch_app_constructs_ollama_and_applies_configured_theme(
+    tmp_path: Path,
+    short_ipc_dir: Path,
+) -> None:
+    """Verify real SemSearchApp constructs OllamaClient with timeout/api_key/keep_alive and applies theme."""
+    data_dir = tmp_path / "custom_data"
+    cfg_file = tmp_path / "config.json"
+    cfg_mgr = ConfigManager(config_path=cfg_file)
+    cfg_mgr.config.onboarded = True
+    cfg_mgr.config.theme = "light"
+    cfg_mgr.config.ollama_url = "http://127.0.0.1:11439"
+    cfg_mgr.config.ollama_timeout = 240
+    cfg_mgr.config.ollama_api_key = "test-secret"
+    cfg_mgr.config.ollama_keep_alive = "keep_loaded"
+    cfg_mgr.config.data_dir = str(data_dir)
+    cfg_mgr.save()
+
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["XDG_RUNTIME_DIR"] = str(short_ipc_dir)
+    script = f"""
+from pathlib import Path
+from semsearch.config import ConfigManager
+from semsearch.core.database import MAIN_DB_FILE
+from semsearch.core.types import EngineActivity
+from semsearch.gui.app import SemSearchApp
+
+cfg_mgr = ConfigManager(config_path=Path({str(cfg_file)!r}))
+app = SemSearchApp(["semsearch", "-platform", "offscreen"], config_manager=cfg_mgr)
+try:
+    assert app.ollama.base_url == "http://127.0.0.1:11439"
+    assert app.ollama.embed_timeout == 240.0
+    assert app.ollama.api_key == "test-secret"
+    assert app.ollama.keep_alive == "keep_loaded"
+    assert "#F3F4F6" in app.styleSheet()
+    assert Path(app.db.path) == Path({str(data_dir)!r}).resolve() / MAIN_DB_FILE
+    assert app.panel._should_unload_on_hide is not None
+    expected_idle = app.index_service.get_status().activity == EngineActivity.IDLE
+    assert app.panel._should_unload_on_hide() is expected_idle
+finally:
+    app.shutdown()
+"""
+    subprocess.run([sys.executable, "-c", script], env=env, check=True)
+
+
+def test_on_settings_saved_propagates_ollama_theme_and_switches_data_dir(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify _on_settings_saved propagates Ollama config, refreshes theme, and switches data_dir cleanly."""
+    del qapp
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "initial_xdg"))
+    _install_fake_hotkey_factory(monkeypatch)
+    bundle = _make_harness(tmp_path, code_enabled=True, owns_db=True)
+    monkeypatch.setattr(bundle.app, "_trigger_reindex", MagicMock())
+
+    old_db = bundle.app.db
+    old_code_db = bundle.app.code_db
+    assert old_code_db is not None
+    old_db_close_spy = MagicMock(wraps=old_db.close)
+    old_code_db_close_spy = MagicMock(wraps=old_code_db.close)
+    monkeypatch.setattr(old_db, "close", old_db_close_spy)
+    monkeypatch.setattr(old_code_db, "close", old_code_db_close_spy)
+
+    new_data_dir = tmp_path / "relocated_data"
+    try:
+        bundle.app.config.ollama_url = "http://127.0.0.1:11440"
+        bundle.app.config.ollama_timeout = 300
+        bundle.app.config.ollama_api_key = "api-token-xyz"
+        bundle.app.config.ollama_keep_alive = "server"
+        bundle.app.config.theme = "light"
+        bundle.app.config.data_dir = str(new_data_dir)
+
+        bundle.app._on_settings_saved()
+
+        assert bundle.ollama.base_url == "http://127.0.0.1:11440"
+        assert bundle.ollama.embed_timeout == 300.0
+        assert bundle.ollama.api_key == "api-token-xyz"
+        assert bundle.ollama.keep_alive == "server"
+        assert bundle.panel.config is bundle.app.config
+        assert "#F3F4F6" in cast(_AppHarness, bundle.app).style_sheet
+        bundle.panel.refresh_theme.assert_called_once()
+        bundle.settings_dialog.refresh_theme.assert_called_once_with("light")
+
+        bundle.index_service.stop.assert_called_once()
+        bundle.index_service.start.assert_called_once()
+        old_db_close_spy.assert_called_once()
+        old_code_db_close_spy.assert_called_once()
+
+        assert Path(bundle.app.db.path) == new_data_dir.resolve() / MAIN_DB_FILE
+        assert bundle.search_service.db is bundle.app.db
+        assert bundle.index_service.db is bundle.app.db
+        assert bundle.settings_dialog.db is bundle.app.db
+        assert bundle.settings_dialog.storage_tab.db is bundle.app.db
+        assert bundle.app.code_db is not None
+        assert Path(bundle.app.code_db.path) == new_data_dir.resolve() / CODE_DB_FILE
+        assert bundle.search_service.code_db is bundle.app.code_db
+        assert bundle.index_service.code_db is bundle.app.code_db
+    finally:
+        bundle.app.shutdown()
+
+
+def test_keep_loaded_triggers_preload_on_start_and_settings_save(
+    qapp: QApplication,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify keep_loaded preloads configured model on startup and settings save while suppressing OllamaError."""
+    del qapp
+    _install_fake_hotkey_factory(monkeypatch)
+    bundle = _make_harness(tmp_path, code_enabled=False)
+    monkeypatch.setattr(bundle.app, "_trigger_reindex", MagicMock())
+
+    preloaded = threading.Event()
+    calls: list[str] = []
+
+    def fake_preload(model: str) -> None:
+        calls.append(model)
+        preloaded.set()
+        if len(calls) == 2:
+            raise OllamaError("temporary error")
+
+    bundle.ollama.preload.side_effect = fake_preload
+
+    try:
+        # Unload-idle does not trigger preload
+        bundle.app.config.ollama_keep_alive = "unload_idle"
+        bundle.app._start_indexing()
+        assert not preloaded.wait(timeout=0.1)
+        assert calls == []
+
+        # keep_loaded triggers preload on _start_indexing()
+        bundle.app.config.ollama_keep_alive = "keep_loaded"
+        bundle.app.config.model = "embeddinggemma-2"
+        bundle.app._start_indexing()
+        assert preloaded.wait(timeout=1.0)
+        assert calls == ["embeddinggemma-2"]
+
+        # keep_loaded triggers preload on _on_settings_saved() and suppresses OllamaError
+        preloaded.clear()
+        bundle.app.config.model = "vision-embed:v2"
+        bundle.app._on_settings_saved()
+        assert preloaded.wait(timeout=1.0)
+        assert calls == ["embeddinggemma-2", "vision-embed:v2"]
+    finally:
+        bundle.app.shutdown()

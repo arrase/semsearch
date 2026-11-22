@@ -64,6 +64,37 @@ def test_open_media_at(monkeypatch: pytest.MonkeyPatch) -> None:
     assert launched[-1] == ["xdg-open", "/path/to/video.mp4"]
 
 
+def test_open_media_at_respects_xdg_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[list[str]] = []
+    xdg_queries: list[list[str]] = []
+    desktop_default = ["vlc.desktop"]
+
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
+        launched.append(args)
+
+    def mock_run(args: list[str], **_kwargs: Any) -> _CompletedProc:
+        xdg_queries.append(args)
+        return _CompletedProc(f"{desktop_default[0]}\n", 0)
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+    monkeypatch.setattr("subprocess.run", mock_run)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: cmd if cmd in {"xdg-mime", "mpv", "celluloid", "vlc"} else None,
+    )
+
+    # Video queries video/mp4 and prefers vlc over mpv when vlc.desktop is XDG default
+    assert open_media_at("/path/to/video.mp4", 90.0) is True
+    assert xdg_queries[-1] == ["xdg-mime", "query", "default", "video/mp4"]
+    assert launched[-1] == ["vlc", "--start-time=90", "--", "/path/to/video.mp4"]
+
+    # Audio queries audio/mpeg and prefers celluloid when Celluloid desktop entry is XDG default
+    desktop_default[0] = "io.github.celluloid_player.Celluloid.desktop"
+    assert open_media_at("/path/to/podcast.mp3", 33.9) is True
+    assert xdg_queries[-1] == ["xdg-mime", "query", "default", "audio/mpeg"]
+    assert launched[-1] == ["celluloid", "--mpv-start=33", "--", "/path/to/podcast.mp3"]
+
+
 def test_open_pdf_at(monkeypatch: pytest.MonkeyPatch) -> None:
     launched: list[list[str]] = []
 
@@ -87,6 +118,20 @@ def test_open_pdf_at(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "evince" else None)
     assert open_pdf_at("/doc.pdf", 5) is True
     assert launched[-1] == ["evince", "-i", "5", "--", "/doc.pdf"]
+
+    # Expanded viewers: atril, xreader, sioyek
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "atril" else None)
+    assert open_pdf_at("/doc.pdf", 4) is True
+    assert launched[-1] == ["atril", "-i", "4", "--", "/doc.pdf"]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "xreader" else None)
+    assert open_pdf_at("/doc.pdf", 6) is True
+    assert launched[-1] == ["xreader", "-i", "6", "--", "/doc.pdf"]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd in {"xdg-mime", "papers", "sioyek"} else None)
+    monkeypatch.setattr("subprocess.run", lambda _args, **_kwargs: _CompletedProc("sioyek.desktop\n", 0))
+    assert open_pdf_at("/doc.pdf", 9) is True
+    assert launched[-1] == ["sioyek", "--page", "9", "--", "/doc.pdf"]
 
     # When zathura exists
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "zathura" else None)
@@ -132,10 +177,63 @@ def test_open_code_at(monkeypatch: pytest.MonkeyPatch) -> None:
     assert open_code_at("/src/app.py", line=99, editor_preference="auto") is True
     assert launched[-1] == ["pycharm", "--line", "99", "/src/app.py"]
 
+    # Expanded Linux editors: kate, geany, neovide, emacsclient
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "kate" else None)
+    assert open_code_at("/src/app.py", line=12, editor_preference="auto") is True
+    assert launched[-1] == ["kate", "-l", "12", "/src/app.py"]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "geany" else None)
+    assert open_code_at("/src/app.py", line=18, editor_preference="geany") is True
+    assert launched[-1] == ["geany", "+18", "/src/app.py"]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "neovide" else None)
+    assert open_code_at("/src/app.py", line=25, editor_preference="auto") is True
+    assert launched[-1] == ["neovide", "+25", "/src/app.py"]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "emacsclient" else None)
+    assert open_code_at("/src/app.py", line=30, editor_preference="emacsclient") is True
+    assert launched[-1] == ["emacsclient", "-n", "+30", "/src/app.py"]
+
     # Fallback to xdg-open
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
     assert open_code_at("/src/app.py", line=10) is True
     assert launched[-1] == ["xdg-open", "/src/app.py"]
+
+
+def test_open_code_at_custom_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[list[str]] = []
+
+    def mock_popen(args: list[str], **_kwargs: Any) -> None:
+        launched.append(args)
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd in {"hx", "code"} else None)
+
+    # Custom template with {file} and {line} placeholders (safe against literal {line} in filename)
+    assert (
+        open_code_at(
+            "/src/{line} my file.py",
+            line=55,
+            editor_preference="custom",
+            custom_editor_cmd='hx "{file}:{line}"',
+        )
+        is True
+    )
+    assert launched[-1] == ["hx", "/src/{line} my file.py:55"]
+
+    # Custom template without {file} appends path automatically
+    assert open_code_at("/src/app.py", line=7, editor_preference="custom", custom_editor_cmd="hx --read-only") is True
+    assert launched[-1] == ["hx", "--read-only", "/src/app.py"]
+
+    # Malformed quotes in custom command fall back cleanly to auto-detected editor
+    assert open_code_at("/src/app.py", line=9, editor_preference="custom", custom_editor_cmd='hx "unclosed') is True
+    assert launched[-1] == ["code", "-g", "/src/app.py:9"]
+
+    # Missing binary in custom command falls back cleanly to auto-detected editor
+    assert (
+        open_code_at("/src/app.py", line=11, editor_preference="custom", custom_editor_cmd="missing-ed {file}") is True
+    )
+    assert launched[-1] == ["code", "-g", "/src/app.py:11"]
 
 
 def test_reveal_in_file_manager_dbus_escapes_spaces_and_commas(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,6 +295,20 @@ def test_reveal_in_file_manager_fallbacks(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "nautilus" else None)
     assert reveal_in_file_manager("/home/user/test.txt") is True
     assert launched[-1] == ["nautilus", "--select", str(Path("/home/user/test.txt").resolve())]
+
+    # Caja fallback (--select)
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "caja" else None)
+    assert reveal_in_file_manager("/home/user/test.txt") is True
+    assert launched[-1] == ["caja", "--select", str(Path("/home/user/test.txt").resolve())]
+
+    # Thunar & PCManFM fallback (parent directory)
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "thunar" else None)
+    assert reveal_in_file_manager("/home/user/test.txt") is True
+    assert launched[-1] == ["thunar", str(Path("/home/user/test.txt").resolve().parent)]
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "pcmanfm" else None)
+    assert reveal_in_file_manager("/home/user/test.txt") is True
+    assert launched[-1] == ["pcmanfm", str(Path("/home/user/test.txt").resolve().parent)]
 
     # xdg-open parent fallback
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
@@ -285,12 +397,87 @@ def test_open_terminal_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert open_terminal_at(str(sample_file)) is False
 
 
+def test_open_terminal_at_modern_and_custom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[tuple[list[str], str | None]] = []
+
+    def mock_popen(args: list[str], **kwargs: Any) -> None:
+        launched.append((args, kwargs.get("cwd")))
+
+    monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+    sample_file = tmp_path / "script.py"
+    sample_file.write_text("print(1)", encoding="utf-8")
+    expected_dir = str(tmp_path.resolve())
+
+    # Modern Linux terminals: ptyxis, foot, cosmic-term, tilix
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "ptyxis" else None)
+    assert open_terminal_at(str(sample_file)) is True
+    assert launched[-1] == (["ptyxis", "--working-directory", expected_dir], expected_dir)
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "foot" else None)
+    assert open_terminal_at(str(sample_file)) is True
+    assert launched[-1] == (["foot", "--working-directory", expected_dir], expected_dir)
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "cosmic-term" else None)
+    assert open_terminal_at(str(sample_file)) is True
+    assert launched[-1] == (["cosmic-term"], expected_dir)
+
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd == "tilix" else None)
+    assert open_terminal_at(str(sample_file)) is True
+    assert launched[-1] == (["tilix", "--working-directory", expected_dir], expected_dir)
+
+    # Explicit preference selects preferred terminal even when xdg-terminal-exec exists
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd in {"xdg-terminal-exec", "foot", "st"} else None)
+    assert open_terminal_at(str(sample_file), terminal_preference="foot") is True
+    assert launched[-1] == (["foot", "--working-directory", expected_dir], expected_dir)
+
+    # Non-standard explicit terminal binary inherits cwd
+    assert open_terminal_at(str(sample_file), terminal_preference="st") is True
+    assert launched[-1] == (["st"], expected_dir)
+
+    # Custom terminal command with {dir} placeholder
+    monkeypatch.setattr("shutil.which", lambda cmd: cmd if cmd in {"my-term", "xterm"} else None)
+    assert (
+        open_terminal_at(
+            str(sample_file),
+            terminal_preference="custom",
+            custom_terminal_cmd="my-term --cwd={dir}",
+        )
+        is True
+    )
+    assert launched[-1] == (["my-term", f"--cwd={expected_dir}"], expected_dir)
+
+    # Custom terminal command without {dir} relies on cwd without appending positional dir arg
+    assert (
+        open_terminal_at(
+            str(sample_file),
+            terminal_preference="custom",
+            custom_terminal_cmd="my-term --fullscreen",
+        )
+        is True
+    )
+    assert launched[-1] == (["my-term", "--fullscreen"], expected_dir)
+
+    # Malformed custom terminal command falls back to auto-detected terminal
+    assert (
+        open_terminal_at(
+            str(sample_file),
+            terminal_preference="custom",
+            custom_terminal_cmd='my-term "unclosed',
+        )
+        is True
+    )
+    assert launched[-1] == (["xterm"], expected_dir)
+
+
 def test_execute_hit_action(monkeypatch: pytest.MonkeyPatch) -> None:
     actions_called: list[tuple[str, ...]] = []
 
     monkeypatch.setattr(
         "semsearch.services.actions.open_code_at",
-        lambda p, line, editor_preference: actions_called.append(("code", p, str(line), editor_preference)),
+        lambda p, line, editor_preference, *, custom_editor_cmd="": actions_called.append(
+            ("code", p, str(line), editor_preference, custom_editor_cmd)
+        ),
     )
     monkeypatch.setattr(
         "semsearch.services.actions.open_pdf_at", lambda p, page: actions_called.append(("pdf", p, str(page)))
@@ -306,6 +493,10 @@ def test_execute_hit_action(monkeypatch: pytest.MonkeyPatch) -> None:
     hit_code = SearchHit(path="/src/main.py", kind=FileKind.CODE, score=1.0, focus=45.0)
     execute_hit_action(hit_code, config)
 
+    # Code hit with custom editor command
+    custom_cfg = AppConfig(code_editor="custom", custom_editor_cmd="hx {file}:{line}")
+    execute_hit_action(hit_code, custom_cfg)
+
     # PDF hit with page
     hit_pdf = SearchHit(path="/docs/paper.pdf", kind=FileKind.PDF, score=1.0, loc=7.0)
     execute_hit_action(hit_pdf, config)
@@ -319,7 +510,8 @@ def test_execute_hit_action(monkeypatch: pytest.MonkeyPatch) -> None:
     execute_hit_action(hit_doc, config)
 
     assert actions_called == [
-        ("code", "/src/main.py", "45", "code"),
+        ("code", "/src/main.py", "45", "code", ""),
+        ("code", "/src/main.py", "45", "custom", "hx {file}:{line}"),
         ("pdf", "/docs/paper.pdf", "7"),
         ("media", "/media/demo.mp4", "180.0"),
         ("file", "/docs/notes.txt"),

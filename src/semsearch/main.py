@@ -13,6 +13,7 @@ from semsearch.i18n import set_language, tr
 def build_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser with GUI activation flags and headless subcommands."""
     parser = argparse.ArgumentParser(description=tr("SemSearch - Linux Desktop Semantic Search Engine"))
+    parser.add_argument("--config", type=Path, default=None, help="Override path to config.json")
 
     gui_group = parser.add_mutually_exclusive_group()
     gui_group.add_argument("--daemon", action="store_true", help=tr("Run background daemon with system tray icon only"))
@@ -49,7 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _dispatch_subcommand(args: argparse.Namespace) -> int:
+def _parse_config_override(argv: list[str] | None) -> Path | None:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    known, _ = pre.parse_known_args(argv)
+    return known.config if isinstance(known.config, Path) else None
+
+
+def _dispatch_subcommand(args: argparse.Namespace, config_manager: ConfigManager) -> int:
     if args.command == "query":
         return run_query(
             " ".join(args.query),
@@ -57,11 +65,12 @@ def _dispatch_subcommand(args: argparse.Namespace) -> int:
             kinds=args.kind,
             limit=args.limit,
             as_json=args.json,
+            config_manager=config_manager,
         )
     if args.command == "status":
-        return run_status(as_json=args.json)
+        return run_status(as_json=args.json, config_manager=config_manager)
     if args.command == "reindex":
-        return run_reindex(force=args.force, forward_ipc=forward_ipc_command)
+        return run_reindex(force=args.force, forward_ipc=forward_ipc_command, config_manager=config_manager)
     return run_install_desktop(data_home=args.data_home)
 
 
@@ -77,18 +86,20 @@ def _resolve_gui_action(args: argparse.Namespace) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Run SemSearch CLI dispatcher or start application lifecycle."""
-    set_language(ConfigManager().config.language)
+    config_path = _parse_config_override(argv)
+    config_manager = ConfigManager(config_path=config_path) if config_path is not None else ConfigManager()
+    set_language(config_manager.config.language)
     args = build_parser().parse_args(argv)
 
     if args.command is not None:
-        return _dispatch_subcommand(args)
+        return _dispatch_subcommand(args, config_manager)
 
     action = _resolve_gui_action(args)
     if forward_ipc_command(action):
         return 0
 
     qt_argv = [sys.argv[0], *argv] if argv is not None else sys.argv
-    app = SemSearchApp(qt_argv)
+    app = SemSearchApp(qt_argv, config_manager=config_manager)
     app.start(daemon_mode=args.daemon)
     if app.is_shutdown:
         return 0

@@ -23,11 +23,13 @@ def test_ollama_client_init_and_context_manager() -> None:
 
         client._resolved_model_cache[(client.base_url, "m")] = "m:latest"
         client._context_length_cache[(client.base_url, "m")] = 8192
+        client._gemma_prompt_cache[(client.base_url, "m")] = True
 
         client.base_url = "http://127.0.0.1:11434/"
         assert client.base_url == "http://127.0.0.1:11434"
         assert client._resolved_model_cache == {}
         assert client._context_length_cache == {}
+        assert client._gemma_prompt_cache == {}
 
     assert client._client.is_closed is True
 
@@ -401,3 +403,163 @@ def test_resolve_model_name_caches_lookup_and_skips_on_error(monkeypatch: pytest
         assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
         assert client.resolve_model_name("embeddinggemma-2") == "embeddinggemma-2:latest"
         assert tags_calls == 2
+
+
+def test_api_key_auth_headers_env_fallback_and_cache_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify api_key, OLLAMA_API_KEY fallback, Bearer header injection, and setter cache invalidation."""
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    captured_headers: list[dict[str, str] | None] = []
+
+    def mock_get(url: str, timeout: float, headers: dict[str, str] | None = None) -> httpx.Response:
+        del url, timeout
+        captured_headers.append(headers)
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
+
+    def mock_post(
+        url: str,
+        json: dict[str, object],
+        timeout: float,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        del url, json, timeout
+        captured_headers.append(headers)
+        return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+
+    with OllamaClient(api_key="  secret-token  ") as client:
+        assert client.api_key == "secret-token"
+        monkeypatch.setattr(client._client, "get", mock_get)
+        monkeypatch.setattr(client._client, "post", mock_post)
+
+        client.get_tags()
+        assert captured_headers[-1] == {"Authorization": "Bearer secret-token"}
+
+        client.embed("embeddinggemma-2", ["hello"])
+        assert captured_headers[-1] == {"Authorization": "Bearer secret-token"}
+
+        client._resolved_model_cache[(client.base_url, "m")] = "m:latest"
+        client._context_length_cache[(client.base_url, "m")] = 8192
+        client._gemma_prompt_cache[(client.base_url, "m")] = True
+
+        # Setting the same stripped value preserves caches; changing clears all caches
+        client.api_key = "secret-token"
+        assert client._resolved_model_cache != {}
+        client.api_key = "  new-token  "
+        assert client.api_key == "new-token"
+        assert client._resolved_model_cache == {}
+        assert client._context_length_cache == {}
+        assert client._gemma_prompt_cache == {}
+
+        # Clearing api_key falls back to OLLAMA_API_KEY env var
+        monkeypatch.setenv("OLLAMA_API_KEY", "  env-token  ")
+        client.api_key = ""
+        client.get_tags()
+        assert captured_headers[-1] == {"Authorization": "Bearer env-token"}
+
+        # Explicit api_key takes precedence over OLLAMA_API_KEY
+        client.api_key = "override-token"
+        client.get_tags()
+        assert captured_headers[-1] == {"Authorization": "Bearer override-token"}
+
+
+def test_keep_alive_modes_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify keep_loaded sends keep_alive=-1, unload_idle/server omit it, and explicit overrides apply."""
+    recorded_payloads: list[dict[str, object]] = []
+
+    def mock_get(url: str, timeout: float) -> httpx.Response:
+        del url, timeout
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma-2:latest"}]})
+
+    def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+        del url, timeout
+        recorded_payloads.append(json)
+        return httpx.Response(200, json={"embeddings": [[0.1, 0.2]] if json.get("input") else []})
+
+    for mode in ("unload_idle", "server"):
+        recorded_payloads.clear()
+        with OllamaClient(keep_alive=mode) as client:
+            monkeypatch.setattr(client._client, "get", mock_get)
+            monkeypatch.setattr(client._client, "post", mock_post)
+
+            client.preload("embeddinggemma-2")
+            client.embed("embeddinggemma-2", ["hello"])
+            client.preload("embeddinggemma-2", keep_alive="10m")
+            client.embed("embeddinggemma-2", ["hello"], keep_alive=0)
+
+        assert ["keep_alive" in p for p in recorded_payloads[:2]] == [False, False]
+        assert [p.get("keep_alive") for p in recorded_payloads[2:]] == ["10m", 0]
+
+    recorded_payloads.clear()
+    with OllamaClient(keep_alive="keep_loaded") as client_loaded:
+        monkeypatch.setattr(client_loaded._client, "get", mock_get)
+        monkeypatch.setattr(client_loaded._client, "post", mock_post)
+
+        client_loaded.preload("embeddinggemma-2")
+        client_loaded.embed("embeddinggemma-2", ["hello"])
+        client_loaded.unload("embeddinggemma-2")
+
+    assert [p.get("keep_alive") for p in recorded_payloads] == [-1, -1, 0]
+
+
+def test_model_aware_prompt_formatting_and_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify uses_gemma_prompts fast-path, /api/show inspection, caching, and query/doc formatters."""
+    with OllamaClient() as client:
+        show_calls: list[str] = []
+
+        def mock_get(url: str, timeout: float) -> httpx.Response:
+            del url, timeout
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"name": "clip-vit:latest"},
+                        {"name": "custom-gemma-alias:latest"},
+                        {"name": "arch-gemma:latest"},
+                    ]
+                },
+            )
+
+        def mock_post(url: str, json: dict[str, object], timeout: float) -> httpx.Response:
+            del url, timeout
+            name = str(json.get("name", ""))
+            show_calls.append(name)
+            if name == "clip-vit:latest":
+                return httpx.Response(200, json={"details": {"family": "clip", "families": ["clip"]}})
+            if name == "custom-gemma-alias:latest":
+                return httpx.Response(200, json={"details": {"family": "gemma-embedding2"}})
+            if name == "arch-gemma:latest":
+                return httpx.Response(200, json={"model_info": {"general.architecture": "embeddinggemma"}})
+            return httpx.Response(404, text="model not found")
+
+        monkeypatch.setattr(client._client, "get", mock_get)
+        monkeypatch.setattr(client._client, "post", mock_post)
+
+        # Fast-path on model name requires no /api/show HTTP call
+        assert client.uses_gemma_prompts("embeddinggemma-2") is True
+        assert client.uses_gemma_prompts("gemma-embedding2:latest") is True
+        assert show_calls == []
+        assert client.format_query_for_model("embeddinggemma-2", "budget") == "task: search result | query: budget"
+        assert (
+            client.format_query_for_model("embeddinggemma-2", "parse_json", is_code=True)
+            == "task: code retrieval | query: parse_json"
+        )
+        assert client.format_doc_for_model("embeddinggemma-2", "Q4 Report", "Revenue up") == (
+            "title: Q4 Report | text: Revenue up"
+        )
+
+        # Non-Gemma model inspected via /api/show and cached
+        assert client.uses_gemma_prompts("clip-vit") is False
+        assert client.uses_gemma_prompts("clip-vit") is False
+        assert show_calls.count("clip-vit:latest") == 1
+        assert client.format_query_for_model("clip-vit", "sunset beach") == "sunset beach"
+        assert client.format_query_for_model("clip-vit", "parse_json", is_code=True) == "parse_json"
+        assert client.format_doc_for_model("clip-vit", "Q4 Report", "Revenue up") == "Q4 Report\n\nRevenue up"
+        assert client.format_doc_for_model("clip-vit", "   ", "Revenue up") == "Revenue up"
+
+        # Aliased Gemma models detected via details.family and model_info["general.architecture"]
+        assert client.uses_gemma_prompts("custom-gemma-alias") is True
+        assert client.uses_gemma_prompts("arch-gemma") is True
+        assert client.format_query_for_model("custom-gemma-alias", "budget") == "task: search result | query: budget"
+
+        # Unknown/unreachable model gracefully returns False without caching failure
+        assert client.uses_gemma_prompts("missing-model") is False
+        assert (client.base_url, "missing-model") not in client._gemma_prompt_cache

@@ -14,9 +14,11 @@ import pymupdf
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage, QImageReader
 
+from semsearch.config import get_thumbs_cache_dir
 from semsearch.extractors.docs import read_doc_text
 
-THUMBS_CACHE_DIR = Path.home() / ".cache" / "semsearch" / "thumbs"
+_DEFAULT_THUMBS_CACHE_DIR = get_thumbs_cache_dir()
+THUMBS_CACHE_DIR = _DEFAULT_THUMBS_CACHE_DIR
 MAX_CACHED_THUMBS = 200
 MAX_PREVIEW_TEXT_BYTES = 262_144
 
@@ -34,10 +36,16 @@ def _default_waveform_bars(bar_count: int) -> list[float]:
     return [_DEFAULT_WAVEFORM_LEVEL] * max(0, bar_count)
 
 
+def _resolve_thumbs_cache_dir() -> Path:
+    if THUMBS_CACHE_DIR != _DEFAULT_THUMBS_CACHE_DIR:
+        return THUMBS_CACHE_DIR
+    return get_thumbs_cache_dir()
+
+
 def _thumb_cache_path(path: str, mtime: float, timestamp: float) -> Path:
     raw_key = f"{path}:{mtime}:{round(max(0.0, timestamp), 1)}"
     digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
-    return THUMBS_CACHE_DIR / f"{digest}.png"
+    return _resolve_thumbs_cache_dir() / f"{digest}.png"
 
 
 def _prune_thumb_cache(cache_dir: Path) -> None:

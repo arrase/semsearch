@@ -426,7 +426,7 @@ def test_selective_watches_skip_ignored_dirs_and_watch_new_subdirs(
             return None
 
         def join(self, timeout: float | None = None) -> None:
-            del timeout
+            assert timeout is None or timeout > 0
 
     monkeypatch.setattr("semsearch.services.watcher.Observer", FakeObserver)
 
@@ -479,7 +479,7 @@ def test_selective_watch_handles_inotify_oserror_gracefully(tmp_path: Path, monk
             return None
 
         def join(self, timeout: float | None = None) -> None:
-            del timeout
+            assert timeout is None or timeout > 0
 
     monkeypatch.setattr("semsearch.services.watcher.Observer", FailingObserver)
     db = Database(tmp_path / "index.sqlite")
@@ -522,3 +522,162 @@ def test_on_moved_unchanged_file_does_not_requeue_and_preserves_vectors(tmp_path
     assert moved.state == FileState.DONE
     assert str(new_file) not in bucket.paths
     assert len(db.get_vector_snapshot().segment_ids) == 1
+
+
+def test_event_handler_code_project_parity_and_context_folders(tmp_path: Path) -> None:
+    """Verify watcher handler matches crawler for code projects, vendor/target, and .github."""
+    db = Database(tmp_path / "index.sqlite")
+    bucket = DebounceBucket(quiet_window=0.75)
+
+    # Ancestor above root has .git; must NOT suppress files directly under root
+    (tmp_path / ".git").mkdir()
+    docs_root = tmp_path / "Documents"
+    (docs_root / "vendor").mkdir(parents=True)
+    (docs_root / "Sales" / "target").mkdir(parents=True)
+    invoice = docs_root / "vendor" / "invoice.pdf"
+    invoice.write_bytes(b"%PDF")
+    q4 = docs_root / "Sales" / "target" / "q4.pdf"
+    q4.write_bytes(b"%PDF")
+
+    nested_app = docs_root / "my_app"
+    (nested_app / "docs").mkdir(parents=True)
+    (nested_app / "pyproject.toml").write_text("[project]\nname='app'\n")
+    nested_doc = nested_app / "docs" / "design.md"
+    nested_doc.write_text("design")
+    nested_shot = nested_app / "Screenshot_ui.png"
+    nested_shot.write_text("png")
+
+    handler_skip = SemSearchEventHandler(
+        root=str(docs_root),
+        is_code=False,
+        bucket=bucket,
+        db=db,
+        config=AppConfig(skip_code_projects=True),
+    )
+    for f in (invoice, q4, nested_doc, nested_shot):
+        handler_skip.on_created(FileCreatedEvent(str(f)))
+
+    assert str(invoice) in bucket.paths
+    assert str(q4) in bucket.paths
+    assert str(nested_shot) in bucket.paths
+    assert str(nested_doc) not in bucket.paths
+
+    # With skip_code_projects=False, docs inside nested Git/project vault ARE routed
+    bucket2 = DebounceBucket(quiet_window=0.75)
+    handler_keep = SemSearchEventHandler(
+        root=str(docs_root),
+        is_code=False,
+        bucket=bucket2,
+        db=db,
+        config=AppConfig(skip_code_projects=False),
+    )
+    handler_keep.on_created(FileCreatedEvent(str(nested_doc)))
+    assert str(nested_doc) in bucket2.paths
+
+    # In code mode, .github workflows are allowed while target/vendor are filtered
+    repo = tmp_path / "repo"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    ci_yml = repo / ".github" / "workflows" / "ci.yml"
+    ci_yml.write_text("name: CI\n")
+    (repo / "target").mkdir()
+    target_rs = repo / "target" / "out.rs"
+    target_rs.write_text("fn main() {}\n")
+
+    code_bucket = DebounceBucket(quiet_window=60.0)
+    code_handler = SemSearchEventHandler(
+        root=str(repo),
+        is_code=True,
+        bucket=code_bucket,
+        db=db,
+        config=AppConfig(),
+    )
+    code_handler.on_created(FileCreatedEvent(str(ci_yml)))
+    code_handler.on_created(FileCreatedEvent(str(target_rs)))
+    assert str(ci_yml) in code_bucket.paths
+    assert str(target_rs) not in code_bucket.paths
+
+
+def test_watcher_symlinks_allowed_dot_dirs_and_code_delay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify watcher respects follow_symlinks (with cycle guard), .github in code mode, and code_watch_delay_sec."""
+    docs_dir = tmp_path / "docs"
+    (docs_dir / "vendor").mkdir(parents=True)
+    nested_proj = docs_dir / "app"
+    (nested_proj / "target").mkdir(parents=True)
+    (nested_proj / "Cargo.toml").write_text("")
+
+    external = tmp_path / "external"
+    external.mkdir()
+    (docs_dir / "linked").symlink_to(external)
+    (external / "cycle").symlink_to(docs_dir)
+
+    repo = tmp_path / "repo"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / "target").mkdir()
+
+    scheduled: list[str] = []
+
+    class FakeObserver:
+        def schedule(self, _handler: object, path: str, *, recursive: bool = False) -> None:
+            del recursive
+            scheduled.append(path)
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout is None or timeout > 0
+
+    monkeypatch.setattr("semsearch.services.watcher.Observer", FakeObserver)
+
+    db = Database(tmp_path / "index.sqlite")
+    code_db = Database(tmp_path / "code.sqlite")
+    indexer = RecordingIndexService(db=db, code_db=code_db)
+
+    config = AppConfig(
+        folders=[str(docs_dir)],
+        code_enabled=True,
+        code_folders=[str(repo)],
+        follow_symlinks=True,
+        code_watch_delay_sec=12,
+    )
+    watcher = FileSystemWatcher(indexer, config)
+    watcher.start()
+    try:
+        watched = set(scheduled)
+        assert str((docs_dir / "vendor").resolve()) in watched
+        assert str(docs_dir / "linked") in watched
+        assert str((nested_proj / "target").resolve()) not in watched
+        assert str((repo / ".github" / "workflows").resolve()) in watched
+        assert str((repo / "target").resolve()) not in watched
+
+        code_bucket = watcher._buckets[str(repo.resolve())]
+        assert code_bucket.quiet_window == 12.0
+        assert code_bucket.max_ceiling == 120.0
+    finally:
+        watcher.stop()
+
+    # Verify default code_watch_delay_sec=60 preserves 60.0 / 600.0
+    scheduled.clear()
+    default_watcher = FileSystemWatcher(
+        indexer,
+        AppConfig(
+            folders=[str(docs_dir)],
+            code_enabled=True,
+            code_folders=[str(repo)],
+            follow_symlinks=False,
+        ),
+    )
+    default_watcher.start()
+    try:
+        assert str(docs_dir / "linked") not in set(scheduled)
+        default_code_bucket = default_watcher._buckets[str(repo.resolve())]
+        assert default_code_bucket.quiet_window == 60.0
+        assert default_code_bucket.max_ceiling == 600.0
+    finally:
+        default_watcher.stop()

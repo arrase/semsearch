@@ -32,8 +32,9 @@ class DeterministicOllama(OllamaClient):
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
-        del model, truncate, num_ctx
+        del model, truncate, num_ctx, keep_alive
         results: list[list[float]] = []
         for inp in inputs:
             seed = sum(ord(c) for c in str(inp)[:64]) % 100000

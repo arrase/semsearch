@@ -1,5 +1,6 @@
 """Ollama HTTP client and multimodal embedding model discovery for SemSearch."""
 
+import os
 import threading
 from types import TracebackType
 from typing import Any
@@ -37,6 +38,7 @@ _HTTP_BAD_REQUEST = 400
 _MIN_PARAMETER_PARTS = 3
 _MULTIMODAL_BATCH_SIZE = 4
 _EMBED_ENDPOINT = "/api/embed"
+_GEMMA_PROMPT_INDICATORS = ("embeddinggemma", "gemma-embedding")
 
 
 def format_query_prompt(text: str) -> str:
@@ -66,16 +68,26 @@ class OllamaClient:
         max_batch_size: int = 32,
         *,
         num_ctx: int = 0,
+        api_key: str = "",
+        keep_alive: str = "unload_idle",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.embed_timeout = embed_timeout
         self.max_batch_size = max_batch_size
         self.num_ctx = num_ctx
+        self._api_key = api_key.strip()
+        self.keep_alive = keep_alive
         self._cache_lock = threading.Lock()
         self._context_length_cache: dict[tuple[str, str], int] = {}
         self._resolved_model_cache: dict[tuple[str, str], str] = {}
+        self._gemma_prompt_cache: dict[tuple[str, str], bool] = {}
         self._client = httpx.Client()
+
+    def _clear_caches_locked(self) -> None:
+        self._context_length_cache.clear()
+        self._resolved_model_cache.clear()
+        self._gemma_prompt_cache.clear()
 
     @property
     def base_url(self) -> str:
@@ -88,8 +100,34 @@ class OllamaClient:
         with self._cache_lock:
             if normalized != self._base_url:
                 self._base_url = normalized
-                self._context_length_cache.clear()
-                self._resolved_model_cache.clear()
+                self._clear_caches_locked()
+
+    @property
+    def api_key(self) -> str:
+        """Configured Ollama API key with surrounding whitespace stripped."""
+        return self._api_key
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        cleaned = value.strip()
+        with self._cache_lock:
+            if cleaned != self._api_key:
+                self._api_key = cleaned
+                self._clear_caches_locked()
+
+    def _auth_headers(self) -> dict[str, str]:
+        token = self._api_key or os.environ.get("OLLAMA_API_KEY", "").strip()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def _send_http(self, url: str, timeout: float, payload: dict[str, Any] | None) -> httpx.Response:
+        headers = self._auth_headers()
+        if payload is None:
+            if headers:
+                return self._client.get(url, timeout=timeout, headers=headers)
+            return self._client.get(url, timeout=timeout)
+        if headers:
+            return self._client.post(url, json=payload, timeout=timeout, headers=headers)
+        return self._client.post(url, json=payload, timeout=timeout)
 
     def close(self) -> None:
         """Close the persistent HTTP connection pool."""
@@ -116,10 +154,7 @@ class OllamaClient:
         base_url = self.base_url
         url = f"{base_url}{endpoint}"
         try:
-            if payload is None:
-                response = self._client.get(url, timeout=timeout)
-            else:
-                response = self._client.post(url, json=payload, timeout=timeout)
+            response = self._send_http(url, timeout, payload)
         except httpx.ConnectError as err:
             raise OllamaConnectionError(f"Cannot connect to Ollama at {base_url}") from err
         except httpx.TimeoutException as err:
@@ -297,12 +332,82 @@ class OllamaClient:
                 result.append(name)
         return result
 
+    @staticmethod
+    def _is_gemma_prompt_info(info: dict[str, Any]) -> bool:
+        details = info.get("details") or {}
+        candidates = [str(f).lower() for f in (details.get("families") or [])]
+        if details.get("family"):
+            candidates.append(str(details["family"]).lower())
+        model_info = info.get("model_info") or {}
+        arch = str(model_info.get("general.architecture", "")).lower()
+        if arch:
+            candidates.append(arch)
+        return any(indicator in item for item in candidates for indicator in _GEMMA_PROMPT_INDICATORS)
+
+    def uses_gemma_prompts(self, model: str) -> bool:
+        """Return True when the model expects EmbeddingGemma task/title prompt prefixes."""
+        base_url = self.base_url
+        cache_key = (base_url, model)
+        with self._cache_lock:
+            if cache_key in self._gemma_prompt_cache:
+                return self._gemma_prompt_cache[cache_key]
+
+        if any(indicator in model.lower() for indicator in _GEMMA_PROMPT_INDICATORS):
+            with self._cache_lock:
+                self._gemma_prompt_cache[cache_key] = True
+            return True
+
+        target = self.resolve_model_name(model)
+        target_key = (base_url, target)
+        with self._cache_lock:
+            if target_key in self._gemma_prompt_cache:
+                cached = self._gemma_prompt_cache[target_key]
+                self._gemma_prompt_cache[cache_key] = cached
+                return cached
+
+        try:
+            info = self.show_model(target)
+        except OllamaError:
+            return False
+
+        is_gemma = self._is_gemma_prompt_info(info)
+        with self._cache_lock:
+            self._gemma_prompt_cache[cache_key] = is_gemma
+            self._gemma_prompt_cache[target_key] = is_gemma
+        return is_gemma
+
+    def format_query_for_model(self, model: str, text: str, *, is_code: bool = False) -> str:
+        """Format a query prompt tailored to the target embedding model."""
+        if self.uses_gemma_prompts(model):
+            return format_code_query_prompt(text) if is_code else format_query_prompt(text)
+        return text
+
+    def format_doc_for_model(self, model: str, title: str, text: str) -> str:
+        """Format a document embedding prompt tailored to the target embedding model."""
+        if self.uses_gemma_prompts(model):
+            return format_doc_prompt(title, text)
+        clean_title = title.strip()
+        return f"{clean_title}\n\n{text}" if clean_title else text
+
     def _resolve_target_and_ctx(self, model: str, num_ctx: int | None) -> tuple[str, int]:
         target_model = self.resolve_model_name(model)
         effective_ctx = self.num_ctx if num_ctx is None else num_ctx
         return target_model, max(0, effective_ctx)
 
-    def preload(self, model: str, num_ctx: int | None = None) -> None:
+    def _effective_keep_alive(self, keep_alive: int | str | None) -> int | str | None:
+        if keep_alive is not None:
+            return keep_alive
+        if self.keep_alive == "keep_loaded":
+            return -1
+        return None
+
+    def preload(
+        self,
+        model: str,
+        num_ctx: int | None = None,
+        *,
+        keep_alive: int | str | None = None,
+    ) -> None:
         """Preload embedding model into VRAM without computing token embeddings."""
         target_model, effective_ctx = self._resolve_target_and_ctx(model, num_ctx)
         payload: dict[str, Any] = {
@@ -311,6 +416,9 @@ class OllamaClient:
         }
         if effective_ctx > 0:
             payload["options"] = {"num_ctx": effective_ctx}
+        eff_ka = self._effective_keep_alive(keep_alive)
+        if eff_ka is not None:
+            payload["keep_alive"] = eff_ka
         self._request(
             _EMBED_ENDPOINT,
             timeout=self.embed_timeout,
@@ -340,12 +448,14 @@ class OllamaClient:
         *,
         truncate: bool = True,
         num_ctx: int | None = None,
+        keep_alive: int | str | None = None,
     ) -> list[list[float]]:
         """Embed a heterogeneous batch of text, image, or audio inputs with adaptive batch sizing."""
         if not inputs:
             return []
 
         target_model, effective_ctx = self._resolve_target_and_ctx(model, num_ctx)
+        eff_ka = self._effective_keep_alive(keep_alive)
         multimodal_batch = min(self.max_batch_size, _MULTIMODAL_BATCH_SIZE)
         all_embeddings: list[list[float]] = []
 
@@ -362,6 +472,8 @@ class OllamaClient:
             }
             if effective_ctx > 0:
                 payload["options"] = {"num_ctx": effective_ctx}
+            if eff_ka is not None:
+                payload["keep_alive"] = eff_ka
             data = self._request(
                 _EMBED_ENDPOINT,
                 timeout=self.embed_timeout,
