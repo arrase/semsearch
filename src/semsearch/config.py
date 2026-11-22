@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -126,11 +127,28 @@ def resolve_data_dir(config: AppConfig) -> Path:
     return resolve_xdg_data_home() / "semsearch"
 
 
+def _validate_config_path(config_path: Path) -> Path:
+    """Canonicalize config_path and verify it stays inside allowed user directories."""
+    resolved = os.path.realpath(config_path.expanduser())
+    allowed_roots = (
+        os.path.realpath(Path.home()),
+        os.path.realpath(resolve_xdg_config_home()),
+        os.path.realpath(Path.cwd()),
+        os.path.realpath(tempfile.gettempdir()),
+    )
+    for root in allowed_roots:
+        prefix = root if root.endswith(os.sep) else root + os.sep
+        if resolved.startswith(prefix):
+            return Path(resolved)
+    raise ValueError(f"Config path outside allowed directories: {config_path}")
+
+
 class ConfigManager:
     """Manages reading and persisting SemSearch configuration."""
 
     def __init__(self, config_path: Path | None = None) -> None:
-        self.config_path = config_path if config_path is not None else get_default_config_path()
+        raw_path = config_path if config_path is not None else get_default_config_path()
+        self.config_path = _validate_config_path(raw_path)
         self.config: AppConfig = self.load()
 
     def load(self) -> AppConfig:

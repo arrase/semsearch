@@ -24,7 +24,6 @@ from semsearch.core.database import CODE_DB_FILE, MAIN_DB_FILE, Database
 from semsearch.core.ollama import OllamaClient
 from semsearch.core.types import Candidate, FileKind, FileState, Modality, SearchHit, SegmentKind
 from semsearch.core.vectors import float16_to_bytes, l2_normalize
-from semsearch.main import build_parser, main
 
 
 class _StubOllamaClient(OllamaClient):
@@ -481,8 +480,7 @@ def test_cli_uses_config_data_dir_when_not_overridden(
     assert status_data["data_dir"] == str(data_dir.resolve())
     assert status_data["main"]["files"] == 3
 
-    ollama = _StubOllamaClient()
-    try:
+    with _StubOllamaClient() as ollama:
         rc_query = run_query("quarterly", as_json=True, config_manager=cfg_manager, ollama_client=ollama)
         assert rc_query == 0
         query_items = json.loads(capsys.readouterr().out)
@@ -496,8 +494,6 @@ def test_cli_uses_config_data_dir_when_not_overridden(
         )
         assert rc_reindex == 0
         assert "Synced index:" in capsys.readouterr().out
-    finally:
-        ollama.close()
 
 
 def test_main_config_flag_overrides_config_path_for_cli_and_gui(
@@ -516,13 +512,13 @@ def test_main_config_flag_overrides_config_path_for_cli_and_gui(
     cfg_mgr.config.language = "en"
     cfg_mgr.save()
 
-    parser = build_parser()
+    parser = main_module.build_parser()
     parsed = parser.parse_args(["--config", str(custom_cfg_path), "status", "--json"])
     assert parsed.config == custom_cfg_path
     assert parsed.command == "status"
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "ignored_xdg_data"))
-    assert main(["--config", str(custom_cfg_path), "status", "--json"]) == 0
+    assert main_module.main(["--config", str(custom_cfg_path), "status", "--json"]) == 0
     status_payload = json.loads(capsys.readouterr().out)
     assert status_payload["configured_model"] == "custom-cli-model"
     assert status_payload["data_dir"] == str(custom_data_dir.resolve())
@@ -534,11 +530,11 @@ def test_main_config_flag_overrides_config_path_for_cli_and_gui(
     app_ctor = MagicMock(return_value=fake_app)
     monkeypatch.setattr(main_module, "SemSearchApp", app_ctor)
 
-    assert main(["--config", str(custom_cfg_path), "--daemon"]) == 0
+    assert main_module.main(["--config", str(custom_cfg_path), "--daemon"]) == 0
     app_ctor.assert_called_once()
     passed_cfg_mgr = app_ctor.call_args.kwargs["config_manager"]
     assert isinstance(passed_cfg_mgr, ConfigManager)
-    assert passed_cfg_mgr.config_path == custom_cfg_path
+    assert passed_cfg_mgr.config_path == custom_cfg_path.resolve()
     assert passed_cfg_mgr.config.model == "custom-cli-model"
 
 

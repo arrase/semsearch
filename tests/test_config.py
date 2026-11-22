@@ -427,3 +427,9 @@ def test_config_manager_validates_enum_and_numeric_bounds(tmp_path: Path) -> Non
     assert valid_loaded.custom_terminal_cmd == "alacritty -e"
     assert valid_loaded.close_on_focus_loss is False
     assert valid_loaded.remember_last_query is True
+
+
+def test_config_manager_rejects_path_outside_allowed_directories() -> None:
+    """Verify ConfigManager rejects config paths escaping allowed user directories."""
+    with pytest.raises(ValueError, match="outside allowed directories"):
+        ConfigManager(config_path=Path("/etc/semsearch-unauthorized.json"))

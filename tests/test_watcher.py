@@ -426,7 +426,7 @@ def test_selective_watches_skip_ignored_dirs_and_watch_new_subdirs(
             return None
 
         def join(self, timeout: float | None = None) -> None:
-            del timeout
+            assert timeout is None or timeout > 0
 
     monkeypatch.setattr("semsearch.services.watcher.Observer", FakeObserver)
 
@@ -479,7 +479,7 @@ def test_selective_watch_handles_inotify_oserror_gracefully(tmp_path: Path, monk
             return None
 
         def join(self, timeout: float | None = None) -> None:
-            del timeout
+            assert timeout is None or timeout > 0
 
     monkeypatch.setattr("semsearch.services.watcher.Observer", FailingObserver)
     db = Database(tmp_path / "index.sqlite")
@@ -631,7 +631,7 @@ def test_watcher_symlinks_allowed_dot_dirs_and_code_delay(
             return None
 
         def join(self, timeout: float | None = None) -> None:
-            del timeout
+            assert timeout is None or timeout > 0
 
     monkeypatch.setattr("semsearch.services.watcher.Observer", FakeObserver)
 

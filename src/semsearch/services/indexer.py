@@ -249,14 +249,7 @@ class IndexService:
             target_db.requeue_file(rec.id, cand)
         return rec.id
 
-    def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
-        """Enqueue newly modified or created file for immediate or backfill indexing."""
-        resolved_path = Path(path).resolve()
-        resolved = str(resolved_path)
-        if not resolved_path.is_file():
-            return
-
-        is_code = self._is_code_file_path(resolved_path)
+    def _build_enqueue_candidate(self, resolved_path: Path, resolved: str, *, is_code: bool) -> Candidate | None:
         in_code_project = (
             not is_code and self.config.skip_code_projects and is_inside_code_project(resolved, self.config.folders)
         )
@@ -268,22 +261,18 @@ class IndexService:
             in_code_project=in_code_project,
         )
         if skip:
-            return
+            return None
 
         try:
             st = resolved_path.stat()
         except OSError:
-            return
+            return None
 
         kind = classify_file(resolved, is_code_mode=is_code)
-        if kind is None:
-            return
-        if kind in (FileKind.DOC, FileKind.CODE) and st.st_size > MAX_TEXT_FILE_BYTES:
-            return
+        if kind is None or (kind in (FileKind.DOC, FileKind.CODE) and st.st_size > MAX_TEXT_FILE_BYTES):
+            return None
 
-        target_db = self.code_db if is_code and self.code_db is not None else self.db
-        rec = target_db.find_by_path(resolved)
-        cand = Candidate(
+        return Candidate(
             path=resolved,
             kind=kind,
             size=st.st_size,
@@ -291,6 +280,21 @@ class IndexService:
             inode=st.st_ino,
             device=st.st_dev,
         )
+
+    def enqueue_file(self, path: str, tier: IndexQueueTier = IndexQueueTier.NEW_FILES) -> None:
+        """Enqueue newly modified or created file for immediate or backfill indexing."""
+        resolved_path = Path(path).resolve()
+        resolved = str(resolved_path)
+        if not resolved_path.is_file():
+            return
+
+        is_code = self._is_code_file_path(resolved_path)
+        cand = self._build_enqueue_candidate(resolved_path, resolved, is_code=is_code)
+        if cand is None:
+            return
+
+        target_db = self.code_db if is_code and self.code_db is not None else self.db
+        rec = target_db.find_by_path(resolved)
         fid = self._upsert_candidate(target_db, rec, cand)
         needs_work = rec is None or rec.state == FileState.PENDING or cand.mtime != rec.mtime or cand.size != rec.size
         if not needs_work:

@@ -753,7 +753,12 @@ class GeneralTab(QWidget):
     def _apply_status_tone(self, tone: str) -> None:
         self._status_tone = tone
         palette = get_palette()
-        color = palette.leaf if tone == "success" else palette.amber if tone == "warning" else palette.text_muted
+        if tone == "success":
+            color = palette.leaf
+        elif tone == "warning":
+            color = palette.amber
+        else:
+            color = palette.text_muted
         self.status_label.setStyleSheet(f"color: {color};")
 
     def set_hotkey_error(self, message: str) -> None:
